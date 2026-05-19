@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Box, Cloud, Globe, Lock, Network, Server, ShieldCheck, Cpu,
-  ExternalLink, Copy, Check, ArrowRight, Zap, Wallet, Users, FileCode
+  ExternalLink, Copy, Check, ArrowRight, Zap, Wallet, Users, FileCode,
+  Github, Play
 } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 import { token } from '../api'
@@ -87,6 +88,16 @@ const useCases = computed(() => ([
           </button>
         </div>
         <pre class="hero-code"><code><span class="prompt">$</span> {{ installCmd }}</code></pre>
+        <div class="hero-card-actions">
+          <a class="hero-action" href="https://github.com/proxyboxpro/proxybox-free" target="_blank" rel="noopener">
+            <Github :size="14" />
+            <span>{{ locale === 'vi' ? 'Mã nguồn trên GitHub' : 'Source on GitHub' }}</span>
+          </a>
+          <RouterLink class="hero-action demo" to="/login">
+            <Play :size="13" />
+            <span>{{ locale === 'vi' ? 'Demo · Đăng nhập thử' : 'Demo · Try sign-in' }}</span>
+          </RouterLink>
+        </div>
         <p class="hero-card-foot">{{ t('landing.hero.cardFoot') }}</p>
       </div>
     </section>
@@ -580,6 +591,37 @@ const useCases = computed(() => ([
   font-size: 12px; color: var(--dim);
   border-top: 1px solid var(--border-soft);
 }
+.hero-card-actions {
+  display: flex; gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-2);
+}
+.hero-action {
+  flex: 1; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text); font-size: 12.5px; font-weight: 600;
+  text-decoration: none;
+  transition: 0.15s;
+}
+.hero-action:hover {
+  border-color: var(--blue);
+  background: color-mix(in srgb, var(--bg) 75%, var(--blue-soft) 25%);
+  color: var(--blue);
+}
+.hero-action.demo {
+  background: linear-gradient(135deg, var(--green-soft), color-mix(in srgb, var(--green-soft) 80%, transparent));
+  border-color: color-mix(in srgb, var(--green) 35%, var(--border));
+  color: var(--green);
+}
+.hero-action.demo:hover {
+  border-color: var(--green);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--green-soft) 60%, var(--green) 5%), var(--green-soft));
+}
+.hero-action svg { flex-shrink: 0; }
 
 .section {
   max-width: 1240px; margin: 0 auto;
@@ -839,6 +881,8 @@ const useCases = computed(() => ([
   .hero-code { padding: 14px 14px 14px 14px; font-size: 11.5px; }
   .copy-btn { padding: 4px 8px; font-size: 10px; }
   .copy-btn .copy-label { display: none; }
+  .hero-card-actions { padding: 10px 12px; gap: 6px; }
+  .hero-action { padding: 7px 10px; font-size: 11.5px; }
 
   .section { padding: 40px 16px; }
   .section-head h2 { font-size: 24px; }
