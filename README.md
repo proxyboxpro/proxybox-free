@@ -1,36 +1,39 @@
 # ProxyBox Free
 
-Open-source proxy SaaS control plane. Self-host trên VPS riêng để bán proxy IPv4 / IPv6, cấp BYON cho customer, hoặc thuê VPS hub qua Virtualizor.
+Open-source proxy SaaS control plane. Self-host on your own VPS to resell IPv4 / IPv6 proxies, hand out BYON (Bring Your Own Node) to customers, or rent hub VPS through Virtualizor.
 
-- **Protocols**: HTTP / SOCKS5 / HTTPS-proxy / Trojan trên cùng 1 cặp port
-- **IPv4** datacenter + **IPv6** /48 routed (strict family egress, không leak)
-- **BYON**: customer chạy 1 lệnh agent trên VPS của họ → tạo proxy miễn phí
-- **Hub Proxy**: admin cấu hình Virtualizor → customer thuê VPS theo giờ, agent auto-cài qua SSH bootstrap
-- **Wallet billing** VND/USD, auto-renew, coupon, tier discount
-- **Admin remote control**: reboot, restart-agent, diagnose, install-package, drain, force-upgrade
-- **mTLS** agent ↔ master, scrypt password, AES-256-GCM at-rest secrets
+Published by **[Onie Cloud](https://onie.net)** · live demo: **[proxybox.pro](https://proxybox.pro)**
+
+- **Protocols** — HTTP / SOCKS5 / HTTPS-proxy / Trojan on a single port pair
+- **IPv4** datacenter + **IPv6** /48 routed (strict family egress, no A/AAAA leak)
+- **BYON** — customer pastes one command on their VPS → agent enrols, free proxies live
+- **Hub Proxy** — admin wires up Virtualizor, customers rent VPS by the hour; agent auto-installs via SSH bootstrap
+- **Wallet billing** — VND / USD, auto-renew, coupons, tier discounts, Stripe + PayPal
+- **Admin remote control** — reboot, restart-agent, diagnose, install-package, drain, force-upgrade
+- **mTLS** agent ↔ master, scrypt password hashing, AES-256-GCM at-rest secrets
 - Vue 3 dark-theme SPA + Rust+Tokio agent (cross-platform glibc binary)
+
+---
 
 ## Quick install (Ubuntu / Debian)
 
 ```bash
-# Recommended: one-command installer (Node 22 + Nginx + Certbot + Rust agent)
+# One-command installer (Node 22 + Nginx + Certbot + Rust agent)
 curl -fsSL https://proxybox.pro/install-panel.sh | sudo bash
 
-# Or clone + run installer manually
+# Or clone + run the installer manually
 git clone https://github.com/proxyboxpro/proxybox-free.git
 cd proxybox-free
 sudo ./install.sh
 ```
 
-Published by [Onie Cloud](https://onie.net) · live demo: [proxybox.pro](https://proxybox.pro)
+The installer prompts for:
 
-Installer hỏi:
-1. **Domain** — hostname panel (vd `proxy.example.com`). Bỏ trống → dùng IP server.
-2. **SSL mode** — Let's Encrypt (khuyến nghị) / Self-signed / HTTP only.
-3. **Admin email + password** — mặc định `admin@admin.com` / `admin`.
+1. **Domain** — panel hostname (e.g. `proxy.example.com`). Leave blank → bind to the server's public IP.
+2. **SSL mode** — Let's Encrypt (recommended) / Self-signed / HTTP only.
+3. **Admin email + password** — defaults to `admin@admin.com` / `admin`.
 
-Sau ~3-5 phút (build SPA + Rust agent), truy cập `https://your-domain` → login → **đổi password ngay**.
+After ~3-5 minutes (SPA + Rust agent build), open `https://your-domain` → sign in → **rotate the admin password immediately**.
 
 ### Non-interactive
 
@@ -43,34 +46,34 @@ sudo ./install.sh \
   --yes
 ```
 
-### Tất cả flag
+### Installer flags
 
-| Flag | Mô tả |
+| Flag | Description |
 |---|---|
-| `--domain DOMAIN` | Hostname panel |
+| `--domain DOMAIN` | Panel hostname |
 | `--ssl auto\|letsencrypt\|selfsigned\|none` | SSL mode (default `auto` = prompt) |
-| `--admin-email EMAIL` | Email admin (default `admin@admin.com`) |
-| `--admin-pass PASS` | Mật khẩu admin (default `admin`) |
-| `--install-dir PATH` | Thư mục cài (default `/opt/proxyhub-free`) |
-| `--source-dir PATH` | Copy source từ local dir thay vì git clone |
-| `--git-repo URL` | Repo Git để clone |
-| `--skip-rust` | Bỏ build Rust agent (Node fallback vẫn chạy) |
-| `--force-reseed` | Ghi đè config.json + admin user (DESTRUCTIVE) |
+| `--admin-email EMAIL` | Admin email (default `admin@admin.com`) |
+| `--admin-pass PASS` | Admin password (default `admin`) |
+| `--install-dir PATH` | Install directory (default `/opt/proxyhub-free`) |
+| `--source-dir PATH` | Copy source from a local directory instead of `git clone` |
+| `--git-repo URL` | Git repo to clone from |
+| `--skip-rust` | Skip the Rust agent build (Node fallback still works) |
+| `--force-reseed` | Overwrite `config.json` + admin user (DESTRUCTIVE) |
 | `--yes`, `-y` | Non-interactive, accept defaults |
 
-## Yêu cầu
+## Requirements
 
-| | Tối thiểu | Khuyến nghị |
+|  | Minimum | Recommended |
 |---|---|---|
 | OS | Ubuntu 22.04 / Debian 12 | Ubuntu 24.04 |
 | RAM | 1 GB | 2 GB+ |
 | Disk | 10 GB | 20 GB SSD |
-| Network | IPv4 public | IPv4 + IPv6 (/48 routed) |
-| Ports | 80, 443, 8788 (mTLS) | + 20000-29999 nếu phục vụ proxy local |
+| Network | Public IPv4 | IPv4 + IPv6 (/48 routed) |
+| Ports | 80, 443, 8788 (mTLS) | + 20000-29999 if serving local proxies |
 
-Installer tự cài: Node.js 22, nginx, certbot (nếu chọn LE), rustup (nếu cần Rust agent), git, jq, openssl.
+The installer auto-installs: Node.js 22, nginx, certbot (when LE is chosen), rustup (when the Rust agent is built), git, jq, openssl.
 
-## Cấu trúc
+## Layout
 
 ```
 /opt/proxyhub-free/
@@ -88,68 +91,90 @@ Installer tự cài: Node.js 22, nginx, certbot (nếu chọn LE), rustup (nếu
   scripts/seed-config.mjs      first-install seeder
 ```
 
-## Sau khi cài
+## After install
 
-### Login lần đầu
-1. `https://your-domain` → login mặc định.
-2. **Settings → Security** → đổi password admin + bật 2FA.
-3. **Admin → Zones** → thêm zone.
-4. **Admin → Pricing** → set giá IPv4/IPv6.
-5. **Admin → Features** → tắt registration nếu chỉ team nội bộ.
+### First login
+1. Open `https://your-domain` → sign in with the installer credentials.
+2. **Settings → Security** — rotate the admin password and enable 2FA.
+3. **Admin → Zones** — add zones.
+4. **Admin → Pricing** — set IPv4 / IPv6 prices.
+5. **Admin → Features** — disable registration if it's an internal-only panel.
 
-### Customer add agent của họ (BYON)
+### Customer agent enrolment (BYON)
 
-Customer login → `/my-nodes` → copy lệnh:
+Each customer signs in → `/my-nodes` → copy the install command:
+
 ```bash
 curl -fsSL https://YOUR-DOMAIN/api/agent/claim/<usr-token> | sudo bash -s v4
 ```
-URL trong lệnh **tự động** là domain của panel của bạn (đọc từ `config.api.publicUrl`) → agent của customer chỉ enroll về panel của bạn, không lung tung.
+
+The URL in that command is **always** your own panel's domain (read from `config.api.publicUrl`) — customer agents only ever enrol back into your panel, never anyone else's.
 
 ### Add hub VPS (Virtualizor)
-1. Admin → **Hubs → Virtualizor instances** → thêm panel (URL, adminapikey, adminapipass).
-2. Tab **Hub plans → New plan** → chọn instance → dropdown auto-list servers / plans / OS / IP pools từ panel.
-3. Customer `/buy?source=hub` → master gọi `addvs` → SSH bootstrap install agent → node tự enroll + adopt placeholder.
+
+1. Admin → **Hubs → Virtualizor instances** — add a panel (URL, adminapikey, adminapipass).
+2. Tab **Hub plans → New plan** — pick the instance → dropdowns auto-list servers / plans / OS / IP pools from the panel.
+3. Customer goes to `/buy?source=hub` → master calls `addvs` → SSH bootstrap installs the agent → node enrols and adopts the placeholder.
 
 ### One-click upgrade
 
-Khi có version mới (`git pull` available trên repo):
-- Admin → **Settings → System** → click **Nâng cấp lên phiên bản mới**.
-- Server tự `git pull` + `npm install` + `npm run build` + `systemctl restart proxyhub`.
-- Customer proxy traffic KHÔNG bị ảnh hưởng (TCP listener giữ nguyên). Admin panel mất kết nối ~30s.
+When a new version lands on the GitHub repo:
 
-## Quản trị
+- Admin → **Settings → System** → click **Upgrade to the latest version**.
+- The server runs `git pull` + `npm install` + `npm run build` + `systemctl restart proxybox`.
+- Customer proxy traffic is **not** interrupted (the TCP listeners are kept). The admin panel disconnects for ~30s.
+
+## Operations
 
 ```bash
 # Service control
-sudo systemctl status proxyhub
-sudo systemctl restart proxyhub
-sudo journalctl -u proxyhub -f
+sudo systemctl status proxybox
+sudo systemctl restart proxybox
+sudo journalctl -u proxybox -f
 
-# Manual update SPA
+# Manual update of SPA + server
 cd /opt/proxyhub-free
 sudo -u proxyhub git pull && sudo -u proxyhub npm install && sudo -u proxyhub npm run build
-sudo systemctl restart proxyhub
+sudo systemctl restart proxybox
 
-# Re-seed admin (mất hết user/proxy data!)
+# Re-seed admin (DESTRUCTIVE — wipes users + proxies)
 sudo /opt/proxyhub-free/install.sh --force-reseed --domain your-domain --yes
 
 # Backup
-sudo tar czf proxyhub-backup-$(date +%F).tgz \
+sudo tar czf proxybox-backup-$(date +%F).tgz \
   /opt/proxyhub-free/server/{config.json,master.key,orders.json,data.db,pki}
 ```
 
 ## Security checklist
 
-- [ ] Đổi mật khẩu admin mặc định (`admin` → strong password) ngay sau cài.
-- [ ] Bật 2FA (TOTP) cho admin account: **Settings → Security**.
-- [ ] `config.api.adminIpWhitelist[]` nếu admin chỉ login từ IP cố định.
-- [ ] Backup `server/master.key` offsite — mất file = mất hết secrets encrypted.
-- [ ] Firewall: chỉ mở 80 / 443 / 8788 ra internet. Port 8787 (master HTTP) chỉ localhost — nginx forward.
+- [ ] Rotate the default admin password (`admin` → strong password) right after install.
+- [ ] Enable 2FA (TOTP) on the admin account at **Settings → Security**.
+- [ ] Populate `config.api.adminIpWhitelist[]` if admin only signs in from fixed IPs.
+- [ ] Back up `server/master.key` off-site — losing it means every encrypted secret is unrecoverable.
+- [ ] Firewall — only open 80 / 443 / 8788 to the internet. Port 8787 (master HTTP) binds to localhost; nginx terminates TLS and forwards.
 
 ## License
 
-MIT — xem [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
-## Liên kết
-- Issues: https://github.com/&lt;owner&gt;/proxyhub-free/issues
-- Docs đầy đủ: [`docs/install.md`](docs/install.md)
+## Links
+
+- Live demo: https://proxybox.pro
+- Pricing: https://proxybox.pro/pricing
+- API docs: https://proxybox.pro/api-docs
+- FAQ: https://proxybox.pro/faq
+- Changelog: https://proxybox.pro/changelog
+- Issues: https://github.com/proxyboxpro/proxybox-free/issues
+- Full install guide: [`docs/install.md`](docs/install.md)
+
+---
+
+## Tiếng Việt — tóm tắt
+
+ProxyBox là panel proxy SaaS mã nguồn mở để bạn tự host trên VPS riêng. Cài bằng 1 lệnh, customer của BẠN enroll agent thẳng về panel của BẠN — không bao giờ data lọt sang server bên thứ 3.
+
+```bash
+curl -fsSL https://proxybox.pro/install-panel.sh | sudo bash
+```
+
+Sau khi cài: mở `https://domain-cua-ban` → login → đổi password admin → vào **Admin → Pricing / Zones** để cấu hình. Đầy đủ docs tiếng Việt + tiếng Anh tại https://proxybox.pro/faq (toggle EN/VI ở góc trên).
