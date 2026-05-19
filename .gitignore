@@ -1,0 +1,53 @@
+# ── Build artifacts ──────────────────────────────────────────
+node_modules/
+dist/
+rust-core/target/
+.cargo-lock
+*.rlib
+
+# ── Live runtime state (NEVER push to GitHub) ────────────────
+server/config.json
+server/config.json.bak*
+server/orders.json
+server/orders.json.bak*
+server/master.key
+server/master.key.bak*
+server/data.db
+server/data.db-journal
+server/data.db-wal
+server/data.db-shm
+server/state.db
+server/state.db-journal
+server/state.db-wal
+server/state.db-shm
+server/audit.log
+server/audit.log.*
+server/pki/
+server/pki.bak/
+server/pki.dev.bak/
+server/proxy-tls.cert.pem
+server/proxy-tls.key.pem
+server/*.tmp
+
+# ── Logs + caches ────────────────────────────────────────────
+*.log
+npm-debug.log*
+.DS_Store
+.vscode/
+.idea/
+
+# ── Local agent installs / temp ──────────────────────────────
+/tmp/proxybox-*
+.env
+.env.local
+.env.*.local
+
+# ── Editor / OS junk ─────────────────────────────────────────
+*.swp
+*~
+Thumbs.db
+
+# ── Internal-only (don't leak operator notes) ────────────────
+.claude/
+CLAUDE.md
+.claude-flow/

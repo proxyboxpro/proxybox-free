@@ -1,0 +1,27 @@
+User-agent: *
+Allow: /
+Allow: /faq
+Allow: /api-docs
+Allow: /pricing
+Allow: /changelog
+Allow: /status
+Allow: /login
+Allow: /register
+
+Disallow: /admin/
+Disallow: /api/
+Disallow: /customer/
+Disallow: /dashboard
+Disallow: /proxies
+Disallow: /orders
+Disallow: /billing
+Disallow: /usage
+Disallow: /account
+Disallow: /tools
+Disallow: /my-nodes
+Disallow: /connections
+Disallow: /affiliate
+Disallow: /reset-password
+Disallow: /verify-email
+
+Sitemap: https://proxybox.pro/sitemap.xml

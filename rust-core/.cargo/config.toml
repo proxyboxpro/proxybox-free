@@ -1,0 +1,13 @@
+# Force true-static + non-PIE for the musl target. The default rust-musl build
+# emits a static-PIE binary that lists `/lib/ld-musl-x86_64.so.1` as its ELF
+# interpreter; on some hosts (Ubuntu Jammy with musl 1.2.2) the kernel-side
+# loader misbehaves and the process SIGSEGVs at startup before any user code
+# runs. Pinning relocation-model=static produces a plain ET_EXEC that the kernel
+# loads directly with no interpreter, sidestepping the bug.
+[target.x86_64-unknown-linux-musl]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=yes",
+    "-C", "relocation-model=static",
+    "-C", "link-arg=-no-pie",
+]
