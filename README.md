@@ -14,10 +14,16 @@ Open-source proxy SaaS control plane. Self-host trên VPS riêng để bán prox
 ## Quick install (Ubuntu / Debian)
 
 ```bash
-git clone https://github.com/<owner>/proxyhub-free.git
-cd proxyhub-free
+# Recommended: one-command installer (Node 22 + Nginx + Certbot + Rust agent)
+curl -fsSL https://proxybox.pro/install-panel.sh | sudo bash
+
+# Or clone + run installer manually
+git clone https://github.com/proxyboxpro/proxybox-free.git
+cd proxybox-free
 sudo ./install.sh
 ```
+
+Published by [Onie Cloud](https://onie.net) · live demo: [proxybox.pro](https://proxybox.pro)
 
 Installer hỏi:
 1. **Domain** — hostname panel (vd `proxy.example.com`). Bỏ trống → dùng IP server.
