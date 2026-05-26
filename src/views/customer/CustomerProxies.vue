@@ -314,6 +314,36 @@ async function copyRotateUrl(p, ev) {
   } catch { /* noop */ }
 }
 
+// IPv6 groups only. Collects every proxy's rotateUrl in the group and
+// either copies the joined list to the clipboard or downloads it as a
+// .txt file the customer can feed straight into a scraper. Skips
+// proxies without a rotateUrl (e.g. IPv4 or expired) so the output is
+// pure "one rotation trigger per line".
+function groupRotateUrls(g) {
+  if (g.type !== 'IPv6') return []
+  return g.proxies.filter((p) => p.rotateUrl).map((p) => p.rotateUrl)
+}
+async function copyGroupRotateUrls(g) {
+  const urls = groupRotateUrls(g)
+  if (urls.length === 0) { flash.value = t('cust.proxies.noRotateUrls') || 'no rotate URLs in this group'; return }
+  try {
+    await navigator.clipboard.writeText(urls.join('\n'))
+    flash.value = (t('cust.proxies.rotateUrlsCopied') || 'Copied {n} rotate URLs').replace('{n}', urls.length)
+    setTimeout(() => { flash.value = '' }, 3500)
+  } catch { /* noop */ }
+}
+function downloadGroupRotateUrls(g) {
+  const urls = groupRotateUrls(g)
+  if (urls.length === 0) return
+  const blob = new Blob([urls.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `rotate-urls-${g.orderId || g.id || 'group'}.txt`
+  document.body.appendChild(a); a.click(); a.remove()
+  URL.revokeObjectURL(url)
+}
+
 // QR cache so each proxy×mode renders only once per session.
 const qrCache = reactive({})
 async function qrFor(url, size = 140) {
@@ -1315,6 +1345,19 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
           <option :value="3600">1h</option>
           <option :value="7200">2h</option>
         </select>
+      </button>
+      <!-- IPv6 only: bulk copy + download of the magic rotate URLs for
+           this group. Hidden for IPv4 (v4 proxies don't expose a rotate
+           URL — egress IP is fixed). -->
+      <button v-if="g.type === 'IPv6'" class="action-pill" type="button"
+              :title="t('cust.proxies.copyRotateUrlsHint') || 'Copy tất cả URL đổi IP cho nhóm này'"
+              @click="copyGroupRotateUrls(g)">
+        <Copy :size="12" /> {{ t('cust.proxies.copyRotateUrls') || 'Copy URL đổi IP' }}
+      </button>
+      <button v-if="g.type === 'IPv6'" class="action-pill" type="button"
+              :title="t('cust.proxies.downloadRotateUrlsHint') || 'Tải file .txt chứa tất cả URL đổi IP'"
+              @click="downloadGroupRotateUrls(g)">
+        <Download :size="12" /> {{ t('cust.proxies.downloadRotateUrls') || 'Tải URL đổi IP (.txt)' }}
       </button>
       <button class="action-pill" type="button" :class="{ primary: g.proxies.every((p) => p.autoRenew) }" @click="toggleAutoRenew(g)">
         <RotateCw :size="12" /> {{ g.proxies.every((p) => p.autoRenew) ? t('cust.proxies.autoRenewOn2') : t('cust.proxies.autoRenewToggle') }}
