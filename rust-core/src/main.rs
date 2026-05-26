@@ -526,25 +526,37 @@ fn prefix6(a: &if_addrs::Interface) -> u8 {
 fn is_link_local_v6(ip: &Ipv6Addr) -> bool { (ip.segments()[0] & 0xffc0) == 0xfe80 }
 fn is_ula_v6(ip: &Ipv6Addr) -> bool { (ip.segments()[0] & 0xfe00) == 0xfc00 }
 
-// Attach an IPv6 address to the egress interface so we can source from it.
-// Requires CAP_NET_ADMIN (systemd unit runs as root). No-op if already present.
-// Picks whichever interface already holds a global v6 address — that's our
-// egress NIC. Errors are logged but non-fatal; bind() below will surface the
-// real problem if the address isn't reachable.
-fn ensure_v6_on_iface(ip: IpAddr) {
-    let v6 = match ip { IpAddr::V6(x) => x, _ => return };
-    let mut iface: Option<String> = None;
+// Cache the egress interface name. We detect it once (first global-scope v6
+// address holder) and reuse — the NIC name doesn't change across the
+// agent's lifetime, and getifaddrs is expensive at high /128 counts.
+static EGRESS_IFACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn egress_iface() -> Option<String> {
+    {
+        let g = EGRESS_IFACE.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = g.as_ref() { return Some(n.clone()); }
+    }
+    let mut found: Option<String> = None;
     if let Ok(addrs) = if_addrs::get_if_addrs() {
         for a in &addrs {
             if let IpAddr::V6(x) = a.ip() {
-                if x == v6 { return; } // already there, nothing to do
-                if !x.is_loopback() && !is_link_local_v6(&x) && !is_ula_v6(&x) && iface.is_none() {
-                    iface = Some(a.name.clone());
-                }
+                if !x.is_loopback() && !is_link_local_v6(&x) && !is_ula_v6(&x) { found = Some(a.name.clone()); break; }
             }
         }
     }
-    let Some(name) = iface else { return };
+    if let Some(ref n) = found {
+        let mut g = EGRESS_IFACE.lock().unwrap_or_else(|p| p.into_inner());
+        *g = Some(n.clone());
+    }
+    found
+}
+
+// Attach an IPv6 address to the egress interface so we can source from it.
+// Requires CAP_NET_ADMIN (systemd unit runs as root). No-op if already present.
+// Uses cached iface name — no getifaddrs scan on the hot path.
+fn ensure_v6_on_iface(ip: IpAddr) {
+    let v6 = match ip { IpAddr::V6(x) => x, _ => return };
+    let Some(name) = egress_iface() else { return };
     let target = format!("{}/128", v6);
     match std::process::Command::new("ip")
         .args(["-6", "addr", "add", &target, "dev", &name])
@@ -556,6 +568,106 @@ fn ensure_v6_on_iface(ip: IpAddr) {
             if !stderr.contains("File exists") { eprintln!("[net] add {target}: {}", stderr.trim()); }
         }
         Err(e) => eprintln!("[net] add {target}: spawn failed: {e}"),
+    }
+}
+
+// ── v6 attach/cleanup tracking ──────────────────────────────────────────────
+// Per-proxy "last attached bind IP" so we can remove the old /128 from the
+// interface when master rotates the proxy to a new IP. Without this the
+// interface accumulates stale /128 addresses forever — each one slows down
+// `if_addrs::get_if_addrs()` (netlink dump), and at thousands of stale
+// entries a single connection's bind path can take >20 s and saturate CPU
+// on tokio workers in `recvmsg`.
+static LAST_BIND_PER_PROXY: std::sync::Mutex<Option<HashMap<String, Ipv6Addr>>> =
+    std::sync::Mutex::new(None);
+
+fn remember_v6_for_proxy(proxy_id: &str, new_v6: Ipv6Addr) -> Option<Ipv6Addr> {
+    let mut g = LAST_BIND_PER_PROXY.lock().unwrap_or_else(|p| p.into_inner());
+    if g.is_none() { *g = Some(HashMap::new()); }
+    let map = g.as_mut().unwrap();
+    let prev = map.insert(proxy_id.to_string(), new_v6);
+    match prev {
+        Some(old) if old != new_v6 => Some(old),
+        _ => None,
+    }
+}
+
+// Short-TTL cache of the v6 egress pool (Vec<Ipv6Addr>). `connect_upstream`
+// for rotating proxies asks for this on every connection — without the
+// cache, each call does a fresh netlink getifaddrs dump (O(N) on number of
+// /128 addresses on the NIC), which becomes the dominant cost at scale.
+struct V6PoolCache { pool: Vec<Ipv6Addr>, expires: std::time::Instant }
+static V6_POOL_CACHE: std::sync::Mutex<Option<V6PoolCache>> = std::sync::Mutex::new(None);
+const V6_POOL_TTL: Duration = Duration::from_secs(5);
+
+fn cached_v6_pool() -> Vec<Ipv6Addr> {
+    {
+        let g = V6_POOL_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(c) = g.as_ref() {
+            if c.expires > std::time::Instant::now() { return c.pool.clone(); }
+        }
+    }
+    let mut pool: Vec<Ipv6Addr> = Vec::new();
+    if let Ok(addrs) = if_addrs::get_if_addrs() {
+        for a in addrs {
+            if a.is_loopback() { continue; }
+            if let IpAddr::V6(v6) = a.ip() {
+                if !is_link_local_v6(&v6) && !is_ula_v6(&v6) { pool.push(v6); }
+            }
+        }
+    }
+    let mut g = V6_POOL_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    *g = Some(V6PoolCache { pool: pool.clone(), expires: std::time::Instant::now() + V6_POOL_TTL });
+    pool
+}
+
+fn invalidate_v6_pool_cache() {
+    let mut g = V6_POOL_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    *g = None;
+}
+
+// Attach the new IPv6 for a given proxy. Updates the per-proxy "last bind"
+// map; the old IP (if any) is cleaned up by the periodic reaper task rather
+// than scheduled inline — at high proxy counts inline scheduling produces
+// a thundering herd of `ip addr del` spawns that crushes the host. The
+// reaper batches deletions and respects the active set, so an IP that
+// rotated away but is reused by another proxy stays safe.
+async fn attach_v6_for_proxy(proxy_id: &str, ip: IpAddr) {
+    let v6 = match ip { IpAddr::V6(x) => x, _ => return };
+    remember_v6_for_proxy(proxy_id, v6);
+    tokio::task::spawn_blocking(move || { ensure_v6_on_iface(IpAddr::V6(v6)); invalidate_v6_pool_cache(); }).await.ok();
+}
+
+// Periodic reaper — every 60 s, compare the v6 addresses on the egress NIC
+// against the set actually in use by live proxies (the union of
+// LAST_BIND_PER_PROXY values) and delete anything else. Throttled so a
+// large backlog doesn't crush the host. Skips link-local, ULA, loopback,
+// and the canonical SLAAC-/cloud-provider-assigned addresses (those have
+// finite preferred_lft; we only touch our "/128 forever" entries).
+fn reap_stale_v6(active: std::collections::HashSet<Ipv6Addr>, max_per_cycle: usize) {
+    let Ok(addrs) = if_addrs::get_if_addrs() else { return };
+    let mut iface: Option<String> = None;
+    let mut on_iface: Vec<Ipv6Addr> = Vec::new();
+    for a in &addrs {
+        if let IpAddr::V6(v6) = a.ip() {
+            if v6.is_loopback() || is_link_local_v6(&v6) || is_ula_v6(&v6) { continue; }
+            if iface.is_none() { iface = Some(a.name.clone()); }
+            on_iface.push(v6);
+        }
+    }
+    let Some(name) = iface else { return };
+    // Keep at least one — protect against accidentally dropping the last v6.
+    if on_iface.len() <= 1 { return; }
+    let mut stale: Vec<Ipv6Addr> = on_iface.into_iter().filter(|v| !active.contains(v)).collect();
+    if stale.is_empty() { return; }
+    let total = stale.len();
+    if stale.len() > max_per_cycle { stale.truncate(max_per_cycle); }
+    eprintln!("[v6-reaper] reaping {}/{} stale /128 (active={})", stale.len(), total, active.len());
+    for v6 in stale {
+        let target = format!("{}/128", v6);
+        let _ = std::process::Command::new("ip")
+            .args(["-6", "addr", "del", &target, "dev", &name])
+            .output();
     }
 }
 
@@ -620,15 +732,18 @@ fn match_family(ip: &IpAddr, want_v6: bool) -> bool {
 async fn connect_upstream(proxy: &ProxyCfg, host: &str, port: u16, allow_private: bool) -> Result<TcpStream, String> {
     let family_v6 = proxy.kind.eq_ignore_ascii_case("IPv6");
     let target = resolve_target(host, port, family_v6, allow_private).await?;
-    // IPv6 rotating proxies pick a random local IPv6 every connection.
+    // IPv6 rotating proxies pick a random local IPv6 every connection. The
+    // pool is cached (5 s TTL) so we avoid a netlink getifaddrs dump per
+    // connection — at thousands of /128 on the NIC, that dump was the
+    // primary CPU sink in tokio workers (recvmsg in flamegraph).
     let bind_ip: Option<IpAddr> = if proxy.rotate && family_v6 {
-        let pool = detect_network().ipv6;
+        let pool = tokio::task::spawn_blocking(cached_v6_pool).await.unwrap_or_default();
         if pool.is_empty() {
             proxy.bind_ip.parse().ok()
         } else {
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default().as_nanos() as usize;
-            pool[nanos % pool.len()].address.parse().ok()
+            Some(IpAddr::V6(pool[nanos % pool.len()]))
         }
     } else {
         proxy.bind_ip.parse().ok()
@@ -645,9 +760,11 @@ async fn connect_upstream(proxy: &ProxyCfg, host: &str, port: u16, allow_private
     let _ = socket.set_send_buffer_size(4 * 1024 * 1024);
     if let Some(ip) = bind_ip {
         if match_family(&ip, target.is_ipv6()) {
-            // Make sure the address exists on our egress NIC before sourcing
-            // from it (master may have rotated to a new IP within our /48).
-            if ip.is_ipv6() { ensure_v6_on_iface(ip); }
+            // No per-connection getifaddrs scan here: the bind IP either came
+            // from `cached_v6_pool` (already on the NIC) or from the proxy's
+            // `cfg.bind_ip` which was attached at startup via
+            // `attach_v6_for_proxy`. bind() below will surface any actual
+            // routing issue.
             socket.bind(SocketAddr::new(ip, 0)).map_err(|e| format!("bind {ip}: {e}"))?;
         }
     }
@@ -1162,7 +1279,7 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
     // egress IP changes.
     if cfg.kind.eq_ignore_ascii_case("IPv6") {
         if let Ok(bind) = cfg.bind_ip.parse::<IpAddr>() {
-            ensure_v6_on_iface(bind);
+            attach_v6_for_proxy(&cfg.id, bind).await;
         }
     }
     // SO_REUSEPORT lets the kernel load-balance accept() across N listener sockets.
@@ -1395,7 +1512,7 @@ async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyL
     let addr = SocketAddr::new(host, cfg.tls_port);
     // For IPv6 proxies the bindIp may need attaching first (same as plain port).
     if cfg.kind.eq_ignore_ascii_case("IPv6") {
-        if let Ok(bind) = cfg.bind_ip.parse::<IpAddr>() { ensure_v6_on_iface(bind); }
+        if let Ok(bind) = cfg.bind_ip.parse::<IpAddr>() { attach_v6_for_proxy(&cfg.id, bind).await; }
     }
     let sock = match if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() } {
         Ok(s) => s,
@@ -2342,6 +2459,38 @@ async fn async_main() {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
         loop { ticker.tick().await; if let Err(e) = a2.heartbeat().await { eprintln!("[agent] heartbeat: {e}"); } }
+    });
+
+    // v6 reaper — every 60 s, remove any /128 on the egress NIC that isn't
+    // claimed by an active proxy's current bind IP. Caps the interface to
+    // (#proxies + recently-rotated-in-grace) v6 addresses so getifaddrs
+    // dumps stay cheap. Without this the rotation primitive accumulates
+    // stale /128 forever and CPU/load explode on master push storms.
+    let a4 = agent.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            // Active set = union of (a) live listeners' cfg.bind_ip and
+            // (b) recently-tracked LAST_BIND_PER_PROXY values, so an IP
+            // that is mid-grace-period stays protected.
+            let mut active: std::collections::HashSet<Ipv6Addr> = std::collections::HashSet::new();
+            {
+                let lst = a4.listeners.lock().await;
+                for h in lst.values() {
+                    if h.cfg.kind.eq_ignore_ascii_case("IPv6") {
+                        if let Ok(v6) = h.cfg.bind_ip.parse::<Ipv6Addr>() { active.insert(v6); }
+                    }
+                }
+            }
+            {
+                let g = LAST_BIND_PER_PROXY.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(m) = g.as_ref() { for v in m.values() { active.insert(*v); } }
+            }
+            if active.is_empty() { continue; } // never reap when we don't know what's active
+            tokio::task::spawn_blocking(move || { reap_stale_v6(active, 3000); invalidate_v6_pool_cache(); }).await.ok();
+        }
     });
 
     // Mbps sampler — every 5s, snapshot total bytes per proxy and store delta/period

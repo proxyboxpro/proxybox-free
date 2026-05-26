@@ -557,8 +557,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxyhub-core"
-version = "0.1.0"
+name = "proxybox-core"
+version = "1.2.1"
 dependencies = [
  "hex",
  "if-addrs",
