@@ -58,7 +58,16 @@ struct AgentConfig {
     family: String,
     #[serde(rename = "proxyDefaults")]
     proxy_defaults: ProxyDefaults,
+    // Unified listener — single accept port for all proxies, routes by
+    // username from Proxy-Authorization. Scales to 100k+ proxies/node
+    // because TCP port space (16-bit) no longer bounds proxy count. 0 =
+    // disabled (legacy per-proxy listeners only).
+    #[serde(rename = "unifiedPlainPort", default = "default_unified_plain")]
+    unified_plain_port: u16,
+    #[serde(rename = "unifiedTlsPort", default)]
+    unified_tls_port: u16,
 }
+fn default_unified_plain() -> u16 { 7777 }
 fn default_family() -> String { "dual".into() }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -376,6 +385,11 @@ fn add_traffic(s: &Arc<ProxyStats>, up: u64, dn: u64) {
     s.month_bytes.fetch_add(up + dn, Ordering::Relaxed);
 }
 
+// Snapshot kept in sync with `listeners` so the unified handler can resolve
+// (username → ProxyCfg + stats) in O(1) without grabbing the tokio mutex on
+// the hot connection-accept path.
+type UserIndex = std::sync::RwLock<HashMap<String, (Arc<ProxyCfg>, Arc<ProxyStats>)>>;
+
 struct Agent {
     cfg: Mutex<AgentConfig>,
     cfg_path: PathBuf,
@@ -384,6 +398,7 @@ struct Agent {
     listeners: Mutex<HashMap<String, ProxyHandle>>,
     stats: Mutex<HashMap<String, Arc<ProxyStats>>>,
     tls_acceptor: Mutex<Option<TlsAcceptor>>,
+    user_index: Arc<UserIndex>,
     // Last config revision seen — sent to master as ?rev=N so the master
     // long-polls if nothing changed since.
     last_rev: std::sync::atomic::AtomicU64,
@@ -1266,6 +1281,130 @@ async fn handle_client(proxy: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private:
         handle_http_proxy(&proxy, &locks, allow_private, src_ip, src_port, client, initial, &stats).await
     };
     if let Err(e) = result { let _ = e; /* keep quiet — client errors are routine */ }
+}
+
+// ──────────────────────────── unified listener ──────────────────────────────
+// Single accept port routing N proxies by username (parsed from
+// Proxy-Authorization). The scaling primitive that lets one node host
+// 100k+ proxies: no per-proxy port + listener + 8-FD set, just one
+// SO_REUSEPORT worker pool sharing the entire population.
+
+async fn read_http_until_headers(client: &mut TcpStream) -> Result<Vec<u8>, String> {
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    let mut tmp = [0u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if find_sub(&buf, b"\r\n\r\n").is_some() { return Ok(buf); }
+        if buf.len() > 65_536 { return Err("header too large".into()); }
+        let now = std::time::Instant::now();
+        if now >= deadline { return Err("header read timeout".into()); }
+        let rem = deadline - now;
+        let n = timeout(rem, client.read(&mut tmp)).await
+            .map_err(|_| "header read timeout".to_string())?
+            .map_err(|e| e.to_string())?;
+        if n == 0 { return Err("client closed before headers".into()); }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+}
+
+fn extract_proxy_user_pass(buf: &[u8]) -> Option<(String, String)> {
+    let head = std::str::from_utf8(buf).ok()?;
+    for line in head.split("\r\n") {
+        if line.is_empty() { break; }
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("proxy-authorization") {
+                return parse_basic(v);
+            }
+        }
+    }
+    None
+}
+
+async fn handle_unified_plain(
+    user_index: Arc<UserIndex>,
+    locks: Arc<ProxyLockMap>,
+    allow_private: bool,
+    mut client: TcpStream,
+) {
+    let _ = client.set_nodelay(true);
+    tune_socket(&client);
+    let peer = client.peer_addr().ok();
+    let src_ip: IpAddr = peer.map(|a| a.ip()).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let src_port: u16 = peer.map(|a| a.port()).unwrap_or(0);
+    let buf = match read_http_until_headers(&mut client).await {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let (user, _pass) = match extract_proxy_user_pass(&buf) {
+        Some(x) => x,
+        None => {
+            let _ = client.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"ProxyBox\"\r\nContent-Length: 0\r\n\r\n").await;
+            return;
+        }
+    };
+    let lookup = {
+        let g = user_index.read().unwrap_or_else(|p| p.into_inner());
+        g.get(&user).map(|v| (v.0.clone(), v.1.clone()))
+    };
+    let (cfg_arc, stats_arc) = match lookup {
+        Some(v) => v,
+        None => {
+            let _ = client.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"ProxyBox\"\r\nContent-Length: 0\r\nX-Proxy-Error: unknown user\r\n\r\n").await;
+            return;
+        }
+    };
+    if cfg_arc.max_connections > 0 && stats_arc.active_connections.load(Ordering::Relaxed) >= cfg_arc.max_connections {
+        return;
+    }
+    stats_arc.total_connections.fetch_add(1, Ordering::Relaxed);
+    stats_arc.active_connections.fetch_add(1, Ordering::Relaxed);
+    let _guard = ActiveGuard(stats_arc.clone());
+    let _ = handle_http_proxy(&cfg_arc, &locks, allow_private, src_ip, src_port, client, buf, &stats_arc).await;
+}
+
+async fn serve_unified_plain(
+    port: u16,
+    workers: usize,
+    user_index: Arc<UserIndex>,
+    locks: Arc<ProxyLockMap>,
+    allow_private: bool,
+) {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+    let mut listeners: Vec<TcpListener> = Vec::with_capacity(workers);
+    for i in 0..workers {
+        let sock = match TcpSocket::new_v4() {
+            Ok(s) => s,
+            Err(e) => { eprintln!("[unified] socket: {e}"); return; }
+        };
+        let _ = sock.set_reuseaddr(true);
+        #[cfg(unix)] let _ = sock.set_reuseport(true);
+        let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+        let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
+        if let Err(e) = sock.bind(addr) {
+            if i == 0 { eprintln!("[unified] bind {addr}: {e}"); return; }
+            break;
+        }
+        let lst = match sock.listen(4096) {
+            Ok(l) => l,
+            Err(e) => { eprintln!("[unified] listen {addr}: {e}"); return; }
+        };
+        listeners.push(lst);
+    }
+    eprintln!("[unified] {addr} ({} workers) — username routing", listeners.len());
+    for lst in listeners {
+        let ui = user_index.clone();
+        let lk = locks.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _peer) = match lst.accept().await { Ok(x) => x, Err(_) => continue };
+                let ui2 = ui.clone();
+                let lk2 = lk.clone();
+                tokio::spawn(async move {
+                    handle_unified_plain(ui2, lk2, allow_private, stream).await;
+                });
+            }
+        });
+    }
 }
 
 async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: bool, stop: Arc<Notify>, stats: Arc<ProxyStats>) {
@@ -2342,6 +2481,22 @@ impl Agent {
             }
             lst.insert(p.id.clone(), ProxyHandle { cfg: p, stop, task });
         }
+        // Rebuild the unified-listener user index from the current set of
+        // listeners + stats. Done under tokio mutex (which we already hold)
+        // so the snapshot is consistent.
+        let mut next: HashMap<String, (Arc<ProxyCfg>, Arc<ProxyStats>)> = HashMap::with_capacity(lst.len());
+        {
+            let sm = self.stats.lock().await;
+            for (id, h) in lst.iter() {
+                if h.cfg.username.is_empty() { continue; }
+                let stats = match sm.get(id) { Some(s) => s.clone(), None => continue };
+                next.insert(h.cfg.username.clone(), (Arc::new(h.cfg.clone()), stats));
+            }
+        }
+        {
+            let mut g = self.user_index.write().unwrap_or_else(|p| p.into_inner());
+            *g = next;
+        }
     }
 }
 
@@ -2437,6 +2592,7 @@ async fn async_main() {
         listeners: Mutex::new(HashMap::new()),
         stats: Mutex::new(HashMap::new()),
         tls_acceptor: Mutex::new(tls_acceptor),
+        user_index: Arc::new(std::sync::RwLock::new(HashMap::new())),
         last_rev: std::sync::atomic::AtomicU64::new(0),
         proxy_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pending_results: Mutex::new(Vec::new()),
@@ -2460,6 +2616,22 @@ async fn async_main() {
         let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
         loop { ticker.tick().await; if let Err(e) = a2.heartbeat().await { eprintln!("[agent] heartbeat: {e}"); } }
     });
+
+    // Unified listener — one accept port for ALL proxies, routed by username
+    // from Proxy-Authorization. Lets a single node host 100k+ proxies without
+    // exhausting the 16-bit TCP port space (per-proxy listeners stay up too
+    // for backwards compatibility — customers keep their old URLs working).
+    {
+        let cfg_snap = agent.cfg.lock().await.clone();
+        let port = cfg_snap.unified_plain_port;
+        if port > 0 {
+            let ui = agent.user_index.clone();
+            let lk = agent.proxy_locks.clone();
+            let allow_private = cfg_snap.proxy_defaults.allow_private_targets;
+            let workers = num_cpus_capped(64);
+            tokio::spawn(async move { serve_unified_plain(port, workers, ui, lk, allow_private).await; });
+        }
+    }
 
     // v6 reaper — every 60 s, remove any /128 on the egress NIC that isn't
     // claimed by an active proxy's current bind IP. Caps the interface to

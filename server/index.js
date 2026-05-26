@@ -732,6 +732,12 @@ async function loadConfig() {
   parsed.proxyDefaults.portStart = Number(parsed.proxyDefaults.portStart || 10000)
   parsed.proxyDefaults.expiresDays = Number(parsed.proxyDefaults.expiresDays || 30)
   parsed.proxyDefaults.allowPrivateTargets = Boolean(parsed.proxyDefaults.allowPrivateTargets)
+  // Unified listener — single accept port per agent that routes by username.
+  // Enabled by default with port 7777; admin can disable via config.
+  parsed.unifiedListener ||= {}
+  parsed.unifiedListener.enabled = parsed.unifiedListener.enabled !== false
+  parsed.unifiedListener.plainPort = Number(parsed.unifiedListener.plainPort || 7777)
+  parsed.unifiedListener.tlsPort = Number(parsed.unifiedListener.tlsPort || 0)
   parsed.users ||= []
   parsed.proxies ||= []
   parsed.nodes ||= []
@@ -9942,6 +9948,13 @@ function publicProxy(proxy) {
     ? `${controlBaseUrl()}/api/rotate/${proxy.rotateUrlToken}`
     : null
   const host = customerFacingHost(proxy)
+  // Unified listener endpoint (one port, all proxies, routed by username).
+  // When enabled, customers can use a single host:port for ALL their proxies
+  // — scales the engine to 100k+ proxies/node without exhausting TCP ports.
+  const unifiedCfg = config.unifiedListener || {}
+  const unifiedPort = Number(unifiedCfg.plainPort || 0)
+  const unifiedTlsPort = Number(unifiedCfg.tlsPort || 0)
+  const unifiedEnabled = unifiedCfg.enabled !== false && unifiedPort > 0
   // Connection URLs across protocols. Same credentials, same egress, different
   // listen port + protocol. See `style.md` / FAQ for client app per platform.
   const connectUrls = {
@@ -9950,6 +9963,12 @@ function publicProxy(proxy) {
     socks5h:     `socks5h://${proxy.username}:${proxy.password}@${host}:${proxy.port}`,
     httpsProxy:  `https://${proxy.username}:${proxy.password}@${host}:${proxy.tlsPort}`,
     trojan:      `trojan://${encodeURIComponent(proxy.password)}@${host}:${proxy.tlsPort}?security=tls&sni=${host}&peer=${host}&allowInsecure=1&type=tcp#${encodeURIComponent('ProxyBox-' + proxy.id)}`
+  }
+  if (unifiedEnabled) {
+    connectUrls.unifiedHttp = `http://${proxy.username}:${proxy.password}@${host}:${unifiedPort}`
+    if (unifiedTlsPort > 0) {
+      connectUrls.unifiedHttpsProxy = `https://${proxy.username}:${proxy.password}@${host}:${unifiedTlsPort}`
+    }
   }
   return {
     id: proxy.id,
@@ -9969,6 +9988,8 @@ function publicProxy(proxy) {
     bindIp: proxy.bindIp,  // egress (v6 for IPv6 proxies, v4 for IPv4 proxies)
     port: proxy.port,
     tlsPort: proxy.tlsPort,  // TLS-wrap port (HTTPS proxy + Trojan)
+    unifiedPort: unifiedEnabled ? unifiedPort : 0,
+    unifiedTlsPort: unifiedEnabled && unifiedTlsPort > 0 ? unifiedTlsPort : 0,
     connectUrls,
     protocol: proxy.protocol || 'HTTP/SOCKS5',
     region: proxy.region || 'AUTO',
@@ -11530,7 +11551,7 @@ async function serveStatic(req, res, url) {
     const ext = path.extname(filePath)
     const headers = { 'Content-Type': contentTypes[ext] || 'application/octet-stream' }
     if (ext === '.html' || filePath.endsWith('index.html')) {
-      // SECURITY: locked-down CSP for the dashboard SPA â€” no inline scripts, no
+      // SECURITY: locked-down CSP for the dashboard SPA — no inline scripts, no
       // remote scripts other than self, no third-party frames. The Vite-built
       // bundle is self-hosted under /assets/ so 'self' is enough.
       headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data:; connect-src 'self' https://api.stripe.com; frame-ancestors 'none'; base-uri 'self'"
@@ -11538,6 +11559,15 @@ async function serveStatic(req, res, url) {
       headers['X-Content-Type-Options'] = 'nosniff'
       headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
       headers['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains'
+      // HTML must never be cached so updated index.html (with fresh chunk hashes)
+      // reaches the client on the next navigation. Otherwise stale HTML can point
+      // at chunks that no longer exist → dynamic import 404 → blank SPA page.
+      headers['Cache-Control'] = 'no-store, must-revalidate'
+      headers['Pragma'] = 'no-cache'
+    } else if (url.pathname.startsWith('/assets/')) {
+      // Vite-hashed assets (chunks, css, fonts) are content-addressed — safe to
+      // cache forever. `immutable` tells browsers to skip revalidation entirely.
+      headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     }
     res.writeHead(200, headers)
     res.end(data)
