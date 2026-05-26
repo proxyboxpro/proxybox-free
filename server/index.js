@@ -4943,7 +4943,8 @@ async function createOrLinkUser({ email, name, oauthProvider, oauthSub, ip }) {
     }
     user.oauth[oauthProvider] = { sub: oauthSub, linkedAt: new Date().toISOString() }
     config.users.push(user)
-    const trial = Number(config.billing?.trialCredits || 50000)
+    // Nullish-coalesce so explicit 0 disables the trial — `0 || N` would not.
+    const trial = Number(config.billing?.trialCredits ?? 50000)
     if (trial > 0) recordBillingTx(user.id, 'trial', trial, `signup via ${oauthProvider}`)
     audit({ actor: lower, ip, method: 'POST', path: '/api/auth/oauth/' + oauthProvider, note: 'new user via oauth' })
   } else {
@@ -9813,8 +9814,10 @@ async function handleRegister(req, res) {
   }
   config.users.push(user)
   await saveConfig()
-  // Trial credits â€” configurable (config.billing.trialCredits, default 50_000 VND).
-  const trial = Number(config.billing?.trialCredits || 50000)
+  // Trial credits — configurable (config.billing.trialCredits). Use nullish
+  // coalescing so the admin can explicitly set 0 to disable; `0 || 50000`
+  // would have silently fallen back to the old default.
+  const trial = Number(config.billing?.trialCredits ?? 50000)
   if (trial > 0) recordBillingTx(user.id, 'trial', trial, 'signup trial credits')
   // Affiliate kickback â€” give referrer a configured bonus too.
   if (referrer) {
