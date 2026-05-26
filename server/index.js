@@ -894,6 +894,30 @@ function decryptSecret(blob) {
   } catch { return null }
 }
 
+// Transparent secret accessors. Stored values that start with `v1:` are
+// AES-256-GCM ciphertext (auth-tag-protected, IV-prefixed) — only the
+// process holding `server/master.key` (chmod 600) can decrypt. Legacy
+// values still in plaintext are returned as-is and are migrated to
+// ciphertext the next time an admin saves them. `readSecret` never
+// throws — it returns '' on missing / decrypt failure so the caller
+// can surface a clean error.
+function readSecret(stored) {
+  if (!stored || typeof stored !== 'string') return ''
+  if (stored.startsWith('v1:')) return decryptSecret(stored) || ''
+  return stored
+}
+function writeSecret(plaintext) {
+  if (plaintext === undefined || plaintext === null || plaintext === '') return ''
+  return encryptSecret(String(plaintext)) || ''
+}
+// Masked view for admin "view config" responses. Decrypts once, returns
+// "••••<last4>" without ever including the rest of the secret.
+function maskSecret(stored) {
+  const clear = readSecret(stored)
+  if (!clear) return ''
+  return '••••' + clear.slice(-4)
+}
+
 // â”€â”€ mTLS PKI (control plane is the CA; agents get client certs at enrollment) â”€
 async function ensurePki() {
   const dir = path.join(__dirname, 'pki')
@@ -2333,7 +2357,7 @@ function sendMail({ to, subject, html, text }) {
 
 function stripeApi(pathStr, formObj) {
   return new Promise((resolve, reject) => {
-    const key = config.billing?.stripeSecretKey
+    const key = readSecret(config.billing?.stripeSecretKey)
     if (!key) return reject(new Error('billing.stripeSecretKey not configured'))
     const body = new URLSearchParams(formObj).toString()
     const req = https.request({
@@ -2413,8 +2437,8 @@ function paypalApiHost() {
 async function paypalAccessToken() {
   const now = Date.now()
   if (_paypalTokenCache.value && _paypalTokenCache.expiresAt > now + 30_000) return _paypalTokenCache.value
-  const clientId = config.billing?.paypalClientId
-  const secret = config.billing?.paypalSecret
+  const clientId = readSecret(config.billing?.paypalClientId)
+  const secret = readSecret(config.billing?.paypalSecret)
   if (!clientId || !secret) throw new Error('paypalClientId / paypalSecret not configured')
   const basic = Buffer.from(`${clientId}:${secret}`).toString('base64')
   const body = 'grant_type=client_credentials'
@@ -5269,7 +5293,7 @@ async function handleApi(req, res, url) {
     // â”€â”€ Stripe webhook (public, signature-verified) â€” must read raw body BEFORE
     //    the auth gate. Stripe calls this on payment success â†' we credit wallet.
     if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
-      const secret = config.billing?.stripeWebhookSecret
+      const secret = readSecret(config.billing?.stripeWebhookSecret)
       if (!secret) { res.writeHead(503); return res.end('webhook secret not configured\n') }
       const raw = await readRawBody(req)
       try { verifyStripeSignature(raw.toString('utf8'), req.headers['stripe-signature'], secret) }
@@ -6208,12 +6232,12 @@ async function handleApi(req, res, url) {
           affiliateKickback: Number(config.billing.affiliateKickback) || 0,
           successUrl: config.billing.successUrl || '',
           cancelUrl: config.billing.cancelUrl || '',
-          stripeSecretKey: config.billing.stripeSecretKey ? 'â€¢â€¢â€¢â€¢' + String(config.billing.stripeSecretKey).slice(-4) : '',
-          stripeWebhookSecret: config.billing.stripeWebhookSecret ? 'â€¢â€¢â€¢â€¢' + String(config.billing.stripeWebhookSecret).slice(-4) : '',
+          stripeSecretKey: maskSecret(config.billing.stripeSecretKey),
+          stripeWebhookSecret: maskSecret(config.billing.stripeWebhookSecret),
           paypalEnabled: Boolean(config.billing.paypalEnabled),
           paypalMode: config.billing.paypalMode === 'live' ? 'live' : 'sandbox',
-          paypalClientId: config.billing.paypalClientId ? '••••' + String(config.billing.paypalClientId).slice(-4) : '',
-          paypalSecret: config.billing.paypalSecret ? '••••' + String(config.billing.paypalSecret).slice(-4) : '',
+          paypalClientId: maskSecret(config.billing.paypalClientId),
+          paypalSecret: maskSecret(config.billing.paypalSecret),
           paypalReturnUrl: config.billing.paypalReturnUrl || '',
           paypalCancelUrl: config.billing.paypalCancelUrl || '',
           paypalCurrency: config.billing.paypalCurrency || 'USD'
@@ -6228,20 +6252,25 @@ async function handleApi(req, res, url) {
         if (typeof body.successUrl === 'string') config.billing.successUrl = body.successUrl.trim().slice(0, 500)
         if (typeof body.cancelUrl === 'string') config.billing.cancelUrl = body.cancelUrl.trim().slice(0, 500)
         // Only update secrets when client sends a new non-redacted value
-        if (typeof body.stripeSecretKey === 'string' && body.stripeSecretKey && !body.stripeSecretKey.startsWith('â€¢â€¢â€¢â€¢')) {
-          config.billing.stripeSecretKey = body.stripeSecretKey.trim()
+        // Secrets are stored AES-256-GCM-encrypted on disk via writeSecret
+        // (master.key, chmod 600). On disk they look like `v1:iv:tag:ct`
+        // — even with a config.json leak the secret stays sealed without
+        // the master key. Skip writes when the client posts back the
+        // masked sentinel (••••…) so we don't overwrite the real value.
+        if (typeof body.stripeSecretKey === 'string' && body.stripeSecretKey && !body.stripeSecretKey.startsWith('••••')) {
+          config.billing.stripeSecretKey = writeSecret(body.stripeSecretKey.trim())
         }
-        if (typeof body.stripeWebhookSecret === 'string' && body.stripeWebhookSecret && !body.stripeWebhookSecret.startsWith('â€¢â€¢â€¢â€¢')) {
-          config.billing.stripeWebhookSecret = body.stripeWebhookSecret.trim()
+        if (typeof body.stripeWebhookSecret === 'string' && body.stripeWebhookSecret && !body.stripeWebhookSecret.startsWith('••••')) {
+          config.billing.stripeWebhookSecret = writeSecret(body.stripeWebhookSecret.trim())
         }
         // PayPal fields
         if (typeof body.paypalEnabled === 'boolean') config.billing.paypalEnabled = body.paypalEnabled
         if (body.paypalMode === 'live' || body.paypalMode === 'sandbox') config.billing.paypalMode = body.paypalMode
         if (typeof body.paypalClientId === 'string' && body.paypalClientId && !body.paypalClientId.startsWith('••••')) {
-          config.billing.paypalClientId = body.paypalClientId.trim()
+          config.billing.paypalClientId = writeSecret(body.paypalClientId.trim())
         }
         if (typeof body.paypalSecret === 'string' && body.paypalSecret && !body.paypalSecret.startsWith('••••')) {
-          config.billing.paypalSecret = body.paypalSecret.trim()
+          config.billing.paypalSecret = writeSecret(body.paypalSecret.trim())
         }
         if (typeof body.paypalReturnUrl === 'string') config.billing.paypalReturnUrl = body.paypalReturnUrl.trim().slice(0, 500)
         if (typeof body.paypalCancelUrl === 'string') config.billing.paypalCancelUrl = body.paypalCancelUrl.trim().slice(0, 500)
