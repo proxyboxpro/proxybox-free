@@ -1,4 +1,12 @@
 export default {
+  // ── SEO / document title ────────────────────────────────
+  // High-volume Vietnamese searches for this niche: "quản lý proxy",
+  // "phần mềm proxy", "panel proxy free", "proxy ipv6 ipv4". Keep title
+  // ≤ 70 chars so Google doesn't truncate.
+  'site.title':           'ProxyBox — Phần mềm quản lý proxy mã nguồn mở · IPv4 + IPv6 · Panel free',
+  'site.titleShort':      'ProxyBox — Quản lý proxy mã nguồn mở',
+  'site.tagline':         'Phần mềm mã nguồn mở quản lý proxy IPv4 + IPv6, dashboard free self-host trên VPS riêng',
+  'site.description':     'ProxyBox là phần mềm quản lý proxy mã nguồn mở (open-source) — dashboard self-host trên VPS riêng để quản lý, bán, hoặc tự dùng proxy IPv4 + IPv6. Rotation /48 entropy 80-bit, sticky session, SOCKS5, HTTP, HTTPS-proxy, Trojan. Hoàn toàn free, không giới hạn số proxy.',
   'app.store': 'Cửa hàng IPv4 & IPv6',
   'app.workspace': 'Không gian làm việc',
   'app.search': 'Tìm proxy, đơn hàng...',

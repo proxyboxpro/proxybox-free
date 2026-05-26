@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,30 +7,32 @@
     <link rel="apple-touch-icon" href="/favicon.svg" />
     <meta name="theme-color" content="#0a0e14" />
 
-    <title>ProxyBox — Open-source proxy SaaS · self-host IPv4 / IPv6 on your own VPS</title>
-    <meta name="description" content="ProxyBox is the open-source proxy SaaS control plane. One-command install on any VPS to resell IPv4 / IPv6 proxies, run BYON, spin up hub VPS via Virtualizor, with mTLS and wallet billing. No license. No proxy cap." />
-    <meta name="keywords" content="proxy panel, proxy reseller, self-host proxy, ipv6 proxy, ipv4 proxy, open source proxy, byon proxy, virtualizor proxy, rotating proxy, socks5 proxy, http proxy, trojan proxy, vietnam proxy, proxybox, box proxy" />
+    <title>ProxyBox — Phần mềm quản lý proxy mã nguồn mở · IPv4 + IPv6 · Panel free</title>
+    <meta name="description" content="ProxyBox là phần mềm quản lý proxy mã nguồn mở (open-source) — dashboard self-host trên VPS riêng để quản lý, bán, hoặc tự dùng proxy IPv4 + IPv6. Rotation /48 entropy 80-bit không trùng IP, sticky session, SOCKS5 + HTTP + HTTPS-proxy + Trojan. Hoàn toàn free, không giới hạn số proxy." />
+    <meta name="keywords" content="quản lý proxy, phần mềm quản lý proxy, panel proxy, dashboard proxy, mã nguồn mở proxy, open source proxy manager, proxy management panel, self-host proxy, proxy ipv4 ipv6, proxy panel free, free proxy dashboard, panel quản lý proxy free, proxy reseller, proxy admin tool, proxybox" />
     <meta name="author" content="ProxyBox" />
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
     <link rel="canonical" href="https://proxybox.pro/" />
 
+    <link rel="alternate" hreflang="vi" href="https://proxybox.pro/" />
+    <link rel="alternate" hreflang="en" href="https://proxybox.pro/" />
     <link rel="alternate" hreflang="x-default" href="https://proxybox.pro/" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ProxyBox" />
-    <meta property="og:title" content="ProxyBox — Open-source proxy SaaS · self-host IPv4 / IPv6" />
-    <meta property="og:description" content="Panel proxy SaaS mã nguồn mở. Cài 1 lệnh, tự host trên VPS của bạn. BYON · Hub Proxy · IPv6 /48 · mTLS · wallet billing — không license, không giới hạn." />
+    <meta property="og:title" content="ProxyBox — Phần mềm quản lý proxy mã nguồn mở · IPv4 + IPv6 · Panel free" />
+    <meta property="og:description" content="Phần mềm quản lý proxy mã nguồn mở — dashboard self-host quản lý proxy IPv4 + IPv6. Rotation /48 không trùng IP, sticky, SOCKS5, HTTP, HTTPS-proxy, Trojan. Free, không giới hạn proxy." />
     <meta property="og:url" content="https://proxybox.pro/" />
     <meta property="og:image" content="https://proxybox.pro/og-cover.svg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="ProxyBox — open-source proxy SaaS for self-hosting" />
-    <meta property="og:locale" content="en_US" />
-    <meta property="og:locale:alternate" content="vi_VN" />
+    <meta property="og:image:alt" content="ProxyBox — proxy IPv6 / IPv4 cao cấp" />
+    <meta property="og:locale" content="vi_VN" />
+    <meta property="og:locale:alternate" content="en_US" />
 
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="ProxyBox — Open-source proxy SaaS" />
-    <meta name="twitter:description" content="Cài 1 lệnh, self-host IPv4 / IPv6 proxy panel trên VPS của bạn. BYON + Hub Proxy + mTLS + wallet billing. MIT licence." />
+    <meta name="twitter:title" content="ProxyBox — Phần mềm quản lý proxy mã nguồn mở · IPv4 + IPv6" />
+    <meta name="twitter:description" content="Panel quản lý proxy mã nguồn mở, dashboard self-host IPv4 + IPv6. Rotation /48 entropy 80-bit không trùng IP. Free, không giới hạn." />
     <meta name="twitter:image" content="https://proxybox.pro/og-cover.svg" />
 
     <script type="application/ld+json">
@@ -43,15 +45,14 @@
           "name": "ProxyBox",
           "alternateName": "Box Proxy",
           "url": "https://proxybox.pro/",
-          "logo": "https://proxybox.pro/favicon.svg",
-          "sameAs": ["https://github.com/proxyhub/free"]
+          "logo": "https://proxybox.pro/favicon.svg"
         },
         {
           "@type": "WebSite",
           "@id": "https://proxybox.pro/#site",
           "url": "https://proxybox.pro/",
           "name": "ProxyBox",
-          "description": "Open-source proxy SaaS self-host platform",
+          "description": "Premium IPv6 / IPv4 proxy datacenter — Vietnam",
           "publisher": { "@id": "https://proxybox.pro/#org" },
           "inLanguage": ["vi", "en"]
         },
@@ -59,18 +60,19 @@
           "@type": "SoftwareApplication",
           "@id": "https://proxybox.pro/#app",
           "name": "ProxyBox",
+          "alternateName": ["Phần mềm quản lý proxy ProxyBox", "Open-source Proxy Manager"],
           "applicationCategory": "DeveloperApplication",
-          "applicationSubCategory": "Proxy management",
-          "operatingSystem": "Linux, Windows",
-          "description": "Multi-node IPv4/IPv6 proxy SaaS control plane. Self-host trên VPS riêng để bán proxy, BYON cho customer, hoặc Hub Proxy qua Virtualizor.",
+          "applicationSubCategory": "Proxy management panel",
+          "operatingSystem": "Linux (Ubuntu, Debian)",
+          "description": "Phần mềm quản lý proxy mã nguồn mở — dashboard self-host trên VPS riêng. Quản lý, bán, hoặc tự dùng proxy IPv4 + IPv6 với rotation /48 entropy 80-bit, sticky session, SOCKS5, HTTP, HTTPS-proxy, Trojan.",
           "offers": {
             "@type": "Offer",
             "price": "0",
             "priceCurrency": "USD",
             "availability": "https://schema.org/InStock"
           },
-          "softwareVersion": "1.2.0",
           "license": "https://opensource.org/licenses/MIT",
+          "isAccessibleForFree": true,
           "url": "https://proxybox.pro/",
           "downloadUrl": "https://proxybox.pro/install-panel.sh",
           "author": { "@id": "https://proxybox.pro/#org" }
@@ -80,28 +82,28 @@
           "mainEntity": [
             {
               "@type": "Question",
-              "name": "Does ProxyBox support IPv6?",
-              "acceptedAnswer": { "@type": "Answer", "text": "Yes. ProxyBox supports IPv4 + routed IPv6 /48 with strict-family egress — A and AAAA records cannot leak across protocols." }
+              "name": "ProxyBox có hỗ trợ IPv6 không?",
+              "acceptedAnswer": { "@type": "Answer", "text": "Có. Mỗi node IPv6 được route /48 — sinh tới 2^80 địa chỉ /128 với entropy thật từ crypto.randomBytes. Mỗi rotation đảm bảo không trùng IP đã cấp trước đó, không cộng dồn IP rác trên interface." }
             },
             {
               "@type": "Question",
-              "name": "Can I self-host ProxyBox on my own VPS?",
-              "acceptedAnswer": { "@type": "Answer", "text": "Yes. ProxyBox is 100% open source (MIT). Run a single command — curl -fsSL https://proxybox.pro/install-panel.sh | sudo bash — on Ubuntu or Debian. Your customers enrol agents directly into YOUR panel, never via a third-party server." }
+              "name": "Đổi IP mỗi bao lâu một lần?",
+              "acceptedAnswer": { "@type": "Answer", "text": "Tùy chọn: 1 phút, 3 phút, 5 phút, 10 phút, 15 phút, 30 phút, 1h, 2h — hoặc tắt rotation (sticky session). Mỗi proxy IPv6 cũng có magic URL để khách hàng trigger rotate on-demand từ scraper." }
             },
             {
               "@type": "Question",
-              "name": "Does ProxyBox cap the number of proxies?",
-              "acceptedAnswer": { "@type": "Answer", "text": "No. There is no licence tier and no proxy cap. The only limit is the RAM, CPU and network of the VPS you install it on." }
+              "name": "ProxyBox hỗ trợ protocol gì?",
+              "acceptedAnswer": { "@type": "Answer", "text": "HTTP CONNECT, SOCKS5 (CONNECT + UDP ASSOCIATE), HTTPS-proxy qua TLS, và Trojan — cùng một egress IP, chọn protocol theo client." }
             },
             {
               "@type": "Question",
-              "name": "Is ProxyBox secure?",
-              "acceptedAnswer": { "@type": "Answer", "text": "Yes. mTLS between agent and master, scrypt password hashing, AES-256-GCM at-rest secrets — no plaintext credentials anywhere." }
+              "name": "Có giới hạn số proxy mỗi đơn không?",
+              "acceptedAnswer": { "@type": "Answer", "text": "Đơn lẻ tối đa 5,000 proxy. Có thể chia thành nhiều đơn nếu cần thêm. Mỗi node hỗ trợ tới 65k port — đủ cho hàng chục nghìn proxy / node." }
             },
             {
               "@type": "Question",
-              "name": "What payment methods are supported?",
-              "acceptedAnswer": { "@type": "Answer", "text": "Stripe (card / Apple Pay / Google Pay) and PayPal. Operators configure either or both in /admin/payment. Wallet credits are debited per order; auto-renew is supported." }
+              "name": "Thanh toán bằng gì?",
+              "acceptedAnswer": { "@type": "Answer", "text": "Stripe (Visa / Mastercard / Apple Pay / Google Pay) và PayPal. Số dư wallet trừ dần theo từng đơn, có thể bật auto-renew để gia hạn tự động không gián đoạn dịch vụ." }
             }
           ]
         }
@@ -112,8 +114,8 @@
   <body>
     <div id="app"></div>
     <noscript>
-      <h1>ProxyBox — Open-source proxy SaaS</h1>
-      <p>ProxyBox là hệ thống proxy SaaS mã nguồn mở, tự host trên VPS riêng. Vui lòng bật JavaScript để xem trang đầy đủ. Cài bằng lệnh: <code>curl -fsSL https://proxybox.pro/install-panel.sh | sudo bash</code>.</p>
+      <h1>ProxyBox — Phần mềm quản lý proxy mã nguồn mở · IPv4 + IPv6</h1>
+      <p>ProxyBox là phần mềm quản lý proxy mã nguồn mở (open-source). Dashboard self-host trên VPS riêng để quản lý, bán, hoặc tự dùng proxy IPv4 + IPv6 — rotation /48 entropy 80-bit không trùng IP, sticky session, SOCKS5 + HTTP + HTTPS-proxy + Trojan. Hoàn toàn free, không giới hạn số proxy. Vui lòng bật JavaScript để xem dashboard.</p>
       <p><a href="/faq">FAQ</a> · <a href="/login">Đăng nhập</a> · <a href="/register">Đăng ký</a></p>
     </noscript>
     <script type="module" src="/src/main.js"></script>

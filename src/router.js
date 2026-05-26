@@ -240,9 +240,22 @@ let currentRouteName = null
 function applyTitle(name) {
   const key = ROUTE_TITLE_KEYS[name]
   const label = key ? translate(key) : ''
-  document.title = label && label !== key ? `${label} — ${APP_NAME}` : `${APP_NAME} - Proxy IPv4 & IPv6`
+  const titleShort = translate('site.titleShort')
+  const fullTitle = translate('site.title')
+  document.title = label && label !== key ? `${label} — ${titleShort}` : fullTitle
+  // Keep <meta name="description"> in sync so social-share previews +
+  // crawlers see the user's locale. Updates on every route + locale
+  // change. Cheap — DOM query is constant-time.
+  const desc = document.querySelector('meta[name="description"]')
+  if (desc) desc.setAttribute('content', translate('site.description'))
+  const ogTitle = document.querySelector('meta[property="og:title"]')
+  if (ogTitle) ogTitle.setAttribute('content', fullTitle)
+  const ogDesc = document.querySelector('meta[property="og:description"]')
+  if (ogDesc) ogDesc.setAttribute('content', translate('site.description'))
+  const htmlLang = document.documentElement
+  if (htmlLang) htmlLang.setAttribute('lang', locale.value || 'vi')
 }
-watch(locale, () => { if (currentRouteName) applyTitle(currentRouteName) })
+watch(locale, () => { if (currentRouteName) applyTitle(currentRouteName); else applyTitle(null) })
 
 router.afterEach((to) => {
   currentRouteName = to.name

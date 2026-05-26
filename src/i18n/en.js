@@ -1,4 +1,12 @@
 export default {
+  // ── SEO / document title ────────────────────────────────
+  // Common high-volume searches in this niche: "open source proxy
+  // manager", "proxy management panel", "self-host proxy dashboard",
+  // "free proxy panel". Title kept ≤ 70 chars to avoid Google truncation.
+  'site.title':           'ProxyBox — Open-source proxy management panel · IPv4 + IPv6 · Free self-host',
+  'site.titleShort':      'ProxyBox — Open-source Proxy Manager',
+  'site.tagline':         'Open-source IPv4 + IPv6 proxy management dashboard — free, self-host on your own VPS',
+  'site.description':     'ProxyBox is the open-source proxy management panel — self-host the dashboard on your own VPS to manage, resell, or run your own IPv4 + IPv6 proxies. /48 rotation with 80-bit entropy, sticky sessions, SOCKS5, HTTP, HTTPS-proxy, Trojan. Free, no proxy cap.',
   'app.store': 'IPv4 & IPv6 Store',
   'app.workspace': 'Workspace',
   'app.search': 'Search proxy, order...',
