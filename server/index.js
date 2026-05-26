@@ -8984,7 +8984,7 @@ async function handleUserV1(req, res, url) {
     if (!config.zones) config.zones = defaultZones()
     const body = await readJson(req)
     const type = String(body.type || 'ipv4').toLowerCase() === 'ipv6' ? 'IPv6' : 'IPv4'
-    const quantity = Math.max(1, Math.min(500, Number(body.quantity) || 1))
+    const quantity = Math.max(1, Math.min(5000, Number(body.quantity) || 1))
     const hours = Math.max(Number(config.pricing.minHours) || 1, Math.min(Number(config.pricing.maxHours) || 8760, Number(body.hours) || Number(body.duration) * 24 || 1))
     const zone = String(body.zone || '').toLowerCase()
     if (zone && !config.zones.find((z) => z.id === zone)) return sendJson(res, 400, { error: `unknown zone: ${zone}` })
@@ -9058,7 +9058,7 @@ async function handleUserV1(req, res, url) {
     const newBalance = recordBillingTx(user.id, 'purchase', totalCost, `order ${orderId}: ${type} x ${quantity} (${hours}h)${coupon ? ` coupon=${coupon.code}` : ''}${tierDiscount ? ` tier=-${(tierDiscount * 100).toFixed(0)}%` : ''}`)
     await Promise.all([saveConfig(), saveOrders()])
     audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/orders', note: `${orderId} base=${base} discount=${(tierDiscount + couponDiscount).toFixed(2)} â†' ${totalCost}; bal=${newBalance}` })
-    pushNotification(user.id, { type: 'order', severity: 'success', text: `ÄÆ¡n ${orderId} Ä'Ã£ Ä'Æ°á»£c cáº¥p ${quantity} proxy ${type} (${hours}h)`, link: `/orders/${orderId}` })
+    pushNotification(user.id, { type: 'order', severity: 'success', text: `Đơn ${orderId} đã được cấp ${quantity} proxy ${type} (${hours}h)`, link: `/orders/${orderId}` })
     await saveConfig()
     sendMail({
       to: user.email,
@@ -9323,7 +9323,7 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     return sendJson(res, 200, {
       referralCode: user.referralCode,
       shareUrl: `/register?ref=${user.referralCode}`,
-      shareText: `ÄÄƒng kÃ½ ProxyBox qua link giá»›i thiá»‡u cá»§a tÃ´i â€” cáº£ hai cÃ¹ng nháº­n ${trial.toLocaleString()} VND trial + ${kickback.toLocaleString()} VND bonus.`,
+      shareText: `Đăng ký ProxyBox qua link giới thiệu của tôi — cả hai cùng nhận ${trial.toLocaleString()} VND trial + ${kickback.toLocaleString()} VND bonus.`,
       kickbackPerSignup: kickback,
       totalReferred: referredUsers.length,
       totalEarned: earned,
@@ -9960,7 +9960,7 @@ async function handleCreateOrder(req, res) {
   if (!autoBalance && nodeId !== 'local' && !config.nodes.some((n) => n.id === nodeId)) {
     return sendJson(res, 400, { error: `node ${nodeId} not found` })
   }
-  const quantity = clamp(Number(body.quantity || 1), 1, 254)
+  const quantity = clamp(Number(body.quantity || 1), 1, 5000)
   const durationDays = Number(body.duration || config.proxyDefaults.expiresDays || 30)
   // memberBytesPerSec is the per-member rate the agent enforces; orderBytesPerSec is the
   // group-wide shared cap. When the user passes only one, treat it as both for backwards compat.
@@ -10128,16 +10128,19 @@ function tlsPortFor(port) { return Number(port) + 443 }
 function publicProxy(proxy) {
   const proxyStats = publicStats(proxy.id)
   const rotate = Boolean(proxy.rotate) && proxy.type === 'IPv6'
-  // Lazily mint the magic rotate URL token for IPv6 proxies. Customer pastes
-  // this URL into their scraper config — hitting it forces an IP rotation.
+  // Lazily mint the magic rotate URL token + backfill tlsPort. Mutates
+  // `proxy` in place. Does NOT trigger saveConfig() here — the caller
+  // saves once at end of its operation. Without this guard, calling
+  // publicProxy() in a 500-proxy bulk-create loop fires 500 concurrent
+  // saveConfig() writes of the full 3 MB config, which nukes I/O for
+  // tens of seconds and 502s the nginx upstream before the bulk loop
+  // finishes. The next normal saveConfig (mounted via the request that
+  // created these proxies) persists the mutations.
   if (proxy.type === 'IPv6' && !proxy.rotateUrlToken) {
     proxy.rotateUrlToken = crypto.randomBytes(16).toString('hex')
-    saveConfig().catch(() => {})
   }
-  // Backfill tlsPort for legacy proxies created before this column existed.
   if (!proxy.tlsPort) {
     proxy.tlsPort = tlsPortFor(proxy.port)
-    saveConfig().catch(() => {})
   }
   const rotateUrl = proxy.type === 'IPv6' && proxy.rotateUrlToken
     ? `${controlBaseUrl()}/api/rotate/${proxy.rotateUrlToken}`
