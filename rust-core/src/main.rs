@@ -753,22 +753,16 @@ fn match_family(ip: &IpAddr, want_v6: bool) -> bool {
 async fn connect_upstream(proxy: &ProxyCfg, host: &str, port: u16, allow_private: bool) -> Result<TcpStream, String> {
     let family_v6 = proxy.kind.eq_ignore_ascii_case("IPv6");
     let target = resolve_target(host, port, family_v6, allow_private).await?;
-    // IPv6 rotating proxies pick a random local IPv6 every connection. The
-    // pool is cached (5 s TTL) so we avoid a netlink getifaddrs dump per
-    // connection — at thousands of /128 on the NIC, that dump was the
-    // primary CPU sink in tokio workers (recvmsg in flamegraph).
-    let bind_ip: Option<IpAddr> = if proxy.rotate && family_v6 {
-        let pool = tokio::task::spawn_blocking(cached_v6_pool).await.unwrap_or_default();
-        if pool.is_empty() {
-            proxy.bind_ip.parse().ok()
-        } else {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default().as_nanos() as usize;
-            Some(IpAddr::V6(pool[nanos % pool.len()]))
-        }
-    } else {
-        proxy.bind_ip.parse().ok()
-    };
+    // Use the proxy's OWN configured bind IP. Even for rotating proxies the
+    // egress IP is "owned" by that proxy — master pushes a new bindIp on
+    // its rotation schedule (every `rotateEverySec`), the agent's
+    // reconcile attaches it via `attach_v6_for_proxy` and restarts the
+    // listener; from then on this proxy egresses through ONLY that IP
+    // until the next master-driven rotation. Crucially we do NOT pick a
+    // random IP from the shared pool — doing so would cause user A's
+    // traffic to egress through user B's assigned IP, violating the
+    // "1 proxy = 1 customer-owned IP" product contract.
+    let bind_ip: Option<IpAddr> = proxy.bind_ip.parse().ok();
 
     let socket = if target.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() }
         .map_err(|e| format!("socket: {e}"))?;

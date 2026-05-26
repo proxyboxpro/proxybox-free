@@ -15,6 +15,13 @@ import { setupOauthRoutes } from './oauth.js'
 import * as virtualizor from './virtualizor.js'
 import { DOCS_EN } from './_docs_en.mjs'
 
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason?.message ?? reason)
+})
+
 // node:sqlite is stable in Node 22.22+; fallback gracefully if missing.
 let sqliteDb = null
 try {
@@ -697,6 +704,10 @@ const apiServer = http.createServer(handleHttp)
 apiServer.listen(config.api.port, config.api.host, () => {
   console.log(`[api] listening on http://${config.api.host}:${config.api.port}`)
   console.log(`[api] detected ${detected.ipv4.length} IPv4 address(es), ${detected.ipv6Prefixes.length} IPv6 prefix(es)`)
+  // Startup validator: find any proxy port↔tlsPort collisions caused by a
+  // bulk-allocator that bypassed nextPort(). Won't auto-fix in case the
+  // ports are in use by external clients, but warns prominently so admin
+  // can run `node scripts/relocate-tls-ports.mjs` (or call the admin API).
   validatePortCollisions()
 })
 
@@ -754,9 +765,14 @@ async function loadConfig() {
   parsed.proxyDefaults.expiresDays = Number(parsed.proxyDefaults.expiresDays || 30)
   parsed.proxyDefaults.allowPrivateTargets = Boolean(parsed.proxyDefaults.allowPrivateTargets)
   // Unified listener — single accept port per agent that routes by username.
-  // Enabled by default with port 7777; admin can disable via config.
+  // Off by default: with 65k TCP ports per host the per-proxy listener
+  // model handles realistic scale (~30k proxies/node) fine, and the
+  // product model is "1 port = 1 customer IP" which is naturally
+  // expressed by per-proxy ports. Operators serving 100k+ proxies/node
+  // can flip `unifiedListener.enabled = true` in config; both modes can
+  // run side-by-side so existing customer URLs never break.
   parsed.unifiedListener ||= {}
-  parsed.unifiedListener.enabled = parsed.unifiedListener.enabled !== false
+  parsed.unifiedListener.enabled = parsed.unifiedListener.enabled === true
   parsed.unifiedListener.plainPort = Number(parsed.unifiedListener.plainPort || 7777)
   parsed.unifiedListener.tlsPort = Number(parsed.unifiedListener.tlsPort || 7778)
   parsed.users ||= []
@@ -2228,7 +2244,7 @@ function sendMail({ to, subject, html, text }) {
       : [...headers, 'Content-Type: text/plain; charset=utf-8', '', text || '']
     const dataPayload = body.join('\r\n').replace(/^\./gm, '..') + '\r\n.'
     const onLine = (line) => {
-      // step 0: greet â†’ EHLO
+      // step 0: greet â†' EHLO
       if (step === 0) { writeLine(`EHLO proxyhub`); step = 1; return }
       // step 1: read EHLO response; once we hit final 250 with no continuation, proceed
       if (step === 1) {
@@ -2254,14 +2270,14 @@ function sendMail({ to, subject, html, text }) {
         return
       }
       if (step === 3) {
-        // 334 VXNlcm5hbWU6 â†’ send b64 user
+        // 334 VXNlcm5hbWU6 â†' send b64 user
         writeLine(Buffer.from(user, 'utf8').toString('base64')); step = 4; return
       }
       if (step === 4) {
         writeLine(Buffer.from(pass, 'utf8').toString('base64')); step = 5; return
       }
       if (step === 5) {
-        // 235 auth ok â†’ MAIL FROM
+        // 235 auth ok â†' MAIL FROM
         if (!line.startsWith('235')) return cleanup(false)
         const fromAddr = (from.match(/<(.+)>/) || [null, from])[1]
         writeLine(`MAIL FROM:<${fromAddr}>`); step = 6; return
@@ -2304,8 +2320,8 @@ function sendMail({ to, subject, html, text }) {
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Stripe Checkout â€” raw HTTPS to api.stripe.com (no npm dep). We support:
-//   * `POST /api/v1/user/billing/checkout`  â†’ create a Checkout Session, return url
-//   * `POST /api/webhooks/stripe`           â†’ verify signature + credit wallet
+//   * `POST /api/v1/user/billing/checkout`  â†' create a Checkout Session, return url
+//   * `POST /api/webhooks/stripe`           â†' verify signature + credit wallet
 //
 // Config (in config.json):
 //   billing.stripeSecretKey       â€” sk_test_... or sk_live_...
@@ -3393,51 +3409,140 @@ function ipv6Pool() {
 function nodeAddressPool(node, type) {
   const wantV6 = String(type).toLowerCase() === 'ipv6'
   const list = wantV6 ? (node.network?.ipv6 || []) : (node.network?.ipv4 || [])
-  const base = [...new Set(list.map((e) => e.address))]
-  if (!wantV6) return base
-  // For IPv6 nodes the operator has a /48 or /64 prefix routed to them; mint
-  // additional pseudo-random IPs from that prefix so /rotate has something to
-  // pick from. The agent will `ip -6 addr add` each one on demand before
-  // binding the proxy listener. Deduplicate by prefix to avoid pool inflation
-  // when 200+ already-attached addresses share the same /64.
-  const synth = new Set(base)
-  const seenPrefixes = new Set()
-  for (const e of list) {
-    const cidr = String(e.cidr || '')
-    const slash = cidr.indexOf('/')
-    if (slash < 0) continue
-    const prefixLen = Number(cidr.slice(slash + 1))
-    if (!(prefixLen > 0 && prefixLen <= 64)) continue
-    const parts = expandIPv6(e.address)
-    // Compute canonical prefix key so we don't synthesize from N siblings of
-    // the same /64. Boundary segment (if prefix not aligned to 16) keeps
-    // upper bits per kernel mask.
-    const fullSegs = Math.floor(prefixLen / 16)
-    const boundaryBits = prefixLen % 16
-    const prefixKey = parts.slice(0, fullSegs).join(':') + (boundaryBits ? `:${(parts[fullSegs] & (0xffff << (16 - boundaryBits))).toString(16)}` : '')
-    if (seenPrefixes.has(`${prefixKey}/${prefixLen}`)) continue
-    seenPrefixes.add(`${prefixKey}/${prefixLen}`)
-    // Randomize ALL segments beyond the boundary. For /48: segments 3-7 free
-    // (80 bits of entropy). For /64: segments 4-7 free (64 bits). The
-    // boundary segment is partial-randomized when prefix is not 16-aligned.
-    const seed = prefixKey
-    for (let i = 1; i <= IPV6_POOL_PER_PREFIX; i++) {
-      const newParts = [...parts]
-      // Boundary segment: keep upper (boundaryBits) bits, randomize lower
-      if (boundaryBits && fullSegs < 8) {
-        const keepMask = (0xffff << (16 - boundaryBits)) & 0xffff
-        const rand = Math.floor((Math.sin(seed.length + i * 7 + fullSegs * 13) + 1) * 32768) & ((1 << (16 - boundaryBits)) - 1)
-        newParts[fullSegs] = (newParts[fullSegs] & keepMask) | rand
+  return [...new Set(list.map((e) => e.address))]
+  // Note: this returns ONLY addresses already attached to the node's NIC.
+  // For IPv6 ROTATION (where the prefix is routed to the node but we mint
+  // fresh /128s from it on demand), use mintFreshIpv6(node) which draws
+  // from the full prefix entropy with crypto.randomBytes and avoids any IP
+  // currently bound to an active proxy. The old synthesized-pool approach
+  // here used a deterministic Math.sin generator that always produced the
+  // same 256 addresses per prefix — guaranteed collision when N>256
+  // proxies rotated, and IPs were aggressively reused across rotations.
+}
+
+// Mint a brand-new IPv6 /128 inside the node's routable prefix. Uses
+// crypto.randomBytes for full entropy (~80 bits with a /48) and avoids
+// any IP currently held by another active proxy on the same node. The
+// /48 address space (2^80 hosts) is large enough that even after a year
+// of hourly rotation on 100k proxies the collision probability with a
+// past-assigned IP stays < 10^-12 — we don't track historical bindIps
+// for memory reasons.
+//
+// Returns null if the node advertises no routable v6 prefix.
+function mintFreshIpv6(node, usedSet = null) {
+  // Prefer the agent-reported routable prefix list (BGP-level /48 or /56)
+  // — that's the actual address space the operator owns. Falls back to
+  // common-ancestor detection over the per-/128 entries.
+  const prefixes = node?.network?.ipv6Prefixes || []
+  if (prefixes.length > 0) {
+    // Pick the WIDEST routable prefix (lowest prefixLen). For a typical
+    // VPS with /48 + /64 + /128 reported, this picks the /48 → ~80 bits
+    // of entropy per mint, large enough that even at 100k proxies
+    // rotating hourly we won't collide with a past-rotated IP this side
+    // of the heat death.
+    let chosen = null
+    let bestLen = 128
+    for (const p of prefixes) {
+      const len = Number(p.prefixLen)
+      if (len > 0 && len < bestLen && len <= 64) { bestLen = len; chosen = p }
+    }
+    if (chosen) {
+      const baseParts = expandIPv6(chosen.prefix)
+      const used = usedSet || new Set()
+      for (let attempt = 0; attempt < 16; attempt++) {
+        const newParts = [...baseParts]
+        const fullSegs = Math.floor(bestLen / 16)
+        const boundaryBits = bestLen % 16
+        if (boundaryBits && fullSegs < 8) {
+          const keepMask = (0xffff << (16 - boundaryBits)) & 0xffff
+          const rand = crypto.randomBytes(2).readUInt16BE(0) & ((1 << (16 - boundaryBits)) - 1)
+          newParts[fullSegs] = (newParts[fullSegs] & keepMask) | rand
+        }
+        const start = fullSegs + (boundaryBits ? 1 : 0)
+        for (let g = start; g < 8; g++) {
+          newParts[g] = crypto.randomBytes(2).readUInt16BE(0)
+        }
+        const candidate = ipv6FromParts(newParts)
+        if (!used.has(candidate)) return candidate
       }
-      // Fully randomize remaining segments
-      const start = fullSegs + (boundaryBits ? 1 : 0)
-      for (let g = start; g < 8; g++) {
-        newParts[g] = Math.floor((Math.sin(seed.length + i * 7 + g * 13) + 1) * 32768) & 0xffff
-      }
-      synth.add(ipv6FromParts(newParts))
+      return null
     }
   }
-  return [...synth]
+  // Fallback: common-ancestor detection over attached addresses.
+  const v6list = node?.network?.ipv6 || []
+  if (v6list.length === 0) return null
+  const allParts = v6list.map((e) => expandIPv6(e.address))
+  let commonLen = 128
+  // Compare segments left-to-right; once they diverge, that's where the
+  // routable prefix ends.
+  for (let seg = 0; seg < 8; seg++) {
+    const first = allParts[0][seg]
+    let same = true
+    for (let i = 1; i < allParts.length; i++) {
+      if (allParts[i][seg] !== first) { same = false; break }
+    }
+    if (same) continue
+    // Within this 16-bit segment, count how many top bits agree across
+    // all entries — gives a bit-granular prefix length when the
+    // boundary isn't aligned to 16.
+    let bitsAgreed = 0
+    for (let b = 0; b < 16; b++) {
+      const mask = 0x8000 >> b
+      const bit = first & mask
+      let allMatch = true
+      for (let i = 1; i < allParts.length; i++) {
+        if ((allParts[i][seg] & mask) !== bit) { allMatch = false; break }
+      }
+      if (allMatch) bitsAgreed++; else break
+    }
+    commonLen = seg * 16 + bitsAgreed
+    break
+  }
+  // Also honour the declared per-entry CIDR if it's narrower than our
+  // detected common prefix (defensive — operator may have constrained
+  // the routable space).
+  const declared = (() => {
+    let best = 128
+    for (const e of v6list) {
+      const slash = String(e.cidr || '').indexOf('/')
+      const len = slash >= 0 ? Number(String(e.cidr).slice(slash + 1)) : 128
+      if (len > 0 && len < best) best = len
+    }
+    return best
+  })()
+  const prefixLen = Math.min(commonLen, declared)
+  if (prefixLen >= 128) return null // no entropy to randomize
+  const baseParts = allParts[0]
+  const used = usedSet || new Set()
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const newParts = [...baseParts]
+    const fullSegs = Math.floor(prefixLen / 16)
+    const boundaryBits = prefixLen % 16
+    if (boundaryBits && fullSegs < 8) {
+      const keepMask = (0xffff << (16 - boundaryBits)) & 0xffff
+      const rand = crypto.randomBytes(2).readUInt16BE(0) & ((1 << (16 - boundaryBits)) - 1)
+      newParts[fullSegs] = (newParts[fullSegs] & keepMask) | rand
+    }
+    const start = fullSegs + (boundaryBits ? 1 : 0)
+    for (let g = start; g < 8; g++) {
+      newParts[g] = crypto.randomBytes(2).readUInt16BE(0)
+    }
+    const candidate = ipv6FromParts(newParts)
+    if (!used.has(candidate)) return candidate
+  }
+  return null
+}
+
+// Build a set of bindIps CURRENTLY held by active proxies on a node.
+// Caller passes this to mintFreshIpv6 to guarantee no collision with
+// in-use addresses. Cheap — one pass over config.proxies.
+function currentlyUsedBindIps(nodeId) {
+  const set = new Set()
+  for (const p of config.proxies) {
+    if ((p.nodeId || 'local') !== nodeId) continue
+    if (p.bindIp) set.add(p.bindIp)
+  }
+  return set
 }
 
 function allocateBindIp(type, nodeId) {
@@ -4256,8 +4361,8 @@ function isProxyAuthorized(proxy, username, password) {
   // Grace-period support: status='grace' = expired but still serving for 1h so
   // customer can renew. Auth still passes during grace.
   // Username can encode sticky-session + geo tags, industry-standard format:
-  //   <baseUser>-session-<id>          â†’ same session = same exit IP
-  //   <baseUser>-country-<cc>           â†’ restrict to country-tagged pool
+  //   <baseUser>-session-<id>          â†' same session = same exit IP
+  //   <baseUser>-country-<cc>           â†' restrict to country-tagged pool
   //   <baseUser>-country-<cc>-session-<id>
   // We strip suffixes and compare just the base user to proxy.username.
   const base = parseStickyUser(username).user
@@ -4394,10 +4499,15 @@ function slaPercent(proxyId, days = 30) {
 // â”€â”€ Continuous health sweep â€” probe each active proxy through its own listener
 // every 5 minutes. Mirrors what real managed proxy services run server-side.
 async function runHealthSweep() {
+  const offlineNodeIds = new Set(
+    config.nodes.filter(n => !nodeIsOnline(n)).map(n => n.id)
+  )
   const probes = []
   for (const proxy of config.proxies) {
     if (proxy.status === 'expired' || proxy.status === 'failover-pending') continue
     if (!proxy.bindIp || !proxy.port) continue
+    // Skip health checks for proxies on offline nodes — agent manages its own lifecycle.
+    if (proxy.nodeId && proxy.nodeId !== 'local' && offlineNodeIds.has(proxy.nodeId)) continue
     probes.push((async () => {
       try {
         const r = await remoteCheckProxy(proxy)
@@ -4425,10 +4535,13 @@ async function runHealthSweep() {
                 stopProxy(proxy.id); await startProxy(proxy)
                 proxy.checkFailCount = 0
                 proxy.status = 'active'
-                pushAlert(`proxy:${proxy.id}:auto-rotate`, `Auto-rotated ${proxy.id}: ${old}â†’${next}`, 'warn')
+                pushAlert(`proxy:${proxy.id}:auto-rotate`, `Auto-rotated ${proxy.id}: ${old}â†'${next}`, 'warn')
               } else proxy.status = 'error'
             } catch { proxy.status = 'error' }
-          } else proxy.status = 'error'
+          } else if ((proxy.nodeId || 'local') === 'local') {
+            proxy.status = 'error'
+          }
+          // For remote proxies: don't auto-error on panel-side check failure — agent manages status.
         }
       } catch { /* swallow */ }
     })())
@@ -4914,7 +5027,7 @@ async function handleMtls(req, res) {
 
 async function handleAgentRequest(req, res, url, node) {
   if (req.method === 'POST' && url.pathname === '/api/agent/register') {
-    const body = await readJson(req)
+    const body = await readJson(req, 16 * 1024 * 1024)
     node.status = 'online'; node.lastSeenAt = new Date().toISOString()
     if (body.version) node.version = String(body.version)
     if (body.network) node.network = body.network
@@ -4922,10 +5035,13 @@ async function handleAgentRequest(req, res, url, node) {
     return sendJson(res, 200, { ok: true })
   }
   if (req.method === 'POST' && url.pathname === '/api/agent/heartbeat') {
-    const body = await readJson(req)
+    const body = await readJson(req, 16 * 1024 * 1024)
     node.lastSeenAt = new Date().toISOString(); node.status = 'online'
     if (body.version) node.version = String(body.version)
-    if (body.network) node.network = body.network
+    if (body.network) {
+      if (body.network.ipv6 && body.network.ipv6.length > 2000) body.network.ipv6 = body.network.ipv6.slice(0, 2000)
+      node.network = body.network
+    }
     if (body.metrics && typeof body.metrics === 'object') {
       node.metrics = {
         cpuPct: Number(body.metrics.cpuPct) || 0,
@@ -5058,7 +5174,7 @@ async function handleAgentRequest(req, res, url, node) {
     return sendJson(res, 200, { ok: true, version: APP_VERSION, ...update })
   }
   if (req.method === 'GET' && url.pathname === '/api/agent/proxies') {
-    // Disabled node â†’ return empty list so agent reconciles every listener off.
+    // Disabled node â†' return empty list so agent reconciles every listener off.
     if (node.disabled) return sendAgentList(res, [])
     // Long-poll: if agent's known rev matches current, hold until config bumps
     // (proxy rotated, expired, added). Master-side push beats per-10s polling
@@ -5150,7 +5266,7 @@ async function handleApi(req, res, url) {
     }
 
     // â”€â”€ Stripe webhook (public, signature-verified) â€” must read raw body BEFORE
-    //    the auth gate. Stripe calls this on payment success â†’ we credit wallet.
+    //    the auth gate. Stripe calls this on payment success â†' we credit wallet.
     if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
       const secret = config.billing?.stripeWebhookSecret
       if (!secret) { res.writeHead(503); return res.end('webhook secret not configured\n') }
@@ -5176,7 +5292,7 @@ async function handleApi(req, res, url) {
         const user = config.users.find((u) => u.id === userId)
         if (user && amount > 0) {
           const next = recordBillingTx(user.id, 'topup', amount, `stripe ${session.id}`)
-          audit({ actor: 'stripe', ip: clientIp(req), method: 'POST', path: '/api/webhooks/stripe', note: `credited user=${user.id} +${amount} â†’ ${next}` })
+          audit({ actor: 'stripe', ip: clientIp(req), method: 'POST', path: '/api/webhooks/stripe', note: `credited user=${user.id} +${amount} â†' ${next}` })
         }
       }
       res.writeHead(200); return res.end('{}')
@@ -5404,7 +5520,7 @@ async function handleApi(req, res, url) {
     if (!isPublicEndpoint(req, url) && !isApiAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' })
 
     // â”€â”€ Admin-only gate for /api/* (customers use /api/v1/user/*). â”€â”€
-    // SECURITY FIX (pentest): previously only non-GET was gated â†’ customer
+    // SECURITY FIX (pentest): previously only non-GET was gated â†' customer
     // session could GET /api/proxies, /api/nodes, /api/orders and exfiltrate
     // the whole fleet. Now ALL /api/* require admin (the v1 user namespace + a
     // few explicitly-public endpoints handled above are the only exceptions).
@@ -5589,7 +5705,9 @@ async function handleApi(req, res, url) {
     }
 
     // Auto-fix proxy port↔tlsPort collisions caused by bulk-allocators that
-    // bypassed nextPort(). Idempotent: returns count=0 when clean.
+    // bypassed nextPort(). For each colliding pair, relocates the tlsPort
+    // to the next free slot above the current max (plain port stays — it's
+    // customer-facing). Idempotent: returns count=0 when nothing to fix.
     if (req.method === 'POST' && url.pathname === '/api/admin/maintenance/relocate-tls-ports') {
       const usedPlain = new Map(); const usedTls = new Map();
       for (const p of config.proxies) {
@@ -5598,8 +5716,8 @@ async function handleApi(req, res, url) {
       }
       const toRelocate = new Set()
       for (const p of config.proxies) {
-        const a = usedTls.get(Number(p.port)); if (a && a !== p.id) toRelocate.add(a)
-        const b = usedPlain.get(Number(p.tlsPort)); if (b && b !== p.id) toRelocate.add(p.id)
+        const a = usedTls.get(Number(p.port)); if (a && a !== p.id) toRelocate.add(a)         // their tlsPort hits my plain → relocate them
+        const b = usedPlain.get(Number(p.tlsPort)); if (b && b !== p.id) toRelocate.add(p.id) // my tlsPort hits their plain → relocate me
       }
       if (toRelocate.size === 0) return sendJson(res, 200, { count: 0, message: 'no collisions' })
       const maxAny = Math.max(0, ...usedPlain.keys(), ...usedTls.keys())
@@ -6716,7 +6834,7 @@ async function handleApi(req, res, url) {
       })
     }
 
-    // â”€â”€ admin: email templates (simple keyâ†’{subject,html} store) â”€â”€
+    // â”€â”€ admin: email templates (simple keyâ†'{subject,html} store) â”€â”€
     if (url.pathname === '/api/admin/email-templates') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
       if (!config.emailTemplates) config.emailTemplates = defaultEmailTemplates()
@@ -6855,7 +6973,7 @@ async function handleApi(req, res, url) {
       const amount = Math.floor(Number(body.amount) || 0)
       if (!amount) return sendJson(res, 400, { error: 'amount required' })
       const next = recordBillingTx(target.id, amount > 0 ? 'admin-credit' : 'admin-debit', amount, String(body.note || 'admin adjustment').slice(0, 200))
-      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `${target.email} ${amount > 0 ? '+' : ''}${amount} â†’ ${next}` })
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `${target.email} ${amount > 0 ? '+' : ''}${amount} â†' ${next}` })
       return sendJson(res, 200, { balance: next })
     }
 
@@ -7941,8 +8059,8 @@ async function handleApi(req, res, url) {
                 stopProxy(proxy.id); await startProxy(proxy)
                 proxy.checkFailCount = 0
                 proxy.status = 'active'
-                pushAlert(`proxy:${proxy.id}:auto-rotate`, `Proxy ${proxy.id} auto-rotated ${old}â†’${next} after 3 check fails`, 'warn')
-                audit({ actor: 'system', ip: 'auto', method: 'POST', path: '/system/auto-rotate', note: `${proxy.id} ${old}â†’${next}` })
+                pushAlert(`proxy:${proxy.id}:auto-rotate`, `Proxy ${proxy.id} auto-rotated ${old}â†'${next} after 3 check fails`, 'warn')
+                audit({ actor: 'system', ip: 'auto', method: 'POST', path: '/system/auto-rotate', note: `${proxy.id} ${old}â†'${next}` })
               } else { proxy.status = 'error' }
             } catch { proxy.status = 'error' }
           } else proxy.status = 'error'
@@ -8132,7 +8250,7 @@ async function handleUserV1(req, res, url) {
     }
     if (body.rotateEverySec !== undefined) {
       const v = Number(body.rotateEverySec)
-      const allowed = [0, 300, 900, 1800, 3600, 7200]
+      const allowed = [0, 60, 180, 300, 600, 900, 1800, 3600, 7200]
       if (!allowed.includes(v)) return sendJson(res, 400, { error: `rotateEverySec must be one of ${allowed.join(',')}` })
       if (v > 0 && proxy.type !== 'IPv6') return sendJson(res, 400, { error: 'auto-rotate only available for IPv6 proxies' })
       proxy.rotateEverySec = v
@@ -8939,8 +9057,8 @@ async function handleUserV1(req, res, url) {
     orders.unshift(order)
     const newBalance = recordBillingTx(user.id, 'purchase', totalCost, `order ${orderId}: ${type} x ${quantity} (${hours}h)${coupon ? ` coupon=${coupon.code}` : ''}${tierDiscount ? ` tier=-${(tierDiscount * 100).toFixed(0)}%` : ''}`)
     await Promise.all([saveConfig(), saveOrders()])
-    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/orders', note: `${orderId} base=${base} discount=${(tierDiscount + couponDiscount).toFixed(2)} â†’ ${totalCost}; bal=${newBalance}` })
-    pushNotification(user.id, { type: 'order', severity: 'success', text: `ÄÆ¡n ${orderId} Ä‘Ã£ Ä‘Æ°á»£c cáº¥p ${quantity} proxy ${type} (${hours}h)`, link: `/orders/${orderId}` })
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/orders', note: `${orderId} base=${base} discount=${(tierDiscount + couponDiscount).toFixed(2)} â†' ${totalCost}; bal=${newBalance}` })
+    pushNotification(user.id, { type: 'order', severity: 'success', text: `ÄÆ¡n ${orderId} Ä'Ã£ Ä'Æ°á»£c cáº¥p ${quantity} proxy ${type} (${hours}h)`, link: `/orders/${orderId}` })
     await saveConfig()
     sendMail({
       to: user.email,
@@ -9241,14 +9359,14 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     return sendJson(res, 200, { items: rows, limit, balance: userBalance(user.id) })
   }
   // Test-mode manual topup. ONLY active when billing.testMode is true; otherwise
-  // production traffic must go via /billing/checkout â†’ Stripe â†’ webhook.
+  // production traffic must go via /billing/checkout â†' Stripe â†' webhook.
   if (req.method === 'POST' && sub === 'billing/topup') {
     if (!config.billing?.testMode) return sendJson(res, 403, { error: 'manual topup disabled; use /billing/checkout' })
     const body = await readJson(req)
     const amount = Math.floor(Number(body.amount) || 0)
     if (amount <= 0 || amount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 1..100,000,000' })
     const next = recordBillingTx(user.id, 'topup', amount, `test topup: ${String(body.note || '').slice(0, 100)}`)
-    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/topup', note: `+${amount} â†’ ${next}` })
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/topup', note: `+${amount} â†' ${next}` })
     return sendJson(res, 200, { ok: true, balance: next, mode: 'test' })
   }
 
@@ -9262,7 +9380,7 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     // Stripe accepts amount as the smallest currency unit. For VND (zero-decimal) that's just the integer.
     // For USD it would be cents â€” admin's responsibility to pick correct config.currency.
     // SECURITY: only accept successUrl/cancelUrl from config (admin-controlled).
-    // Earlier we trusted req.headers.origin which an attacker can spoof â†’ after
+    // Earlier we trusted req.headers.origin which an attacker can spoof â†' after
     // Stripe redirect the customer lands on attacker-controlled phishing page.
     if (!config.billing.successUrl || !config.billing.cancelUrl) {
       return sendJson(res, 503, { error: 'billing.successUrl and billing.cancelUrl must be configured' })
@@ -9669,7 +9787,7 @@ async function handleRegister(req, res) {
   if (config.users.some((item) => String(item.email || '').toLowerCase() === email)) {
     return sendJson(res, 409, { error: 'email is already registered' })
   }
-  // Affiliate referral: ?ref=<code> on register â†’ credits both new + referrer.
+  // Affiliate referral: ?ref=<code> on register â†' credits both new + referrer.
   let referrer = null
   const ref = String(body.referralCode || '').trim()
   if (ref) referrer = config.users.find((u) => u.referralCode === ref)
@@ -9960,15 +10078,39 @@ function customerFacingHost(proxy) {
 }
 
 function pickBindIp(type, nodeId) {
+  const wantV6 = String(type).toLowerCase() === 'ipv6'
   if (nodeId && nodeId !== 'local') {
     const node = config.nodes.find((n) => n.id === nodeId)
     if (!node) throw new Error(`node ${nodeId} not found`)
+    // IPv6: mint a fresh /128 from the routed prefix. Guarantees no
+    // collision with currently-bound proxies, and ~80 bits of entropy
+    // makes accidental reuse of a previously-rotated-away IP
+    // statistically impossible. IPv4: still draw from the finite list
+    // of attached addresses (small pool, no minting possible).
+    if (wantV6) {
+      const used = currentlyUsedBindIps(nodeId)
+      const minted = mintFreshIpv6(node, used)
+      if (minted) return minted
+      // Fall back to attached list if no routable prefix declared.
+      const attached = nodeAddressPool(node, type)
+      return attached.length ? attached[Math.floor(Math.random() * attached.length)] : null
+    }
     const pool = nodeAddressPool(node, type)
     return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null
   }
-  const pool = String(type).toLowerCase() === 'ipv6' ? ipv6Pool() : ipv4Pool()
-  if (pool.length === 0) return null
-  return pool[Math.floor(Math.random() * pool.length)]
+  // local node: prefer mint-fresh for v6 too.
+  if (wantV6) {
+    const synthNode = { network: { ipv6: detected.ipv6Prefixes.map((p) => ({ address: p.prefix, cidr: `${p.prefix}/${p.prefixLength}` })) } }
+    if (synthNode.network.ipv6.length > 0) {
+      const used = currentlyUsedBindIps('local')
+      const minted = mintFreshIpv6(synthNode, used)
+      if (minted) return minted
+    }
+    const pool = ipv6Pool()
+    return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null
+  }
+  const pool = ipv4Pool()
+  return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null
 }
 
 // Each proxy reserves TWO ports: `port` (plain TCP) + `tlsPort = port + 443`.
@@ -10365,7 +10507,7 @@ function agentVersionMatches(agentVer, latest) {
 }
 
 function sweepNodes() {
-  const failoverAfterMs = Number(config.api.clusterFailoverMs || 5 * 60_000) // default 5 min
+  const failoverAfterMs = Number(config.api.clusterFailoverMs ?? 5 * 60_000) // default 5 min; 0 = disabled
   let changed = false
   for (const node of config.nodes) {
     const prev = node.status
@@ -10391,7 +10533,7 @@ function sweepNodes() {
               const newBind = pickBindIp(proxy.type, target)
               if (newBind) proxy.bindIp = newBind
               changed = true
-              pushAlert(`proxy:${proxy.id}:failover`, `Proxy ${proxy.id} reassigned ${node.id}â†’${target}`, 'warn')
+              pushAlert(`proxy:${proxy.id}:failover`, `Proxy ${proxy.id} reassigned ${node.id}â†'${target}`, 'warn')
             } else if (target === 'local') {
               proxy.nodeId = 'local'
               const newBind = pickBindIp(proxy.type, 'local')
@@ -11400,25 +11542,58 @@ function sendMetrics(res) {
 
 // Sweep IPv6 proxies that opted into auto-rotate. Each proxy with
 // `rotateEverySec > 0` gets its bindIp rotated once that many seconds have
-// elapsed since `rotateLastAt`. Same logic as the customer's manual rotate.
+// elapsed since `rotateLastAt`. Pool is pre-computed once per node per sweep
+// so large batches (1000+ proxies on one node) don't O(n²) the event loop.
 function sweepAutoRotate() {
   const now = Date.now()
   let changed = false
+  // Build per-node "currently bound" set ONCE per sweep so each rotation
+  // sees its peers' fresh IPs without an O(N²) scan. We update the set
+  // in-place as proxies rotate this sweep — guarantees no two proxies
+  // in the same sweep collide on the new IP either.
+  const usedByNode = new Map()
+  for (const p of config.proxies) {
+    if (!p.bindIp) continue
+    const nid = p.nodeId || 'local'
+    if (!usedByNode.has(nid)) usedByNode.set(nid, new Set())
+    usedByNode.get(nid).add(p.bindIp)
+  }
+  // Cache node lookup + the synthesized "local" node for mint helpers.
+  const nodeCache = new Map()
+  function nodeFor(nodeId) {
+    if (nodeCache.has(nodeId)) return nodeCache.get(nodeId)
+    let node
+    if (!nodeId || nodeId === 'local') {
+      node = { network: { ipv6: detected.ipv6Prefixes.map((p) => ({ address: p.prefix, cidr: `${p.prefix}/${p.prefixLength}` })) } }
+    } else {
+      node = config.nodes.find((n) => n.id === nodeId) || null
+    }
+    nodeCache.set(nodeId, node)
+    return node
+  }
   for (const proxy of config.proxies) {
     if (!proxy.rotateEverySec || proxy.type !== 'IPv6') continue
     if (proxy.status === 'expired') continue
     const last = Number(proxy.rotateLastAt || 0)
     if (now - last < proxy.rotateEverySec * 1000) continue
     try {
-      const next = pickBindIp(proxy.type, proxy.nodeId)
+      const nid = proxy.nodeId || 'local'
+      const node = nodeFor(nid)
+      if (!node) { proxy.rotateLastAt = now; continue }
+      const used = usedByNode.get(nid) || new Set()
+      // Mint a brand-new /128 from the prefix; crypto.randomBytes entropy
+      // makes it statistically impossible to repeat a previously-assigned
+      // IP across the /48 (2^80 host bits).
+      const next = mintFreshIpv6(node, used)
       if (next && next !== proxy.bindIp) {
+        used.delete(proxy.bindIp)
+        used.add(next)
+        usedByNode.set(nid, used)
         proxy.bindIp = next
-        proxy.rotateLastAt = now
         changed = true
         dispatchWebhook(proxy.ownerId, 'proxy.ipRotated', { proxyId: proxy.id, bindIp: next })
-      } else {
-        proxy.rotateLastAt = now
       }
+      proxy.rotateLastAt = now
     } catch { /* ignore — next tick will try again */ }
   }
   if (changed) saveConfig().catch(() => {})
@@ -11541,12 +11716,12 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function readJson(req) {
+function readJson(req, maxBytes = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let body = ''
     req.on('data', (chunk) => {
       body += chunk
-      if (body.length > 1024 * 1024) {
+      if (body.length > maxBytes) {
         reject(new Error('request body too large'))
         req.destroy()
       }

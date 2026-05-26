@@ -1306,7 +1306,10 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
         <Timer :size="12" />
         <select :value="g.proxies[0]?.rotateEverySec || 0" @change="setRotateInterval(g, $event.target.value)" class="inline-select">
           <option :value="0">{{ t('cust.proxies.rotateOff2') }}</option>
+          <option :value="60">1m</option>
+          <option :value="180">3m</option>
           <option :value="300">5m</option>
+          <option :value="600">10m</option>
           <option :value="900">15m</option>
           <option :value="1800">30m</option>
           <option :value="3600">1h</option>
