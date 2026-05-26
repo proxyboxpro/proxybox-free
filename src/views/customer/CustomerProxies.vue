@@ -188,13 +188,17 @@ function toggleGroup(gid) {
 }
 
 function proxyLine(p, fmt = 'colon') {
+  // Prefer the unified-listener port when the backend exposes it — one URL
+  // for ALL of the customer's proxies, identified by username. The legacy
+  // per-proxy port still works (dual-mode in agent) so old configs survive.
+  const port = p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port
   // colon: host:port:user:pass — most common scraping/multilogin format
   // url-http / url-socks5: full URL form
   // host = p.ip (customer-facing v4 — even for IPv6 proxies); bindIp = egress.
   const host = p.ip || p.bindIp
-  if (fmt === 'url-http')   return `http://${p.username}:${p.password}@${host}:${p.port}`
-  if (fmt === 'url-socks5') return `socks5://${p.username}:${p.password}@${host}:${p.port}`
-  return `${host}:${p.port}:${p.username}:${p.password}`
+  if (fmt === 'url-http')   return `http://${p.username}:${p.password}@${host}:${port}`
+  if (fmt === 'url-socks5') return `socks5://${p.username}:${p.password}@${host}:${port}`
+  return `${host}:${port}:${p.username}:${p.password}`
 }
 async function copyGroup(g, fmt = 'colon') {
   const text = g.proxies.map((p) => proxyLine(p, fmt)).join('\n')
@@ -528,14 +532,15 @@ async function saveCreds(p) {
 // proxies). `p.bindIp` is the v6 egress address — NEVER use it for export
 // because v4-only clients can't dial a v6 host.
 function hostOf(p) { return p.ip || p.bindIp }
+function portOf(p) { return p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port }
 function formatProxies(proxies, fmt) {
   switch (fmt) {
-    case 'colon':       return proxies.map((p) => `${hostOf(p)}:${p.port}:${p.username}:${p.password}`).join('\n')
-    case 'url-http':    return proxies.map((p) => `http://${p.username}:${p.password}@${hostOf(p)}:${p.port}`).join('\n')
-    case 'url-socks5':  return proxies.map((p) => `socks5://${p.username}:${p.password}@${hostOf(p)}:${p.port}`).join('\n')
-    case 'curl':        return proxies.map((p) => `curl -x http://${p.username}:${p.password}@${hostOf(p)}:${p.port} https://api.ipify.org`).join('\n')
-    case 'env':         return proxies.map((p, i) => `PROXY_${i + 1}=http://${p.username}:${p.password}@${hostOf(p)}:${p.port}`).join('\n')
-    case 'json':        return JSON.stringify(proxies.map((p) => ({ host: hostOf(p), port: p.port, username: p.username, password: p.password, type: p.type, egressIp: p.bindIp })), null, 2)
+    case 'colon':       return proxies.map((p) => `${hostOf(p)}:${portOf(p)}:${p.username}:${p.password}`).join('\n')
+    case 'url-http':    return proxies.map((p) => `http://${p.username}:${p.password}@${hostOf(p)}:${portOf(p)}`).join('\n')
+    case 'url-socks5':  return proxies.map((p) => `socks5://${p.username}:${p.password}@${hostOf(p)}:${portOf(p)}`).join('\n')
+    case 'curl':        return proxies.map((p) => `curl -x http://${p.username}:${p.password}@${hostOf(p)}:${portOf(p)} https://api.ipify.org`).join('\n')
+    case 'env':         return proxies.map((p, i) => `PROXY_${i + 1}=http://${p.username}:${p.password}@${hostOf(p)}:${portOf(p)}`).join('\n')
+    case 'json':        return JSON.stringify(proxies.map((p) => ({ host: hostOf(p), port: portOf(p), username: p.username, password: p.password, type: p.type, egressIp: p.bindIp })), null, 2)
     case 'switchyomega': {
       const lines = ['function FindProxyForURL(url, host) {']
       lines.push('  return "' + proxies.map((p) => `PROXY ${hostOf(p)}:${p.port}`).join('; ') + '; DIRECT";')
@@ -1406,7 +1411,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
                 </template>
               </span>
               <span class="cell-mono">
-                <span class="ip-line">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
+                <span class="ip-line">{{ p.ip || p.bindIp }}:{{ portOf(p) }}</span>
                 <small v-if="p.type === 'IPv6' && p.bindIp && p.bindIp !== p.ip" class="egress-line" :title="p.bindIp">↳ {{ p.bindIp }}</small>
               </span>
               <span class="cell-mono creds">{{ p.username }}:{{ p.password }}</span>

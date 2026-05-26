@@ -64,10 +64,11 @@ struct AgentConfig {
     // disabled (legacy per-proxy listeners only).
     #[serde(rename = "unifiedPlainPort", default = "default_unified_plain")]
     unified_plain_port: u16,
-    #[serde(rename = "unifiedTlsPort", default)]
+    #[serde(rename = "unifiedTlsPort", default = "default_unified_tls")]
     unified_tls_port: u16,
 }
 fn default_unified_plain() -> u16 { 7777 }
+fn default_unified_tls() -> u16 { 7778 }
 fn default_family() -> String { "dual".into() }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -235,7 +236,7 @@ impl Drop for SessionGuard {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct NetworkReport {
     ipv4: Vec<IfaceAddr>,
     ipv6: Vec<IfaceAddr>,
@@ -387,8 +388,12 @@ fn add_traffic(s: &Arc<ProxyStats>, up: u64, dn: u64) {
 
 // Snapshot kept in sync with `listeners` so the unified handler can resolve
 // (username → ProxyCfg + stats) in O(1) without grabbing the tokio mutex on
-// the hot connection-accept path.
-type UserIndex = std::sync::RwLock<HashMap<String, (Arc<ProxyCfg>, Arc<ProxyStats>)>>;
+// the hot connection-accept path. A parallel trojan-hash index is used by
+// the unified TLS port to dispatch Trojan auth (SHA224 of password) just
+// as quickly.
+type ProxyRef = (Arc<ProxyCfg>, Arc<ProxyStats>);
+type UserIndex = std::sync::RwLock<HashMap<String, ProxyRef>>;
+type TrojanIndex = std::sync::RwLock<HashMap<String, ProxyRef>>;
 
 struct Agent {
     cfg: Mutex<AgentConfig>,
@@ -399,6 +404,7 @@ struct Agent {
     stats: Mutex<HashMap<String, Arc<ProxyStats>>>,
     tls_acceptor: Mutex<Option<TlsAcceptor>>,
     user_index: Arc<UserIndex>,
+    trojan_index: Arc<TrojanIndex>,
     // Last config revision seen — sent to master as ?rev=N so the master
     // long-polls if nothing changed since.
     last_rev: std::sync::atomic::AtomicU64,
@@ -596,17 +602,6 @@ fn ensure_v6_on_iface(ip: IpAddr) {
 static LAST_BIND_PER_PROXY: std::sync::Mutex<Option<HashMap<String, Ipv6Addr>>> =
     std::sync::Mutex::new(None);
 
-fn remember_v6_for_proxy(proxy_id: &str, new_v6: Ipv6Addr) -> Option<Ipv6Addr> {
-    let mut g = LAST_BIND_PER_PROXY.lock().unwrap_or_else(|p| p.into_inner());
-    if g.is_none() { *g = Some(HashMap::new()); }
-    let map = g.as_mut().unwrap();
-    let prev = map.insert(proxy_id.to_string(), new_v6);
-    match prev {
-        Some(old) if old != new_v6 => Some(old),
-        _ => None,
-    }
-}
-
 // Short-TTL cache of the v6 egress pool (Vec<Ipv6Addr>). `connect_upstream`
 // for rotating proxies asks for this on every connection — without the
 // cache, each call does a fresh netlink getifaddrs dump (O(N) on number of
@@ -639,6 +634,17 @@ fn cached_v6_pool() -> Vec<Ipv6Addr> {
 fn invalidate_v6_pool_cache() {
     let mut g = V6_POOL_CACHE.lock().unwrap_or_else(|p| p.into_inner());
     *g = None;
+}
+
+fn remember_v6_for_proxy(proxy_id: &str, new_v6: Ipv6Addr) -> Option<Ipv6Addr> {
+    let mut g = LAST_BIND_PER_PROXY.lock().unwrap_or_else(|p| p.into_inner());
+    if g.is_none() { *g = Some(HashMap::new()); }
+    let map = g.as_mut().unwrap();
+    let prev = map.insert(proxy_id.to_string(), new_v6);
+    match prev {
+        Some(old) if old != new_v6 => Some(old),
+        _ => None,
+    }
 }
 
 // Attach the new IPv6 for a given proxy. Updates the per-proxy "last bind"
@@ -1288,9 +1294,18 @@ async fn handle_client(proxy: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private:
 // Proxy-Authorization). The scaling primitive that lets one node host
 // 100k+ proxies: no per-proxy port + listener + 8-FD set, just one
 // SO_REUSEPORT worker pool sharing the entire population.
+//
+// Current: HTTP CONNECT / plain HTTP only. SOCKS5 + Trojan-via-unified can
+// follow with the same pattern — peek protocol, do enough handshake to
+// extract a username, look up cfg, splice into existing handlers.
 
-async fn read_http_until_headers(client: &mut TcpStream) -> Result<Vec<u8>, String> {
-    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+// Read until \r\n\r\n with a hard cap so a malicious client can't keep us
+// blocked. Returns the full read buffer (caller passes the whole thing to
+// handle_http_proxy as `initial` — that function will split headers vs
+// leftover itself).
+async fn read_http_until_headers_with_initial(client: &mut TcpStream, initial: &mut Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut buf: Vec<u8> = std::mem::take(initial);
+    if buf.capacity() < 1024 { buf.reserve(1024 - buf.capacity()); }
     let mut tmp = [0u8; 4096];
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
@@ -1307,6 +1322,8 @@ async fn read_http_until_headers(client: &mut TcpStream) -> Result<Vec<u8>, Stri
     }
 }
 
+// Extract Proxy-Authorization username/password from a buffer that ends
+// with \r\n\r\n. Returns None if no Basic auth header found.
 fn extract_proxy_user_pass(buf: &[u8]) -> Option<(String, String)> {
     let head = std::str::from_utf8(buf).ok()?;
     for line in head.split("\r\n") {
@@ -1331,11 +1348,26 @@ async fn handle_unified_plain(
     let peer = client.peer_addr().ok();
     let src_ip: IpAddr = peer.map(|a| a.ip()).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let src_port: u16 = peer.map(|a| a.port()).unwrap_or(0);
-    let buf = match read_http_until_headers(&mut client).await {
+
+    // Peek the first byte to dispatch protocol. 0x05 = SOCKS5 (binary
+    // greeting); anything else = HTTP CONNECT / GET / etc.
+    let mut peek = [0u8; 1];
+    let n = match timeout(CLIENT_TIMEOUT, client.read(&mut peek)).await {
+        Ok(Ok(n)) => n, _ => return,
+    };
+    if n == 0 { return; }
+    if peek[0] == 0x05 {
+        let _ = handle_unified_socks5(user_index, locks, allow_private, client, src_ip, src_port, vec![peek[0]]).await;
+        return;
+    }
+    // HTTP path: keep reading until we have the full request headers,
+    // then parse Proxy-Authorization to identify the user.
+    let mut initial = vec![peek[0]];
+    let buf = match read_http_until_headers_with_initial(&mut client, &mut initial).await {
         Ok(b) => b,
         Err(_) => return,
     };
-    let (user, _pass) = match extract_proxy_user_pass(&buf) {
+    let (user, pass) = match extract_proxy_user_pass(&buf) {
         Some(x) => x,
         None => {
             let _ = client.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"ProxyBox\"\r\nContent-Length: 0\r\n\r\n").await;
@@ -1353,13 +1385,121 @@ async fn handle_unified_plain(
             return;
         }
     };
+    // Per-proxy connection cap (same as per-port handle_client path)
     if cfg_arc.max_connections > 0 && stats_arc.active_connections.load(Ordering::Relaxed) >= cfg_arc.max_connections {
         return;
     }
     stats_arc.total_connections.fetch_add(1, Ordering::Relaxed);
     stats_arc.active_connections.fetch_add(1, Ordering::Relaxed);
     let _guard = ActiveGuard(stats_arc.clone());
+    let _ = pass; // handle_http_proxy re-parses + verifies; pass is here only to fail fast on missing-header
     let _ = handle_http_proxy(&cfg_arc, &locks, allow_private, src_ip, src_port, client, buf, &stats_arc).await;
+}
+
+// SOCKS5 over the unified port. Same wire format as per-proxy SOCKS5, but
+// the username from the user/pass sub-negotiation picks which ProxyCfg
+// services the request. Mirrors handle_socks5 exactly after lookup so any
+// future change there must be mirrored here.
+async fn handle_unified_socks5(
+    user_index: Arc<UserIndex>,
+    locks: Arc<ProxyLockMap>,
+    allow_private: bool,
+    mut client: TcpStream,
+    src_ip: IpAddr,
+    src_port: u16,
+    first: Vec<u8>,
+) -> Result<(), String> {
+    let mut buf = [0u8; 2];
+    let mut first = first;
+    if first.len() < 2 {
+        client.read_exact(&mut buf[first.len()..]).await.map_err(|e| e.to_string())?;
+        for (i, b) in first.iter().enumerate() { buf[i] = *b; }
+        first.clear();
+    } else { buf.copy_from_slice(&first[..2]); first.drain(..2); }
+    if buf[0] != 0x05 { return Err("not SOCKS5".into()); }
+    let nmethods = buf[1] as usize;
+    let mut methods = vec![0u8; nmethods];
+    if first.len() >= nmethods {
+        methods.copy_from_slice(&first[..nmethods]); first.drain(..nmethods);
+    } else {
+        let have = first.len(); methods[..have].copy_from_slice(&first); first.clear();
+        client.read_exact(&mut methods[have..]).await.map_err(|e| e.to_string())?;
+    }
+    if !methods.contains(&0x02) {
+        let _ = client.write_all(&[0x05, 0xff]).await; return Err("no user/pass method".into());
+    }
+    client.write_all(&[0x05, 0x02]).await.map_err(|e| e.to_string())?;
+    let mut head = [0u8; 2]; client.read_exact(&mut head).await.map_err(|e| e.to_string())?;
+    let ulen = head[1] as usize;
+    let mut user = vec![0u8; ulen]; client.read_exact(&mut user).await.map_err(|e| e.to_string())?;
+    let mut plen_buf = [0u8; 1]; client.read_exact(&mut plen_buf).await.map_err(|e| e.to_string())?;
+    let plen = plen_buf[0] as usize;
+    let mut pass = vec![0u8; plen]; client.read_exact(&mut pass).await.map_err(|e| e.to_string())?;
+    let user_s = String::from_utf8_lossy(&user).to_string();
+    let pass_s = String::from_utf8_lossy(&pass).to_string();
+    let lookup = {
+        let g = user_index.read().unwrap_or_else(|p| p.into_inner());
+        g.get(&user_s).map(|v| (v.0.clone(), v.1.clone()))
+    };
+    let (cfg, stats) = match lookup {
+        Some(v) => v,
+        None => { let _ = client.write_all(&[0x01, 0x01]).await; return Err("unknown user".into()); }
+    };
+    let whitelist_ok = src_ip_allowed_by_whitelist(&cfg, src_ip);
+    if !whitelist_ok && !proxy_authorized_fast(&cfg, &user_s, &pass_s, src_ip) {
+        let _ = client.write_all(&[0x01, 0x01]).await; return Err("auth fail".into());
+    }
+    if cfg.max_connections > 0 && stats.active_connections.load(Ordering::Relaxed) >= cfg.max_connections {
+        let _ = client.write_all(&[0x01, 0x01]).await; return Err("max connections".into());
+    }
+    stats.total_connections.fetch_add(1, Ordering::Relaxed);
+    stats.active_connections.fetch_add(1, Ordering::Relaxed);
+    let _active = ActiveGuard(stats.clone());
+    let _guard = if whitelist_ok { None } else {
+        match try_acquire_session(&locks, &cfg, &src_ip.to_string()) {
+            Some(g) => Some(g),
+            None => { let _ = client.write_all(&[0x01, 0x01]).await; return Err("max 3 concurrent connections".into()); }
+        }
+    };
+    let kick = _guard.as_ref().map(|g| g.notify_handle());
+    client.write_all(&[0x01, 0x00]).await.map_err(|e| e.to_string())?;
+    let mut req = [0u8; 4]; client.read_exact(&mut req).await.map_err(|e| e.to_string())?;
+    let cmd = req[1];
+    if cmd != 0x01 && cmd != 0x03 {
+        let _ = client.write_all(&[0x05, 0x07, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+        return Err("unsupported SOCKS cmd".into());
+    }
+    let host = match req[3] {
+        0x01 => { let mut b = [0u8; 4]; client.read_exact(&mut b).await.map_err(|e| e.to_string())?; Ipv4Addr::from(b).to_string() }
+        0x03 => { let mut l = [0u8; 1]; client.read_exact(&mut l).await.map_err(|e| e.to_string())?;
+                  let mut b = vec![0u8; l[0] as usize]; client.read_exact(&mut b).await.map_err(|e| e.to_string())?;
+                  String::from_utf8_lossy(&b).to_string() }
+        0x04 => { let mut b = [0u8; 16]; client.read_exact(&mut b).await.map_err(|e| e.to_string())?; Ipv6Addr::from(b).to_string() }
+        _ => return Err("bad atyp".into()),
+    };
+    let mut pb = [0u8; 2]; client.read_exact(&mut pb).await.map_err(|e| e.to_string())?;
+    let port = u16::from_be_bytes(pb);
+    if cmd == 0x03 {
+        return handle_socks5_udp(&cfg, allow_private, client, &stats).await;
+    }
+    let mut up = match connect_upstream(&cfg, &host, port, allow_private).await {
+        Ok(s) => s,
+        Err(e) => {
+            let code: u8 = if e.starts_with("blocked") { 0x02 } else { 0x05 };
+            let _ = client.write_all(&[0x05, code, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            return Err(e);
+        }
+    };
+    client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.map_err(|e| e.to_string())?;
+    let start = now_ms();
+    let traffic = if let Some(kick) = kick.as_ref() {
+        tokio::select! { biased; _ = kick.notified() => Err(()), r = relay_bidi(&mut client, &mut up) => r.map_err(|_| ()) }
+    } else { relay_bidi(&mut client, &mut up).await.map_err(|_| ()) };
+    if let Ok((up_b, dn_b)) = traffic {
+        add_traffic(&stats, up_b, dn_b);
+        record_connection(&stats, src_ip, src_port, &host, port, up_b, dn_b, now_ms().saturating_sub(start), "socks5").await;
+    }
+    Ok(())
 }
 
 async fn serve_unified_plain(
@@ -1401,6 +1541,151 @@ async fn serve_unified_plain(
                 let lk2 = lk.clone();
                 tokio::spawn(async move {
                     handle_unified_plain(ui2, lk2, allow_private, stream).await;
+                });
+            }
+        });
+    }
+}
+
+// TLS-wrapped unified listener — Trojan + HTTPS-proxy on one port. After
+// the TLS handshake we read 56 bytes; if they match a SHA224(password) in
+// the trojan_index it's a Trojan client; otherwise treat the bytes as the
+// start of an HTTP request and parse Proxy-Authorization against
+// user_index. Same scaling primitive as the plain unified port — N
+// proxies share one TLS listener.
+async fn handle_unified_tls_dispatched(
+    user_index: Arc<UserIndex>,
+    trojan_index: Arc<TrojanIndex>,
+    locks: Arc<ProxyLockMap>,
+    allow_private: bool,
+    mut tls: tokio_rustls::server::TlsStream<TcpStream>,
+) {
+    let src_ip = tls.get_ref().0.peer_addr().map(|a| a.ip()).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let src_port = tls.get_ref().0.peer_addr().map(|a| a.port()).unwrap_or(0);
+    // Read 56 bytes (matches the per-proxy TLS path).
+    let mut peek = [0u8; 56];
+    let mut got = 0usize;
+    while got < 56 {
+        let n = match timeout(CLIENT_TIMEOUT, tls.read(&mut peek[got..])).await {
+            Ok(Ok(n)) if n > 0 => n, _ => return,
+        };
+        got += n;
+    }
+    let hex_candidate = std::str::from_utf8(&peek).ok().map(|s| s.to_string());
+    let trojan_lookup = if let Some(ref h) = hex_candidate {
+        let g = trojan_index.read().unwrap_or_else(|p| p.into_inner());
+        g.get(h).cloned()
+    } else { None };
+    if let Some((cfg, stats)) = trojan_lookup {
+        if cfg.max_connections > 0 && stats.active_connections.load(Ordering::Relaxed) >= cfg.max_connections { return; }
+        stats.total_connections.fetch_add(1, Ordering::Relaxed);
+        stats.active_connections.fetch_add(1, Ordering::Relaxed);
+        let _g = ActiveGuard(stats.clone());
+        let whitelisted = src_ip_allowed_by_whitelist(&cfg, src_ip);
+        let guard = if whitelisted { None } else {
+            match try_acquire_session(&locks, &cfg, &src_ip.to_string()) { Some(g) => Some(g), None => return }
+        };
+        let kick = guard.as_ref().map(|g| g.notify_handle());
+        let _ = handle_trojan_after_auth(&cfg, allow_private, &mut tls, src_ip, src_port, kick, &stats).await;
+        drop(guard);
+        return;
+    }
+    // Not Trojan — treat the 56 bytes as the start of an HTTP request.
+    // Read until headers complete, parse Proxy-Authorization, lookup.
+    let mut initial = peek.to_vec();
+    let buf = match read_http_until_headers_tls(&mut tls, &mut initial).await {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let (user, _pass) = match extract_proxy_user_pass(&buf) {
+        Some(x) => x,
+        None => {
+            let _ = tls.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"ProxyBox\"\r\nContent-Length: 0\r\n\r\n").await;
+            return;
+        }
+    };
+    let lookup = {
+        let g = user_index.read().unwrap_or_else(|p| p.into_inner());
+        g.get(&user).cloned()
+    };
+    let (cfg, stats) = match lookup {
+        Some(v) => v,
+        None => {
+            let _ = tls.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"ProxyBox\"\r\nContent-Length: 0\r\nX-Proxy-Error: unknown user\r\n\r\n").await;
+            return;
+        }
+    };
+    if cfg.max_connections > 0 && stats.active_connections.load(Ordering::Relaxed) >= cfg.max_connections { return; }
+    stats.total_connections.fetch_add(1, Ordering::Relaxed);
+    stats.active_connections.fetch_add(1, Ordering::Relaxed);
+    let _g = ActiveGuard(stats.clone());
+    let _ = handle_http_proxy_on_tls(&cfg, &locks, allow_private, &mut tls, src_ip, src_port, buf, &stats).await;
+}
+
+async fn read_http_until_headers_tls(
+    tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    initial: &mut Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    let mut buf: Vec<u8> = std::mem::take(initial);
+    let mut tmp = [0u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if find_sub(&buf, b"\r\n\r\n").is_some() { return Ok(buf); }
+        if buf.len() > 65_536 { return Err("header too large".into()); }
+        let now = std::time::Instant::now();
+        if now >= deadline { return Err("header read timeout".into()); }
+        let rem = deadline - now;
+        let n = timeout(rem, tls.read(&mut tmp)).await
+            .map_err(|_| "header read timeout".to_string())?
+            .map_err(|e| e.to_string())?;
+        if n == 0 { return Err("client closed before headers".into()); }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+}
+
+async fn serve_unified_tls(
+    port: u16,
+    workers: usize,
+    acceptor: TlsAcceptor,
+    user_index: Arc<UserIndex>,
+    trojan_index: Arc<TrojanIndex>,
+    locks: Arc<ProxyLockMap>,
+    allow_private: bool,
+) {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+    let mut listeners: Vec<TcpListener> = Vec::with_capacity(workers);
+    for i in 0..workers {
+        let sock = match TcpSocket::new_v4() {
+            Ok(s) => s, Err(e) => { eprintln!("[unified-tls] socket: {e}"); return; }
+        };
+        let _ = sock.set_reuseaddr(true);
+        #[cfg(unix)] let _ = sock.set_reuseport(true);
+        let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+        let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
+        if let Err(e) = sock.bind(addr) {
+            if i == 0 { eprintln!("[unified-tls] bind {addr}: {e}"); return; }
+            break;
+        }
+        let lst = match sock.listen(4096) {
+            Ok(l) => l, Err(e) => { eprintln!("[unified-tls] listen {addr}: {e}"); return; }
+        };
+        listeners.push(lst);
+    }
+    eprintln!("[unified-tls] {addr} ({} workers) — Trojan + HTTPS-proxy", listeners.len());
+    for lst in listeners {
+        let ui = user_index.clone();
+        let ti = trojan_index.clone();
+        let lk = locks.clone();
+        let acc = acceptor.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _peer) = match lst.accept().await { Ok(x) => x, Err(_) => continue };
+                let _ = stream.set_nodelay(true);
+                tune_socket(&stream);
+                let ui2 = ui.clone(); let ti2 = ti.clone(); let lk2 = lk.clone(); let acc2 = acc.clone();
+                tokio::spawn(async move {
+                    let tls = match acc2.accept(stream).await { Ok(t) => t, Err(_) => return };
+                    handle_unified_tls_dispatched(ui2, ti2, lk2, allow_private, tls).await;
                 });
             }
         });
@@ -1651,7 +1936,9 @@ async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyL
     let addr = SocketAddr::new(host, cfg.tls_port);
     // For IPv6 proxies the bindIp may need attaching first (same as plain port).
     if cfg.kind.eq_ignore_ascii_case("IPv6") {
-        if let Ok(bind) = cfg.bind_ip.parse::<IpAddr>() { attach_v6_for_proxy(&cfg.id, bind).await; }
+        if let Ok(bind) = cfg.bind_ip.parse::<IpAddr>() {
+            attach_v6_for_proxy(&cfg.id, bind).await;
+        }
     }
     let sock = match if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() } {
         Ok(s) => s,
@@ -2139,7 +2426,8 @@ impl Agent {
     }
 
     async fn register(&self) -> Result<(), String> {
-        let body = serde_json::json!({ "version": AGENT_VERSION, "network": detect_network() });
+        let network = tokio::task::spawn_blocking(detect_network).await.unwrap_or_default();
+        let body = serde_json::json!({ "version": AGENT_VERSION, "network": network });
         let resp = self.agent_post("register").await.json(&body).send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() { return Err(format!("register: HTTP {}", resp.status())); }
         Ok(())
@@ -2198,9 +2486,10 @@ impl Agent {
             let mut v = self.pending_results.lock().await;
             v.drain(..).collect()
         };
+        let network = tokio::task::spawn_blocking(detect_network).await.unwrap_or_default();
         let body = serde_json::json!({
             "version": AGENT_VERSION,
-            "network": detect_network(),
+            "network": network,
             "stats": stats_map,
             "metrics": metrics,
             "commandResults": command_results,
@@ -2278,7 +2567,7 @@ impl Agent {
                 (0, out)
             }
             "refresh-network" => {
-                let net = detect_network();
+                let net = tokio::task::spawn_blocking(detect_network).await.unwrap_or_default();
                 (0, serde_json::to_string_pretty(&net).unwrap_or_default())
             }
             "drain" => {
@@ -2481,21 +2770,32 @@ impl Agent {
             }
             lst.insert(p.id.clone(), ProxyHandle { cfg: p, stop, task });
         }
-        // Rebuild the unified-listener user index from the current set of
-        // listeners + stats. Done under tokio mutex (which we already hold)
-        // so the snapshot is consistent.
-        let mut next: HashMap<String, (Arc<ProxyCfg>, Arc<ProxyStats>)> = HashMap::with_capacity(lst.len());
+        // Rebuild the unified-listener user index + trojan-hash index from
+        // the current set of listeners + stats. Done under the tokio mutex
+        // we already hold so the snapshot is consistent. The std::sync
+        // RwLocks are held only for the swap.
+        let mut next_user: HashMap<String, ProxyRef> = HashMap::with_capacity(lst.len());
+        let mut next_trojan: HashMap<String, ProxyRef> = HashMap::with_capacity(lst.len());
         {
             let sm = self.stats.lock().await;
             for (id, h) in lst.iter() {
-                if h.cfg.username.is_empty() { continue; }
                 let stats = match sm.get(id) { Some(s) => s.clone(), None => continue };
-                next.insert(h.cfg.username.clone(), (Arc::new(h.cfg.clone()), stats));
+                let cfg_arc = Arc::new(h.cfg.clone());
+                if !h.cfg.username.is_empty() {
+                    next_user.insert(h.cfg.username.clone(), (cfg_arc.clone(), stats.clone()));
+                }
+                if !h.cfg.password.is_empty() {
+                    next_trojan.insert(trojan_hash(&h.cfg.password), (cfg_arc, stats));
+                }
             }
         }
         {
             let mut g = self.user_index.write().unwrap_or_else(|p| p.into_inner());
-            *g = next;
+            *g = next_user;
+        }
+        {
+            let mut g = self.trojan_index.write().unwrap_or_else(|p| p.into_inner());
+            *g = next_trojan;
         }
     }
 }
@@ -2593,6 +2893,7 @@ async fn async_main() {
         stats: Mutex::new(HashMap::new()),
         tls_acceptor: Mutex::new(tls_acceptor),
         user_index: Arc::new(std::sync::RwLock::new(HashMap::new())),
+        trojan_index: Arc::new(std::sync::RwLock::new(HashMap::new())),
         last_rev: std::sync::atomic::AtomicU64::new(0),
         proxy_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pending_results: Mutex::new(Vec::new()),
@@ -2603,6 +2904,15 @@ async fn async_main() {
     if let Err(e) = agent.register().await { eprintln!("[agent] register: {e}"); }
     let url = agent.cfg.lock().await.control_url.clone();
     eprintln!("[agent] registered with {url} (v{AGENT_VERSION})");
+
+    // Spawn heartbeat before the initial reconcile so control-plane visibility
+    // is not blocked by the (potentially long) proxy startup sweep.
+    let a2 = agent.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
+        loop { ticker.tick().await; if let Err(e) = a2.heartbeat().await { eprintln!("[agent] heartbeat: {e}"); } }
+    });
+
     agent.reconcile().await;
 
     let a1 = agent.clone();
@@ -2611,11 +2921,6 @@ async fn async_main() {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop { ticker.tick().await; a1.reconcile().await; }
     });
-    let a2 = agent.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
-        loop { ticker.tick().await; if let Err(e) = a2.heartbeat().await { eprintln!("[agent] heartbeat: {e}"); } }
-    });
 
     // Unified listener — one accept port for ALL proxies, routed by username
     // from Proxy-Authorization. Lets a single node host 100k+ proxies without
@@ -2623,13 +2928,22 @@ async fn async_main() {
     // for backwards compatibility — customers keep their old URLs working).
     {
         let cfg_snap = agent.cfg.lock().await.clone();
+        let allow_private = cfg_snap.proxy_defaults.allow_private_targets;
+        let workers = num_cpus_capped(64);
         let port = cfg_snap.unified_plain_port;
         if port > 0 {
             let ui = agent.user_index.clone();
             let lk = agent.proxy_locks.clone();
-            let allow_private = cfg_snap.proxy_defaults.allow_private_targets;
-            let workers = num_cpus_capped(64);
             tokio::spawn(async move { serve_unified_plain(port, workers, ui, lk, allow_private).await; });
+        }
+        let tls_port = cfg_snap.unified_tls_port;
+        if tls_port > 0 {
+            if let Some(acc) = agent.tls_acceptor.lock().await.clone() {
+                let ui = agent.user_index.clone();
+                let ti = agent.trojan_index.clone();
+                let lk = agent.proxy_locks.clone();
+                tokio::spawn(async move { serve_unified_tls(tls_port, workers, acc, ui, ti, lk, allow_private).await; });
+            }
         }
     }
 

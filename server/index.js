@@ -697,7 +697,28 @@ const apiServer = http.createServer(handleHttp)
 apiServer.listen(config.api.port, config.api.host, () => {
   console.log(`[api] listening on http://${config.api.host}:${config.api.port}`)
   console.log(`[api] detected ${detected.ipv4.length} IPv4 address(es), ${detected.ipv6Prefixes.length} IPv6 prefix(es)`)
+  validatePortCollisions()
 })
+
+function validatePortCollisions() {
+  const usedPlain = new Map(); const usedTls = new Map();
+  for (const p of config.proxies) {
+    if (Number.isFinite(p.port)) usedPlain.set(Number(p.port), p.id);
+    if (Number.isFinite(p.tlsPort)) usedTls.set(Number(p.tlsPort), p.id);
+  }
+  const collisions = []
+  for (const p of config.proxies) {
+    const a = usedTls.get(Number(p.port)); if (a && a !== p.id) collisions.push({ id: p.id, port: p.port, conflictWith: a, kind: 'plain-vs-tls' });
+    const b = usedPlain.get(Number(p.tlsPort)); if (b && b !== p.id) collisions.push({ id: p.id, tlsPort: p.tlsPort, conflictWith: b, kind: 'tls-vs-plain' });
+  }
+  if (collisions.length > 0) {
+    console.warn(`[validator] WARNING: ${collisions.length} proxy port↔tlsPort collisions detected — ${new Set(collisions.map(c => c.id)).size} unique proxies affected`)
+    console.warn(`[validator] First 3:`, collisions.slice(0, 3))
+    console.warn(`[validator] Run POST /api/admin/maintenance/relocate-tls-ports to auto-fix (admin auth required)`)
+  } else {
+    console.log(`[validator] ${config.proxies.length} proxies: 0 port collisions`)
+  }
+}
 
 if (pki) {
   const mtlsServer = https.createServer(
@@ -737,7 +758,7 @@ async function loadConfig() {
   parsed.unifiedListener ||= {}
   parsed.unifiedListener.enabled = parsed.unifiedListener.enabled !== false
   parsed.unifiedListener.plainPort = Number(parsed.unifiedListener.plainPort || 7777)
-  parsed.unifiedListener.tlsPort = Number(parsed.unifiedListener.tlsPort || 0)
+  parsed.unifiedListener.tlsPort = Number(parsed.unifiedListener.tlsPort || 7778)
   parsed.users ||= []
   parsed.proxies ||= []
   parsed.nodes ||= []
@@ -5565,6 +5586,38 @@ async function handleApi(req, res, url) {
       await saveConfig()
       audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: 'apiKey rotated' })
       return sendJson(res, 200, { ok: true, apiKey: next })
+    }
+
+    // Auto-fix proxy port↔tlsPort collisions caused by bulk-allocators that
+    // bypassed nextPort(). Idempotent: returns count=0 when clean.
+    if (req.method === 'POST' && url.pathname === '/api/admin/maintenance/relocate-tls-ports') {
+      const usedPlain = new Map(); const usedTls = new Map();
+      for (const p of config.proxies) {
+        if (Number.isFinite(p.port)) usedPlain.set(Number(p.port), p.id);
+        if (Number.isFinite(p.tlsPort)) usedTls.set(Number(p.tlsPort), p.id);
+      }
+      const toRelocate = new Set()
+      for (const p of config.proxies) {
+        const a = usedTls.get(Number(p.port)); if (a && a !== p.id) toRelocate.add(a)
+        const b = usedPlain.get(Number(p.tlsPort)); if (b && b !== p.id) toRelocate.add(p.id)
+      }
+      if (toRelocate.size === 0) return sendJson(res, 200, { count: 0, message: 'no collisions' })
+      const maxAny = Math.max(0, ...usedPlain.keys(), ...usedTls.keys())
+      let nextFree = maxAny + 1
+      const findFree = () => { while (usedPlain.has(nextFree) || usedTls.has(nextFree)) nextFree++; return nextFree++ }
+      const changes = []
+      for (const id of toRelocate) {
+        const p = config.proxies.find((x) => x.id === id); if (!p) continue
+        const oldTls = p.tlsPort
+        usedTls.delete(oldTls)
+        const newTls = findFree()
+        usedTls.set(newTls, p.id)
+        p.tlsPort = newTls
+        changes.push({ id: p.id, oldTls, newTls })
+      }
+      await saveConfig()
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `relocated ${changes.length} tlsPorts` })
+      return sendJson(res, 200, { count: changes.length, sample: changes.slice(0, 5) })
     }
 
     // â”€â”€ admin: feature flags (runtime toggle for major capabilities) â”€â”€
