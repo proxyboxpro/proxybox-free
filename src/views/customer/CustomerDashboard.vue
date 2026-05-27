@@ -193,7 +193,7 @@ function countryForProxy(p) {
 }
 function countryName(p) {
   const c = countryForProxy(p)
-  return { VN: 'Việt Nam', US: 'United States', GB: 'United Kingdom', DE: 'Germany', JP: 'Japan', SG: 'Singapore', HK: 'Hong Kong', GLOBAL: 'Global' }[c] || c
+  return { VN: 'Vietnam', US: 'United States', GB: 'United Kingdom', DE: 'Germany', JP: 'Japan', SG: 'Singapore', HK: 'Hong Kong', GLOBAL: 'Global' }[c] || c
 }
 function fmtExpires(at) {
   if (!at) return '—'
