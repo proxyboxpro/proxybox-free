@@ -14,6 +14,7 @@ const { t } = useI18n()
 const data = ref(null)
 const err = ref('')
 const search = ref('')
+const ppWin = ref('30d')   // per-proxy table window: '24h' | '30d'
 
 async function refresh() {
   err.value = ''
@@ -43,6 +44,18 @@ function hoursAgoLabel(idx, total) {
 const totals = computed(() => data.value?.totals || { upload: 0, download: 0, conns: 0, proxyCount: 0 })
 const totalBytes = computed(() => (totals.value.upload || 0) + (totals.value.download || 0))
 const quotaGB = computed(() => Number(data.value?.quotaGB) || 0)
+
+// Accurate cumulative transferred volume over rolling windows (from conn_events).
+const EMPTY_WIN = { up: 0, down: 0 }
+const windows = computed(() => data.value?.windows || { h1: EMPTY_WIN, h24: EMPTY_WIN, d30: EMPTY_WIN })
+const windowCards = computed(() => {
+  const w = windows.value
+  return [
+    { key: 'h1',  label: t('cust.usage.win1h'),  up: w.h1?.up || 0,  down: w.h1?.down || 0 },
+    { key: 'h24', label: t('cust.usage.win24h'), up: w.h24?.up || 0, down: w.h24?.down || 0 },
+    { key: 'd30', label: t('cust.usage.win30d'), up: w.d30?.up || 0, down: w.d30?.down || 0 }
+  ]
+})
 
 // Normalize hourly into 24 fixed buckets — pad with zeros if API returns less.
 // No synthetic data: flat-empty is honest when no traffic yet.
@@ -115,20 +128,27 @@ const donut = computed(() => {
 })
 
 // ── Per-proxy table data ────────────────────────────────────────────────────
+// Per-proxy up/down for the selected window (accurate, from conn_events). Falls
+// back to since-restart counters if the backend didn't attach window data.
+function proxyWin(p) {
+  const w = ppWin.value === '24h' ? p.win24 : p.win30
+  if (w) return { up: w.up || 0, down: w.down || 0 }
+  return { up: p.uploadBytes || 0, down: p.downloadBytes || 0 }
+}
 const rows = computed(() => {
-  const r = data.value?.perProxy || []
-  const max = Math.max(1, ...r.map((p) => (p.uploadBytes || 0) + (p.downloadBytes || 0)))
+  const r = (data.value?.perProxy || []).map((p) => {
+    const w = proxyWin(p)
+    return { ...p, wUp: w.up, wDown: w.down, total: w.up + w.down }
+  })
+  const max = Math.max(1, ...r.map((p) => p.total))
   return r
     .filter((p) => {
       if (!search.value) return true
       const q = search.value.toLowerCase()
       return `${p.name || ''} ${p.bindIp || ''} ${p.port || ''}`.toLowerCase().includes(q)
     })
-    .map((p) => ({
-      ...p,
-      total: (p.uploadBytes || 0) + (p.downloadBytes || 0),
-      share: Math.min(100, Math.round((((p.uploadBytes || 0) + (p.downloadBytes || 0)) / max) * 100))
-    }))
+    .sort((a, b) => b.total - a.total)
+    .map((p) => ({ ...p, share: Math.min(100, Math.round((p.total / max) * 100)) }))
 })
 
 onMounted(refresh)
@@ -191,6 +211,24 @@ onMounted(refresh)
       </div>
     </div>
   </div>
+
+  <!-- Accurate cumulative traffic totals over 1h / 24h / 30d -->
+  <section class="surface bw-windows-wrap">
+    <div class="bw-windows-head">
+      <h2><BarChart3 :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.usage.windowsTitle') }}</h2>
+      <span class="bw-windows-hint">{{ t('cust.usage.windowsHint') }}</span>
+    </div>
+    <div class="bw-windows">
+      <article v-for="w in windowCards" :key="w.key" class="bw-win-card">
+        <span class="bw-win-label">{{ w.label }}</span>
+        <strong class="bw-win-total cell-mono">{{ formatBytes(w.up + w.down) }}</strong>
+        <div class="bw-win-split">
+          <span class="cell-mono" style="color:#4ade80"><ArrowUp :size="12" style="vertical-align:-2px" /> {{ formatBytes(w.up) }}</span>
+          <span class="cell-mono" style="color:#60a5fa"><ArrowDown :size="12" style="vertical-align:-2px" /> {{ formatBytes(w.down) }}</span>
+        </div>
+      </article>
+    </div>
+  </section>
 
   <!-- Main chart + donut split -->
   <div style="display:grid; grid-template-columns: 1fr 280px; gap:14px; margin-bottom:14px">
@@ -266,6 +304,10 @@ onMounted(refresh)
   <section class="dt2">
     <div class="dt2-toolbar">
       <h2 style="margin:0; color:var(--text); font-size:15px">{{ t('cust.usage.perProxy') }} ({{ rows.length }})</h2>
+      <div class="ppwin-pills" :title="t('cust.usage.ppWindow')">
+        <button type="button" :class="{ active: ppWin === '24h' }" @click="ppWin = '24h'">24h</button>
+        <button type="button" :class="{ active: ppWin === '30d' }" @click="ppWin = '30d'">30d</button>
+      </div>
       <div class="spacer"></div>
       <div class="search-box">
         <Search :size="14" />
@@ -288,8 +330,8 @@ onMounted(refresh)
       <span class="name">{{ p.name || p.id }}</span>
       <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
       <span class="country"><CountryFlag :code="countryFromZone(p.zone)" :size="18" /> {{ p.zone || 'auto' }}</span>
-      <span class="cell-mono" style="color:#4ade80">{{ formatBytes(p.uploadBytes || 0) }}</span>
-      <span class="cell-mono" style="color:#60a5fa">{{ formatBytes(p.downloadBytes || 0) }}</span>
+      <span class="cell-mono" style="color:#4ade80">{{ formatBytes(p.wUp || 0) }}</span>
+      <span class="cell-mono" style="color:#60a5fa">{{ formatBytes(p.wDown || 0) }}</span>
       <span class="cell-mono" style="font-size:11.5px">↑{{ fmtRate(p.bpsOut) }} ↓{{ fmtRate(p.bpsIn) }}</span>
       <span class="usage-bar">
         <span class="vals">{{ formatBytes(p.total) }}</span>
@@ -300,3 +342,31 @@ onMounted(refresh)
     <p v-if="!rows.length" class="empty-text" style="padding:30px">{{ t('cust.usage.empty') }}</p>
   </section>
 </template>
+
+<style scoped>
+.bw-windows-wrap { padding: 16px 18px; margin-bottom: 14px; }
+.bw-windows-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.bw-windows-head h2 { margin: 0; color: var(--text); font-size: 15px; }
+.bw-windows-hint { font-size: 12px; color: var(--muted); }
+.bw-windows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.bw-win-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px 16px; border-radius: 10px;
+  background: var(--pxl-card-2, rgba(255,255,255,0.03));
+  border: 1px solid var(--border);
+}
+.bw-win-label { font-size: 12.5px; color: var(--muted); }
+.bw-win-total { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.bw-win-split { display: flex; gap: 16px; font-size: 12px; margin-top: 2px; }
+
+.ppwin-pills { display: inline-flex; padding: 2px; background: rgba(255,255,255,0.05); border-radius: 7px; gap: 2px; margin-left: 10px; }
+.ppwin-pills button {
+  padding: 4px 12px; font-size: 11.5px; font-family: var(--mono);
+  background: transparent; color: var(--muted); border: none; cursor: pointer; border-radius: 5px;
+}
+.ppwin-pills button.active { background: var(--surface, rgba(255,255,255,0.08)); color: var(--pxl, var(--green)); font-weight: 600; }
+
+@media (max-width: 720px) {
+  .bw-windows { grid-template-columns: 1fr; }
+}
+</style>

@@ -1,6 +1,6 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, RefreshCw, Search } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Activity, ArrowDown, ArrowUp, BarChart3, RefreshCw, Search } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber } from '../../utils/format'
 import { useI18n } from '../../i18n'
@@ -23,7 +23,17 @@ function fmtTime(ts) {
 }
 
 const proxies = ref([])
-const summary = ref({ proxies: 0, active: 0, total: 0, uploadBytes: 0, downloadBytes: 0, monthBytes: 0, topTargets: [] })
+const EMPTY_WIN = { up: 0, down: 0 }
+const summary = ref({ proxies: 0, active: 0, total: 0, uploadBytes: 0, downloadBytes: 0, monthBytes: 0, topTargets: [], windows: { h1: EMPTY_WIN, h24: EMPTY_WIN, d30: EMPTY_WIN } })
+const windows = computed(() => summary.value?.windows || { h1: EMPTY_WIN, h24: EMPTY_WIN, d30: EMPTY_WIN })
+const windowCards = computed(() => {
+  const w = windows.value
+  return [
+    { key: 'h1',  label: t('cust.usage.win1h'),  up: w.h1?.up || 0,  down: w.h1?.down || 0 },
+    { key: 'h24', label: t('cust.usage.win24h'), up: w.h24?.up || 0, down: w.h24?.down || 0 },
+    { key: 'd30', label: t('cust.usage.win30d'), up: w.d30?.up || 0, down: w.d30?.down || 0 }
+  ]
+})
 const sessions = ref([])
 const sessionsHours = ref(1)
 const sessionFilters = ref({ host: '', proxyId: '', kind: '' })
@@ -91,14 +101,14 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
         <small style="color:var(--muted);font-size:11.5px">{{ formatNumber(summary.total || 0) }} all-time</small>
       </article>
       <article>
-        <span>{{ t('cust.conn.bwAll') }}</span>
-        <strong style="font-size:18px">{{ formatBytes((summary.uploadBytes || 0) + (summary.downloadBytes || 0)) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">↑ {{ formatBytes(summary.uploadBytes || 0) }} · ↓ {{ formatBytes(summary.downloadBytes || 0) }}</small>
+        <span>{{ t('cust.conn.bw24h') }}</span>
+        <strong style="font-size:18px">{{ formatBytes((windows.h24.up || 0) + (windows.h24.down || 0)) }}</strong>
+        <small style="color:var(--muted);font-size:11.5px">↑ {{ formatBytes(windows.h24.up || 0) }} · ↓ {{ formatBytes(windows.h24.down || 0) }}</small>
       </article>
       <article>
         <span>{{ t('cust.conn.bwMonth') }}</span>
-        <strong style="font-size:18px">{{ formatBytes(summary.monthBytes || 0) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ t('cust.conn.thisMonth') }}</small>
+        <strong style="font-size:18px">{{ formatBytes((windows.d30.up || 0) + (windows.d30.down || 0)) }}</strong>
+        <small style="color:var(--muted);font-size:11.5px">↑ {{ formatBytes(windows.d30.up || 0) }} · ↓ {{ formatBytes(windows.d30.down || 0) }}</small>
       </article>
       <article>
         <span>{{ t('cust.conn.topDest') }}</span>
@@ -106,6 +116,24 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
         <small style="color:var(--muted);font-size:11.5px">{{ t('cust.conn.uniqueHosts') }}</small>
       </article>
     </div>
+
+    <!-- Accurate cumulative transferred volume over 1h / 24h / 30d -->
+    <section class="surface cc-windows-wrap">
+      <div class="cc-windows-head">
+        <span class="cc-section-title"><BarChart3 :size="14" /> {{ t('cust.usage.windowsTitle') }}</span>
+        <span class="cc-windows-hint">{{ t('cust.usage.windowsHint') }}</span>
+      </div>
+      <div class="cc-windows">
+        <article v-for="w in windowCards" :key="w.key" class="cc-win-card">
+          <span class="cc-win-label">{{ w.label }}</span>
+          <strong class="cc-win-total mono">{{ formatBytes(w.up + w.down) }}</strong>
+          <div class="cc-win-split">
+            <span class="mono" style="color:#4ade80"><ArrowUp :size="12" style="vertical-align:-2px" /> {{ formatBytes(w.up) }}</span>
+            <span class="mono" style="color:#60a5fa"><ArrowDown :size="12" style="vertical-align:-2px" /> {{ formatBytes(w.down) }}</span>
+          </div>
+        </article>
+      </div>
+    </section>
 
     <!-- Sessions table -->
     <section class="surface cc-sessions">
@@ -212,6 +240,21 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 .cc-kpis .kpi .kpi-value { font-size: 22px; font-weight: 600; line-height: 1.2; font-family: var(--mono); font-feature-settings: 'tnum'; }
 .cc-kpis .kpi .kpi-foot { font-size: 11px; color: var(--muted); font-family: var(--mono); }
 .cc-kpis .kpi.kpi-green .kpi-value { color: var(--green); }
+
+/* Window totals strip (1h / 24h / 30d) */
+.cc-windows-wrap { padding: 14px 16px; }
+.cc-windows-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.cc-windows-hint { font-size: 11.5px; color: var(--muted); }
+.cc-windows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.cc-win-card {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 12px 14px; border-radius: 10px;
+  background: rgba(255,255,255,0.025); border: 1px solid var(--border);
+}
+.cc-win-label { font-size: 12px; color: var(--muted); }
+.cc-win-total { font-size: 20px; font-weight: 700; color: var(--text); line-height: 1.1; }
+.cc-win-split { display: flex; gap: 14px; font-size: 11.5px; margin-top: 1px; }
+@media (max-width: 700px) { .cc-windows { grid-template-columns: 1fr; } }
 
 /* Toolbar */
 .cc-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 2px 0 14px; }
