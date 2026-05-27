@@ -1,7 +1,9 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { AlertOctagon, AlertTriangle, CheckCircle2, Info, Wrench, X } from 'lucide-vue-next'
+import { useI18n } from '../i18n'
 
+const { t } = useI18n()
 const features = ref(null)
 const announcements = ref([])
 const dismissed = ref(new Set(JSON.parse(localStorage.getItem('proxyhub.dismissed') || '[]')))
@@ -59,8 +61,8 @@ onUnmounted(() => { if (intv) clearInterval(intv) })
   <div v-if="maintenance || visibleAnn.length" class="broadcast-stack">
     <div v-if="maintenance" class="broadcast-row" style="background: var(--yellow-soft); border-color: var(--yellow); color: var(--yellow)">
       <Wrench :size="16" />
-      <strong style="text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px">Maintenance</strong>
-      <span style="color: var(--text); font-size: 13px">Hệ thống đang bảo trì — một số tính năng có thể không khả dụng. Admin vẫn truy cập bình thường.</span>
+      <strong style="text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px">{{ t('broadcast.maintenanceLabel') }}</strong>
+      <span style="color: var(--text); font-size: 13px">{{ t('broadcast.maintenance') }}</span>
     </div>
     <div
       v-for="a in visibleAnn" :key="a.id"

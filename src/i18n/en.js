@@ -563,6 +563,8 @@ export default {
   'cust.usage.totalConns':    'Total connections',
   'cust.usage.quotaLabel':    'Bandwidth quota / proxy',
   'cust.usage.quotaFoot':     'total this month',
+  'broadcast.maintenanceLabel': 'Maintenance',
+  'broadcast.maintenance':    'System under maintenance — some features may be unavailable. Admins still have full access.',
   'cust.usage.kpiProxyCount': 'Proxy count',
   'cust.usage.chart24h':      'Last 24 hours',
   'cust.usage.peak':          'Peak',

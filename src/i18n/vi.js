@@ -581,6 +581,8 @@ export default {
   'cust.usage.totalConns':    'Tổng số kết nối',
   'cust.usage.quotaLabel':    'Quota băng thông / proxy',
   'cust.usage.quotaFoot':     'tổng tháng này',
+  'broadcast.maintenanceLabel': 'Bảo trì',
+  'broadcast.maintenance':    'Hệ thống đang bảo trì — một số tính năng có thể không khả dụng. Admin vẫn truy cập bình thường.',
   'cust.usage.kpiProxyCount': 'Số proxy',
   'cust.usage.chart24h':      'Băng thông 24 giờ qua',
   'cust.usage.peak':          'Đỉnh',
