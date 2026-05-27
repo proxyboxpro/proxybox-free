@@ -1,571 +1,617 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { Box, Copy, Check, ArrowRight, KeyRound, Globe, ChevronRight } from 'lucide-vue-next'
-import { useI18n } from '../i18n'
+import { computed, ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  ArrowRight, Book, ChevronRight, Copy, Check, Gauge, KeyRound, Lock,
+  Play, Send, ShoppingCart, Terminal, Wrench, Zap, Bell, ExternalLink
+} from 'lucide-vue-next'
 import PublicTopNav from '../components/PublicTopNav.vue'
+import { useI18n } from '../i18n'
+import { token } from '../api'
 
 const route = useRoute()
-const { t, locale, setLocale } = useI18n()
+const router = useRouter()
+const { t, locale } = useI18n()
 const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0')
 
 const baseUrl = computed(() => typeof location !== 'undefined' ? location.origin : 'https://proxybox.pro')
+const apiKey = '••••••••••••••••••••••••••••••••'
+const reveal = ref(false)
 
-const copied = ref('')
-async function copy(text, key) {
-  try {
-    await navigator.clipboard.writeText(text)
-    copied.value = key
-    setTimeout(() => { copied.value = '' }, 1500)
-  } catch (e) { /* ignore */ }
+const flash = ref('')
+function copy(text) {
+  navigator.clipboard?.writeText(text)
+  flash.value = locale.value === 'vi' ? 'Đã copy!' : 'Copied!'
+  setTimeout(() => { flash.value = '' }, 1500)
+}
+function signInToReveal() {
+  router.push({ name: 'login', query: { next: '/api-docs' } })
 }
 
+// Endpoint groups — mirror customer API docs structure.
 const groups = computed(() => ([
   {
-    id: 'overview',
-    title: locale.value === 'vi' ? 'Tổng quan' : 'Overview',
-    body: locale.value === 'vi'
-      ? 'REST API JSON. Base URL là domain panel của bạn (vd https://proxybox.pro). Auth qua header X-Customer-Key (API key dài hạn) hoặc Bearer token (phiên login).'
-      : 'REST + JSON API. Base URL is your panel domain (e.g. https://proxybox.pro). Authenticate with either X-Customer-Key (long-lived API key) or a Bearer token (session).'
+    id: 'flow', title: 'Quick start', icon: Zap,
+    intro: locale.value === 'vi'
+      ? 'Luồng end-to-end để mua, dùng, và quản lý proxy qua API. Tất cả request đều cần header `X-Customer-Key: <api-key>` (lấy ở thẻ phía trên).'
+      : 'End-to-end flow to buy, use and manage proxies via API. Every request needs an `X-Customer-Key: <api-key>` header (get yours in the card above).',
+    flow: [
+      { step: 1,
+        title: locale.value === 'vi' ? 'Nạp tiền + check số dư' : 'Top up wallet + check balance',
+        detail: locale.value === 'vi'
+          ? 'GET /api/v1/user/billing — kiểm tra wallet trước khi tạo đơn.'
+          : 'GET /api/v1/user/billing — check the wallet balance before placing an order.' },
+      { step: 2,
+        title: locale.value === 'vi' ? 'Tạo đơn (mua proxy)' : 'Place an order (buy proxies)',
+        detail: locale.value === 'vi'
+          ? 'POST /api/v1/user/orders với `type`, `quantity`, `hours`, `zone`. Server tự cấp N proxy + trả về danh sách credentials.'
+          : 'POST /api/v1/user/orders with `type`, `quantity`, `hours`, `zone`. The server provisions N proxies and returns the credentials.' },
+      { step: 3,
+        title: locale.value === 'vi' ? 'Lấy danh sách proxy' : 'List proxies',
+        detail: locale.value === 'vi'
+          ? 'GET /api/v1/user/proxies — trả về tất cả proxy bạn sở hữu, mỗi cái có `orderId` để gom nhóm.'
+          : 'GET /api/v1/user/proxies — returns every proxy you own; each one has an `orderId` for grouping.' },
+      { step: 4,
+        title: locale.value === 'vi' ? 'Sử dụng proxy' : 'Use the proxy',
+        detail: locale.value === 'vi'
+          ? 'Connect tới `bindIp:port` với `username:password` (HTTP CONNECT hoặc SOCKS5). Hoặc thêm IP của bạn vào whitelist để bỏ qua auth.'
+          : 'Connect to `bindIp:port` with `username:password` (HTTP CONNECT or SOCKS5). Or whitelist your IP to skip auth.' },
+      { step: 5,
+        title: locale.value === 'vi' ? 'Quản lý proxy' : 'Manage proxies',
+        detail: locale.value === 'vi'
+          ? 'Check live (bulk), gia hạn (extend), xoá (DELETE), whitelist IP, xoay IPv6, xem SLA + lịch sử băng thông.'
+          : 'Bulk health check, extend, DELETE, whitelist IP, rotate IPv6, view SLA and bandwidth history.' }
+    ],
+    endpoints: []
   },
   {
-    id: 'auth',
-    title: locale.value === 'vi' ? 'Xác thực' : 'Authentication',
+    id: 'auth', title: 'Authentication', icon: Lock,
+    intro: locale.value === 'vi'
+      ? 'API key (header `X-Customer-Key`) hoặc Bearer token sau khi login. API key dùng cho automation. Bearer token dùng cho session đăng nhập tương tác.'
+      : 'API key (`X-Customer-Key` header) or a Bearer token after sign-in. API key for automation; Bearer for interactive sessions.',
     endpoints: [
-      {
-        method: 'POST', path: '/api/auth/login', auth: 'none',
-        desc: locale.value === 'vi' ? 'Login bằng email + password, nhận Bearer token (hết hạn sau 7 ngày).' : 'Sign in with email + password to receive a Bearer token (7-day expiry).',
-        request: `{
-  "email": "you@example.com",
-  "password": "your-password",
-  "totp": "123456"
-}`,
-        response: `{
-  "token": "eyJhbGc...",
-  "user": { "id": "u_abc", "email": "you@example.com", "role": "user" }
-}`
-      },
-      {
-        method: 'POST', path: '/api/auth/register', auth: 'none',
-        desc: locale.value === 'vi' ? 'Tạo tài khoản mới. Trả về token để gọi API ngay.' : 'Create a new account. Returns a Bearer token so you can call the API immediately.',
-        request: `{ "email": "you@example.com", "password": "min-12-chars" }`,
-        response: `{ "token": "eyJhbGc...", "user": { "id": "u_abc", "email": "..." } }`
-      }
+      { method: 'POST', path: '/api/v1/user/auth/login',
+        desc: locale.value === 'vi' ? 'Đăng nhập, trả về Bearer token (TTL 7 ngày).' : 'Sign in; returns a Bearer token (7-day TTL).',
+        request: '{\n  "email": "you@example.com",\n  "password": "secret"\n}',
+        response: '{\n  "token": "abc123...",\n  "user": { "email": "you@example.com", "role": "customer" }\n}' },
+      { method: 'GET', path: '/api/v1/user/auth/me',
+        desc: locale.value === 'vi' ? 'Thông tin user hiện tại.' : 'Current user info.',
+        response: '{ "id": "u-...", "email": "...", "role": "customer", "emailVerified": true }' },
+      { method: 'GET', path: '/api/v1/user/account',
+        desc: locale.value === 'vi' ? 'Profile + balance + API key.' : 'Profile + balance + API key.',
+        response: '{ "id": "u-...", "name": "...", "balance": 150000, "apiKey": "abc..." }' }
     ]
   },
   {
-    id: 'account',
-    title: locale.value === 'vi' ? 'Tài khoản' : 'Account',
+    id: 'orders', title: locale.value === 'vi' ? 'Mua proxy (Orders)' : 'Buy proxies (Orders)', icon: ShoppingCart,
+    intro: locale.value === 'vi'
+      ? 'Tạo đơn, xem đơn đã đặt, hủy đơn. Mỗi đơn cấp N proxy. Credentials trả ngay trong response.'
+      : 'Place orders, list past orders, cancel. Each order issues N proxies; credentials are returned in the response.',
     endpoints: [
-      {
-        method: 'GET', path: '/api/v1/user/account', auth: 'key',
-        desc: locale.value === 'vi' ? 'Profile + API key + wallet balance.' : 'Profile, API key, and wallet balance.',
-        response: `{
-  "id": "u_abc",
-  "email": "you@example.com",
-  "name": "You",
-  "apiKey": "pk_live_...",
-  "wallet": { "balance": 125000, "currency": "VND" },
-  "createdAt": "2026-01-01T00:00:00Z"
-}`
-      },
-      {
-        method: 'POST', path: '/api/v1/user/api-key/rotate', auth: 'bearer',
-        desc: locale.value === 'vi' ? 'Tạo API key mới (key cũ bị thu hồi ngay).' : 'Rotate the API key (the previous key is revoked immediately).',
-        response: `{ "apiKey": "pk_live_..." }`
-      }
+      { method: 'POST', path: '/api/v1/user/orders',
+        desc: locale.value === 'vi' ? 'Tạo đơn mua proxy.' : 'Place a new proxy order.',
+        request: '{\n  "type": "ipv6",\n  "quantity": 5,\n  "hours": 24,\n  "zone": "vn-hcm",\n  "autoRenew": true\n}',
+        response: '{\n  "order": { "id": "ord_...", "status": "active" },\n  "proxies": [{ "id": "px_..", "host": "1.2.3.4", "port": 20100, "username": "u_..", "password": ".." }]\n}' },
+      { method: 'GET', path: '/api/v1/user/orders',
+        desc: locale.value === 'vi' ? 'Liệt kê đơn hàng.' : 'List orders.',
+        response: '[{ "id": "ord_...", "kind": "ipv6", "status": "active", "expiresAt": "..." }]' },
+      { method: 'DELETE', path: '/api/v1/user/orders/:id',
+        desc: locale.value === 'vi' ? 'Hủy đơn (refund phần chưa dùng nếu còn).' : 'Cancel an order (refund unused portion when applicable).',
+        response: '{ "ok": true, "refund": 5000 }' }
     ]
   },
   {
-    id: 'orders',
-    title: locale.value === 'vi' ? 'Đơn hàng' : 'Orders',
+    id: 'proxies', title: locale.value === 'vi' ? 'Quản lý proxy' : 'Manage proxies', icon: Wrench,
+    intro: locale.value === 'vi'
+      ? 'Listing, credentials, rotate, extend, whitelist IP, bulk live-check.'
+      : 'Listing, credentials, rotation, extension, IP whitelist, bulk live-check.',
     endpoints: [
-      {
-        method: 'GET', path: '/api/v1/user/orders', auth: 'key',
-        desc: locale.value === 'vi' ? 'Liệt kê đơn hàng đã đặt.' : 'List all orders placed by this account.',
-        response: `[
-  {
-    "id": "ord_2026_001",
-    "kind": "ipv6",
-    "zone": "vn-hcm",
-    "quantity": 10,
-    "status": "active",
-    "expiresAt": "2026-06-01T00:00:00Z"
-  }
-]`
-      },
-      {
-        method: 'POST', path: '/api/v1/user/orders', auth: 'key',
-        desc: locale.value === 'vi' ? 'Đặt đơn proxy mới. Trừ ví ngay nếu đủ số dư.' : 'Place a new proxy order — wallet is debited if balance is sufficient.',
-        request: `{
-  "kind": "ipv6",
-  "zone": "vn-hcm",
-  "quantity": 10,
-  "durationDays": 30,
-  "autoRenew": true
-}`,
-        response: `{
-  "id": "ord_2026_002",
-  "status": "active",
-  "proxies": [
-    { "id": "px_..", "host": "1.2.3.4", "port": 20100, "username": "u_..", "password": ".." }
-  ]
-}`
-      }
+      { method: 'GET', path: '/api/v1/user/proxies',
+        desc: locale.value === 'vi' ? 'Liệt kê tất cả proxy. Password che — gọi /credentials để lộ.' : 'List every proxy. Passwords are redacted — call /credentials to reveal.',
+        response: '[{ "id": "px_1234", "host": "1.2.3.4", "port": 20100, "username": "u_..", "status": "active" }]' },
+      { method: 'GET', path: '/api/v1/user/proxies/:id/credentials',
+        desc: locale.value === 'vi' ? 'Lộ full user + pass (sensitive).' : 'Reveal the full username + password (sensitive).',
+        response: '{ "username": "u_1234", "password": "x9k..." }' },
+      { method: 'POST', path: '/api/v1/user/proxies/:id/rotate',
+        desc: locale.value === 'vi' ? 'Đổi user + pass + egress IP (đếm vào quota).' : 'Rotate user + pass + egress IP (counted against quota).',
+        response: '{ "ok": true, "username": "u_new", "password": "..." }' },
+      { method: 'POST', path: '/api/v1/user/proxies/:id/extend',
+        desc: locale.value === 'vi' ? 'Gia hạn thêm N giờ.' : 'Extend by N hours.',
+        request: '{ "hours": 24 }',
+        response: '{ "ok": true, "expiresAt": "2026-06-01T00:00:00Z" }' },
+      { method: 'POST', path: '/api/v1/user/proxies/:id/whitelist',
+        desc: locale.value === 'vi' ? 'Thêm IP vào whitelist (bỏ qua user-pass auth).' : 'Add an IP to the whitelist (bypass user-pass auth).',
+        request: '{ "ips": ["203.0.113.7"] }',
+        response: '{ "ok": true, "whitelist": ["203.0.113.7"] }' },
+      { method: 'DELETE', path: '/api/v1/user/proxies/:id',
+        desc: locale.value === 'vi' ? 'Xoá proxy (refund nếu còn hạn).' : 'Delete a proxy (refund when applicable).',
+        response: '{ "ok": true }' }
     ]
   },
   {
-    id: 'proxies',
-    title: locale.value === 'vi' ? 'Proxy' : 'Proxies',
+    id: 'billing', title: 'Billing', icon: Gauge,
+    intro: locale.value === 'vi'
+      ? 'Wallet balance, transactions, topup qua Stripe / PayPal.'
+      : 'Wallet balance, transactions, top-up via Stripe / PayPal.',
     endpoints: [
-      {
-        method: 'GET', path: '/api/v1/user/proxies', auth: 'key',
-        desc: locale.value === 'vi' ? 'Danh sách proxy đang hoạt động. Mật khẩu bị che — gọi /credentials để xem.' : 'List active proxies. Passwords are redacted — call /credentials to reveal them.',
-        response: `[
-  {
-    "id": "px_1234",
-    "host": "1.2.3.4",
-    "port": 20100,
-    "protocol": "http,socks5,trojan",
-    "username": "u_1234",
-    "status": "active",
-    "expiresAt": "2026-06-01T00:00:00Z"
-  }
-]`
-      },
-      {
-        method: 'GET', path: '/api/v1/user/proxies/:id/credentials', auth: 'key',
-        desc: locale.value === 'vi' ? 'Lấy full username + password (sensitive).' : 'Fetch the full username and password (sensitive).',
-        response: `{ "username": "u_1234", "password": "x9k..." }`
-      },
-      {
-        method: 'POST', path: '/api/v1/user/proxies/:id/rotate', auth: 'key',
-        desc: locale.value === 'vi' ? 'Đổi user + pass + egress IP (đếm vào quota rotation).' : 'Rotate username + password + egress IP (counts against rotation quota).',
-        response: `{ "ok": true, "username": "u_new", "password": "..." }`
-      }
+      { method: 'GET', path: '/api/v1/user/billing',
+        desc: locale.value === 'vi' ? 'Wallet hiện tại + payment methods active.' : 'Current wallet + active payment methods.',
+        response: '{ "wallet": { "balance": 150000, "currency": "VND" }, "paymentMethods": { "stripeEnabled": true, "paypalEnabled": true } }' },
+      { method: 'POST', path: '/api/v1/user/billing/checkout',
+        desc: locale.value === 'vi' ? 'Tạo Stripe Checkout Session, trả URL.' : 'Create a Stripe Checkout Session; returns the URL.',
+        request: '{ "amount": 100000 }',
+        response: '{ "url": "https://checkout.stripe.com/...", "sessionId": "cs_..." }' },
+      { method: 'POST', path: '/api/v1/user/billing/paypal/create-order',
+        desc: locale.value === 'vi' ? 'Tạo PayPal order, redirect tới approveUrl.' : 'Create a PayPal order; redirect to approveUrl.',
+        request: '{ "amount": 10 }',
+        response: '{ "orderId": "...", "approveUrl": "https://paypal.com/..." }' }
     ]
   },
   {
-    id: 'webhook',
-    title: locale.value === 'vi' ? 'Webhook' : 'Webhooks',
-    body: locale.value === 'vi'
-      ? 'Đăng ký webhook URL trong /account để nhận event: order.created, order.expiring, order.expired, proxy.created, wallet.charge. Payload là JSON, signed với HMAC-SHA256.'
-      : 'Register your webhook URL in /account to receive events: order.created, order.expiring, order.expired, proxy.created, wallet.charge. Payload is JSON, signed with HMAC-SHA256.',
+    id: 'notifications', title: 'Notifications', icon: Bell,
+    intro: locale.value === 'vi'
+      ? 'In-app notifications cho event: đơn cấp xong, sắp hết hạn, ví thấp.'
+      : 'In-app notifications for events: order ready, expiring, low balance.',
     endpoints: [
-      {
-        method: 'POST', path: '<your-callback-url>', auth: 'signed',
-        desc: locale.value === 'vi' ? 'Payload ProxyBox gửi đến callback URL của bạn.' : 'Payload ProxyBox sends to your callback URL.',
-        request: `Headers:
-  X-ProxyBox-Event: order.expired
-  X-ProxyBox-Signature: sha256=<hex>
-
-Body:
-{
-  "event": "order.expired",
-  "orderId": "ord_2026_001",
-  "userId": "u_abc",
-  "occurredAt": "2026-06-01T00:00:00Z"
-}`
-      }
+      { method: 'GET', path: '/api/v1/user/notifications',
+        desc: locale.value === 'vi' ? 'Danh sách notification.' : 'Notifications list.',
+        response: '{ "items": [...], "unread": 3 }' },
+      { method: 'POST', path: '/api/v1/user/notifications/:id/read',
+        desc: locale.value === 'vi' ? 'Đánh dấu đã đọc.' : 'Mark as read.',
+        response: '{ "ok": true }' }
     ]
   }
 ]))
 
+const activeGroup = ref('flow')
+
 function methodClass(m) {
-  return { GET: 'm-get', POST: 'm-post', PUT: 'm-put', PATCH: 'm-patch', DELETE: 'm-del' }[m] || 'm-get'
+  return { GET: 'm-get', POST: 'm-post', PATCH: 'm-patch', PUT: 'm-patch', DELETE: 'm-delete' }[m] || 'm-get'
 }
-function authBadge(a) {
-  return {
-    none:   { label: locale.value === 'vi' ? 'Public' : 'Public',          cls: 'b-none' },
-    key:    { label: locale.value === 'vi' ? 'API key' : 'API key',         cls: 'b-key'  },
-    bearer: { label: 'Bearer',                                              cls: 'b-bearer'},
-    signed: { label: 'HMAC',                                                cls: 'b-bearer'}
-  }[a] || { label: 'Auth', cls: 'b-key' }
+function curlSample(method, path, body) {
+  const url = `${baseUrl.value}${path}`
+  const headers = [`-H "X-Customer-Key: YOUR_API_KEY"`]
+  if (body) headers.push('-H "Content-Type: application/json"')
+  const dataFlag = body ? ` \\\n  -d '${body.replace(/\n/g, '').replace(/\s+/g, ' ')}'` : ''
+  return `curl -X ${method} ${url} \\\n  ${headers.join(' \\\n  ')}${dataFlag}`
 }
 
 onMounted(() => {
   if (route.hash) {
-    setTimeout(() => {
-      const el = document.querySelector(route.hash)
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }, 80)
+    const id = route.hash.slice(1)
+    if (groups.value.some((g) => g.id === id)) activeGroup.value = id
   }
 })
 </script>
 
 <template>
-  <div class="apidocs">
+  <div class="apidocs-page">
     <PublicTopNav sub-label="API" />
 
-    <div class="apidocs-shell">
-      <aside class="apidocs-sidebar">
-        <h4>{{ locale === 'vi' ? 'Tài liệu API' : 'API reference' }}</h4>
-        <a v-for="g in groups" :key="g.id" :href="'#' + g.id" :class="{ active: route.hash === '#' + g.id }">
-          {{ g.title }}
-          <ChevronRight :size="12" />
-        </a>
-        <div class="apidocs-sidebar-foot">
-          <RouterLink to="/faq#self-host-panel" class="side-cta">
-            <span>{{ locale === 'vi' ? 'Tự host trên VPS của bạn' : 'Self-host on your own VPS' }}</span>
-            <ArrowRight :size="14" />
-          </RouterLink>
+    <section class="apidocs">
+      <header class="apidocs-head">
+        <p class="eyebrow"><Book :size="12" /> {{ locale === 'vi' ? 'Developer' : 'Developer' }}</p>
+        <h1>API Documentation</h1>
+        <p class="sub">{{ locale === 'vi'
+            ? 'Endpoint reference cho customer API. Dùng header `X-Customer-Key` hoặc Bearer token.'
+            : 'Endpoint reference for the customer API. Use the `X-Customer-Key` header or Bearer token.' }}</p>
+      </header>
+
+      <p v-if="flash" class="flash">{{ flash }}</p>
+
+      <!-- Token card (public version: show locked state with sign-in CTA) -->
+      <section class="key-card">
+        <div class="key-left">
+          <span class="ico"><KeyRound :size="18" /></span>
+          <div>
+            <strong>
+              {{ locale === 'vi' ? 'Token cá nhân' : 'Personal token' }}
+              <small class="badge">{{ locale === 'vi' ? 'duy nhất · tất cả trong một' : 'one token · all uses' }}</small>
+            </strong>
+            <p class="muted">
+              {{ locale === 'vi' ? 'Dùng' : 'Use the' }}
+              <strong style="color: var(--green)">{{ locale === 'vi' ? 'cùng 1 giá trị' : 'same value' }}</strong>
+              {{ locale === 'vi' ? 'cho REST API' : 'across the REST API' }}
+              (<code>X-Customer-Key</code>),
+              SDK (<code>Authorization: Bearer</code>)
+              {{ locale === 'vi' ? 'và cài agent BYON. Tự tạo khi đăng ký, rotate bất cứ lúc nào.' : 'and BYON agent installs. Auto-minted on signup, rotate any time.' }}
+            </p>
+          </div>
         </div>
-      </aside>
-
-      <main class="apidocs-content">
-        <div class="apidocs-hero">
-          <span class="hero-eyebrow">{{ locale === 'vi' ? 'API công khai · phiên bản v1' : 'Public API · v1' }}</span>
-          <h1>{{ locale === 'vi' ? 'ProxyBox REST API' : 'ProxyBox REST API' }}</h1>
-          <p>{{ locale === 'vi'
-              ? 'Mọi thao tác trên ProxyBox (đặt đơn, lấy credentials, rotate proxy, đăng ký webhook) đều có sẵn API. Tự động hóa quy trình từ pipeline của bạn.'
-              : 'Every action in ProxyBox — placing orders, fetching credentials, rotating proxies, subscribing to webhooks — is exposed via REST. Wire it straight into your own pipelines.' }}</p>
-
-          <div class="apidocs-meta">
-            <div class="meta-row">
-              <span class="meta-label">Base URL</span>
-              <code class="meta-code">{{ baseUrl }}</code>
-              <button class="copy-mini" @click="copy(baseUrl, 'base')">
-                <component :is="copied === 'base' ? Check : Copy" :size="13" />
-              </button>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label"><KeyRound :size="13" /> X-Customer-Key</span>
-              <code class="meta-code">{{ locale === 'vi' ? 'Lấy ở /account sau khi đăng nhập' : 'Find it on /account after sign-in' }}</code>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label"><Globe :size="13" /> Content-Type</span>
-              <code class="meta-code">application/json</code>
-            </div>
-          </div>
-
-          <pre class="curl-example"><code><span class="prompt">$</span> curl -H "X-Customer-Key: $PROXYBOX_KEY" \
-    {{ baseUrl }}/api/v1/user/account</code></pre>
+        <div class="key-right">
+          <code class="key-val blurred">{{ apiKey }}</code>
+          <button type="button" class="ghost-button" @click="signInToReveal">
+            {{ locale === 'vi' ? 'Đăng nhập để hiện' : 'Sign in to reveal' }}
+          </button>
         </div>
+      </section>
 
-        <section v-for="g in groups" :key="g.id" :id="g.id" class="apidocs-section">
-          <h2>{{ g.title }}</h2>
-          <p v-if="g.body" class="section-body">{{ g.body }}</p>
-          <div v-for="(e, i) in g.endpoints || []" :key="i" class="endpoint">
-            <div class="endpoint-head">
-              <span :class="['method', methodClass(e.method)]">{{ e.method }}</span>
-              <code class="endpoint-path">{{ e.path }}</code>
-              <span :class="['auth-badge', authBadge(e.auth).cls]">{{ authBadge(e.auth).label }}</span>
-            </div>
-            <p class="endpoint-desc">{{ e.desc }}</p>
-            <div v-if="e.request" class="codepanel">
-              <div class="codepanel-head">
-                <span>{{ locale === 'vi' ? 'Request' : 'Request' }}</span>
-                <button class="copy-mini" @click="copy(e.request, g.id + i + 'r')">
-                  <component :is="copied === g.id + i + 'r' ? Check : Copy" :size="13" />
-                </button>
+      <!-- Endpoint groups -->
+      <div class="docs-layout">
+        <nav class="docs-nav">
+          <h4>{{ locale === 'vi' ? 'Endpoints' : 'Endpoints' }}</h4>
+          <button v-for="g in groups" :key="g.id"
+            type="button"
+            :class="{ active: activeGroup === g.id }"
+            @click="activeGroup = g.id">
+            <component :is="g.icon" :size="14" />
+            <span>{{ g.title }}</span>
+            <span v-if="g.endpoints?.length" class="count">{{ g.endpoints.length }}</span>
+            <span v-else-if="g.flow?.length" class="count count-green">{{ g.flow.length }}</span>
+          </button>
+        </nav>
+
+        <div class="docs-body">
+          <template v-for="g in groups" :key="g.id">
+            <article v-if="activeGroup === g.id">
+              <h2>{{ g.title }}</h2>
+              <p class="muted">{{ g.intro }}</p>
+
+              <!-- Quick-start flow -->
+              <ol v-if="g.flow?.length" class="flow-steps">
+                <li v-for="f in g.flow" :key="f.step" class="flow-step">
+                  <span class="flow-num">{{ f.step }}</span>
+                  <div>
+                    <strong>{{ f.title }}</strong>
+                    <p class="muted" style="margin: 2px 0 0">{{ f.detail }}</p>
+                  </div>
+                </li>
+              </ol>
+
+              <div v-for="(e, i) in g.endpoints" :key="i" class="endpoint">
+                <div class="ep-head">
+                  <span :class="['method', methodClass(e.method)]">{{ e.method }}</span>
+                  <code class="path">{{ e.path }}</code>
+                  <button type="button" class="ghost-button mini" @click="copy(`${baseUrl}${e.path}`)" :aria-label="locale === 'vi' ? 'Sao chép' : 'Copy'">
+                    <Copy :size="11" />
+                  </button>
+                  <button type="button" class="ghost-button mini try-btn" @click="signInToReveal">
+                    <Play :size="11" /> {{ locale === 'vi' ? 'Đăng nhập để Try it' : 'Sign in to Try it' }}
+                  </button>
+                </div>
+                <p class="ep-desc">{{ e.desc }}</p>
+
+                <div class="ep-blocks" v-if="e.request || e.response">
+                  <div v-if="e.request" class="code-block">
+                    <header><Terminal :size="12" /> Request body</header>
+                    <pre>{{ e.request }}</pre>
+                  </div>
+                  <div v-if="e.response" class="code-block">
+                    <header><ArrowRight :size="12" /> Response</header>
+                    <pre>{{ e.response }}</pre>
+                  </div>
+                </div>
+
+                <div class="code-block curl">
+                  <header>
+                    <Terminal :size="12" /> cURL
+                    <button type="button" class="ghost-button mini" style="margin-left: auto" @click="copy(curlSample(e.method, e.path, e.request))" :aria-label="locale === 'vi' ? 'Sao chép' : 'Copy'">
+                      <Copy :size="11" />
+                    </button>
+                  </header>
+                  <pre>{{ curlSample(e.method, e.path, e.request) }}</pre>
+                </div>
               </div>
-              <pre><code>{{ e.request }}</code></pre>
-            </div>
-            <div v-if="e.response" class="codepanel">
-              <div class="codepanel-head">
-                <span>{{ locale === 'vi' ? 'Response' : 'Response' }} · 200 OK</span>
-                <button class="copy-mini" @click="copy(e.response, g.id + i + 'res')">
-                  <component :is="copied === g.id + i + 'res' ? Check : Copy" :size="13" />
-                </button>
+
+              <!-- CTA at end of group -->
+              <div class="docs-cta">
+                <span><Zap :size="14" /> {{ locale === 'vi' ? 'Sẵn sàng tích hợp? Đăng nhập để mở console Try it ngay trong trình duyệt.' : 'Ready to integrate? Sign in to open the in-browser Try it console.' }}</span>
+                <div class="cta-actions">
+                  <RouterLink class="btn primary" to="/register">
+                    {{ locale === 'vi' ? 'Đăng ký' : 'Get started' }} <ArrowRight :size="14" />
+                  </RouterLink>
+                  <RouterLink class="btn ghost" to="/login">
+                    {{ locale === 'vi' ? 'Đăng nhập' : 'Sign in' }}
+                  </RouterLink>
+                </div>
               </div>
-              <pre><code>{{ e.response }}</code></pre>
-            </div>
-          </div>
-        </section>
+            </article>
+          </template>
+        </div>
+      </div>
 
-        <section class="apidocs-cta">
-          <h3>{{ locale === 'vi' ? 'Sẵn sàng tích hợp?' : 'Ready to integrate?' }}</h3>
-          <p>{{ locale === 'vi'
-              ? 'Đăng ký tài khoản để lấy API key + interactive playground. Đã có tài khoản? Login để mở console "Try it" ngay trong trình duyệt.'
-              : 'Register to receive an API key + the interactive playground. Already have an account? Sign in to open the in-browser "Try it" console.' }}</p>
-          <div class="cta-row">
-            <RouterLink class="btn primary" to="/register">{{ t('landing.nav.register') }} <ArrowRight :size="14" /></RouterLink>
-            <RouterLink class="btn ghost" to="/login">{{ t('landing.nav.login') }}</RouterLink>
-          </div>
-        </section>
-
-        <footer class="apidocs-foot">
-          <span>{{ t('landing.foot.copyright', { year: new Date().getFullYear(), ver: appVersion }) }}</span>
-          <span class="foot-onie">
-            {{ t('landing.foot.publishedBy') }}
-            <a href="https://onie.net" target="_blank" rel="noopener">{{ t('landing.foot.onieName') }}</a>
-            · <a href="https://onie.net" target="_blank" rel="noopener">onie.net</a>
-          </span>
-          <span>
-            <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink>
-            ·
-            <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink>
-            ·
-            <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
-          </span>
-        </footer>
-      </main>
-    </div>
+      <footer class="apidocs-foot">
+        <span>{{ t('landing.foot.copyright', { year: new Date().getFullYear(), ver: appVersion }) }}</span>
+        <span class="foot-onie">
+          {{ t('landing.foot.publishedBy') }}
+          <a href="https://onie.net" target="_blank" rel="noopener">{{ t('landing.foot.onieName') }}</a>
+          · <a href="https://onie.net" target="_blank" rel="noopener">onie.net</a>
+        </span>
+        <span>
+          <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink> ·
+          <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink> ·
+          <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
+        </span>
+      </footer>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.apidocs {
+.apidocs-page {
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(900px 500px at 90% -10%, rgba(88,166,255,0.06), transparent 65%),
+    radial-gradient(700px 400px at -5% 30%, rgba(63,185,80,0.05), transparent 65%),
+    var(--bg);
   color: var(--text);
   overflow-x: hidden;
 }
-.apidocs * { box-sizing: border-box; }
-.apidocs a { color: inherit; text-decoration: none; }
+.apidocs-page * { box-sizing: border-box; }
+.apidocs-page a { color: inherit; text-decoration: none; }
 
-/* ── Top nav (mirror landing) ── */
-.landing-nav {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 14px 32px;
-  border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-  backdrop-filter: blur(8px);
-  position: sticky; top: 0; z-index: 50;
+.apidocs {
+  max-width: 1280px; margin: 0 auto;
+  padding: 28px 28px 60px;
+  display: flex; flex-direction: column; gap: 22px;
 }
-.landing-brand { display: inline-flex; align-items: center; gap: 10px; font-size: 16px; flex-shrink: 0; }
-.landing-brand .logo-mark {
-  width: 32px; height: 32px; border-radius: 8px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #58a6ff, #3fb950); color: #0a0e14;
-}
-.landing-brand .brand-sub {
-  font-size: 11px; color: var(--dim); padding: 2px 6px;
-  border: 1px solid var(--border); border-radius: 4px;
-  margin-left: 2px; font-weight: 500; letter-spacing: 0.4px;
-}
-.landing-nav-links { display: flex; gap: 22px; margin-left: 18px; flex: 1; min-width: 0; }
-.landing-nav-links a { color: var(--dim); font-size: 14px; white-space: nowrap; }
-.landing-nav-links a:hover { color: var(--text); }
-.landing-nav-actions { display: flex; gap: 8px; align-items: center; }
-.lang-toggle, .theme-btn {
-  display: inline-flex; align-items: center;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
-  overflow: hidden;
-}
-.lang-toggle button {
-  border: 0; background: transparent; color: var(--dim);
-  padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.lang-toggle button.active { background: var(--surface); color: var(--text); }
-.theme-btn { border: 1px solid var(--border); padding: 6px 10px; color: var(--dim); cursor: pointer; }
-.btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: var(--radius-sm);
-  font-size: 13px; font-weight: 600;
-  border: 1px solid var(--border); background: var(--surface-2);
-  color: var(--text); cursor: pointer; transition: 0.15s; white-space: nowrap;
-}
-.btn:hover { background: var(--surface); border-color: var(--blue); }
-.btn.primary { background: linear-gradient(135deg, #58a6ff, #2f81f7); border-color: transparent; color: #0a0e14; }
-.btn.ghost { background: transparent; }
 
-/* ── Gitbook-style 2-column shell ── */
-.apidocs-shell {
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  max-width: 1280px;
-  margin: 0 auto;
+.apidocs-head .eyebrow {
+  color: var(--green); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 5px;
+  margin: 0 0 4px;
 }
-.apidocs-sidebar {
-  position: sticky; top: 64px;
-  align-self: start;
-  height: calc(100vh - 64px); overflow-y: auto;
-  padding: 28px 18px 28px 24px;
-  border-right: 1px solid var(--border-soft);
+.apidocs-head h1 {
+  margin: 0; font-size: 30px; font-weight: 800;
+  letter-spacing: -0.4px;
 }
-.apidocs-sidebar h4 {
-  margin: 0 0 14px;
-  font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
-  color: var(--dim);
+.apidocs-head .sub {
+  margin: 6px 0 0; color: var(--dim); font-size: 14px;
+  max-width: 720px; line-height: 1.55;
 }
-.apidocs-sidebar a {
+
+.flash { color: var(--green); font-size: 13px; margin: 0; }
+
+/* Token card */
+.key-card {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 10px; border-radius: 6px;
-  color: var(--text); font-size: 14px; margin-bottom: 2px;
+  flex-wrap: wrap; gap: 14px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--green-soft) 50%, transparent) 0%, transparent 60%), var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent) inset;
 }
-.apidocs-sidebar a:hover { background: var(--surface-2); }
-.apidocs-sidebar a.active { background: var(--blue-soft); color: var(--blue); }
-.apidocs-sidebar-foot { margin-top: 24px; border-top: 1px solid var(--border-soft); padding-top: 16px; }
-.side-cta {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--surface);
-  font-size: 13px; color: var(--text) !important;
+.key-left { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 280px; }
+.key-left .ico {
+  width: 38px; height: 38px; border-radius: 10px;
+  background: var(--green-soft); color: var(--green);
+  display: grid; place-items: center;
+  border: 1px solid color-mix(in srgb, var(--green) 30%, var(--border));
+  flex-shrink: 0;
 }
-.side-cta:hover { border-color: var(--blue); }
-
-.apidocs-content { padding: 32px 32px 80px; min-width: 0; }
-
-/* Hero */
-.apidocs-hero { margin-bottom: 40px; }
-.hero-eyebrow {
-  display: inline-block; padding: 4px 10px;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
-  border: 1px solid var(--border); border-radius: 999px;
-  color: var(--green); background: var(--green-soft);
-  margin-bottom: 16px;
-}
-.apidocs-hero h1 { margin: 0 0 12px; font-size: 36px; font-weight: 700; letter-spacing: -0.5px; }
-.apidocs-hero p { margin: 0 0 24px; color: var(--dim); font-size: 15px; line-height: 1.6; max-width: 680px; }
-.apidocs-meta {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; padding: 6px 14px; margin-bottom: 18px;
-}
-.meta-row {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 8px 0; border-bottom: 1px solid var(--border-soft);
-  font-size: 13px;
-}
-.meta-row:last-child { border-bottom: 0; }
-.meta-label {
-  color: var(--dim); display: inline-flex; align-items: center; gap: 4px;
-  min-width: 130px; font-weight: 500;
-}
-.meta-code {
-  flex: 1; min-width: 0;
-  background: var(--surface-2); border: 1px solid var(--border-soft);
-  padding: 4px 8px; border-radius: 4px;
-  font-family: var(--mono); font-size: 12px; color: var(--text);
-  overflow-x: auto; white-space: nowrap;
-  -webkit-overflow-scrolling: touch;
-}
-.copy-mini {
-  border: 1px solid var(--border); background: var(--surface);
-  color: var(--dim); padding: 4px 6px; border-radius: 4px;
-  cursor: pointer; display: inline-flex; align-items: center;
-}
-.copy-mini:hover { color: var(--text); }
-.curl-example {
-  margin: 0; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; padding: 16px; overflow-x: auto;
-  font-family: var(--mono); font-size: 13px; line-height: 1.55;
+.key-left strong { color: var(--text); font-size: 14px; }
+.key-left .muted { font-size: 12px; color: var(--dim); margin: 4px 0 0; line-height: 1.5; }
+.key-left code {
+  font-family: var(--mono); font-size: 11.5px;
+  background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
   color: var(--text);
 }
-.curl-example .prompt { color: var(--green); margin-right: 6px; }
-
-/* Sections */
-.apidocs-section { margin-bottom: 48px; }
-.apidocs-section h2 {
-  margin: 0 0 12px; font-size: 22px; font-weight: 700;
-  border-bottom: 1px solid var(--border-soft); padding-bottom: 8px;
+.key-card .badge {
+  display: inline-block; margin-left: 6px;
+  font-family: var(--mono); font-size: 9.5px;
+  padding: 2px 7px; border-radius: 5px;
+  background: var(--surface-2); color: var(--dim);
+  text-transform: none; letter-spacing: 0;
+  border: 1px solid var(--border-soft);
 }
-.section-body { margin: 0 0 18px; color: var(--dim); font-size: 14px; line-height: 1.6; }
+.key-right { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.key-val {
+  font-family: var(--mono); font-size: 13px;
+  color: var(--green); background: var(--bg);
+  padding: 8px 12px; border-radius: 7px;
+  border: 1px solid var(--border-soft);
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.key-val.blurred { filter: blur(5px); user-select: none; }
+.ghost-button {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 12px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 7px;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: 0.15s;
+}
+.ghost-button:hover { border-color: var(--green); color: var(--green); }
+.ghost-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.ghost-button.mini { padding: 3px 7px; font-size: 10.5px; }
 
-/* Endpoint card */
+/* 2-col layout */
+.docs-layout {
+  display: grid; grid-template-columns: 240px minmax(0, 1fr);
+  gap: 20px; align-items: start;
+}
+.docs-nav {
+  position: sticky; top: 80px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px;
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: calc(100vh - 100px); overflow-y: auto;
+}
+.docs-nav h4 {
+  margin: 0 4px 10px; font-size: 10px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700;
+}
+.docs-nav button {
+  display: flex; align-items: center; gap: 10px;
+  background: transparent; border: none; color: var(--dim);
+  padding: 9px 12px; border-radius: 8px;
+  text-align: left; font: inherit; font-size: 13px; cursor: pointer;
+  transition: 0.15s;
+}
+.docs-nav button:hover { background: var(--surface-2); color: var(--text); }
+.docs-nav button.active {
+  background: color-mix(in srgb, var(--green-soft) 80%, transparent);
+  color: var(--text); font-weight: 600;
+}
+.docs-nav button.active svg { color: var(--green); }
+.docs-nav button .count {
+  margin-left: auto;
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim);
+  background: var(--surface-2); padding: 2px 7px; border-radius: 5px;
+}
+.docs-nav button.active .count {
+  background: var(--green); color: #0a0e14; font-weight: 700;
+}
+.docs-nav button .count.count-green {
+  background: var(--green-soft); color: var(--green);
+}
+
+.docs-body article { display: flex; flex-direction: column; gap: 18px; }
+.docs-body h2 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.docs-body .muted { color: var(--dim); font-size: 13.5px; margin: 0; line-height: 1.6; }
+
+/* Quick-start flow steps */
+.flow-steps {
+  list-style: none; padding: 0;
+  margin: 8px 0 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.flow-step {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 14px 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: 0.15s;
+}
+.flow-step:hover { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); transform: translateX(2px); }
+.flow-num {
+  flex: none;
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  background: var(--green-soft);
+  color: var(--green);
+  font-family: var(--mono); font-weight: 800; font-size: 14px;
+  display: grid; place-items: center;
+  border: 1px solid color-mix(in srgb, var(--green) 30%, var(--border));
+}
+.flow-step strong { font-size: 14px; color: var(--text); font-weight: 700; }
+.flow-step p { font-size: 12.5px; line-height: 1.55; }
+
+/* Endpoint cards */
 .endpoint {
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; padding: 16px; margin-bottom: 14px;
+  border-radius: 12px; padding: 18px 20px;
+  display: flex; flex-direction: column; gap: 12px;
 }
-.endpoint-head {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 10px;
-}
+.ep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .method {
-  font-family: var(--mono); font-size: 11px; font-weight: 700;
-  padding: 3px 8px; border-radius: 4px;
-  letter-spacing: 0.5px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 800;
+  padding: 4px 9px; border-radius: 5px;
+  letter-spacing: 0.05em;
+  border: 1px solid;
 }
-.m-get  { background: var(--blue-soft);  color: var(--blue); }
-.m-post { background: var(--green-soft); color: var(--green); }
-.m-put,
-.m-patch { background: var(--yellow-soft); color: var(--yellow); }
-.m-del  { background: var(--red-soft);   color: var(--red); }
-.endpoint-path {
-  font-family: var(--mono); font-size: 13px; color: var(--text);
-  background: var(--surface-2); border: 1px solid var(--border-soft);
-  padding: 3px 8px; border-radius: 4px;
-  min-width: 0; max-width: 100%;
-  overflow-wrap: anywhere; word-break: break-word;
-}
-.auth-badge {
-  font-size: 10px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
-  padding: 2px 7px; border-radius: 999px;
-}
-.b-none   { background: transparent; color: var(--dim); border: 1px solid var(--border); }
-.b-key    { background: var(--blue-soft);   color: var(--blue); }
-.b-bearer { background: var(--yellow-soft); color: var(--yellow); }
-.endpoint-desc { margin: 0 0 12px; color: var(--dim); font-size: 13px; line-height: 1.6; }
+.method.m-get    { background: var(--green-soft); color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); }
+.method.m-post   { background: var(--blue-soft);  color: var(--blue);  border-color: color-mix(in srgb, var(--blue) 30%, transparent); }
+.method.m-patch  { background: var(--yellow-soft);color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 30%, transparent); }
+.method.m-delete { background: var(--red-soft);   color: var(--red);   border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+.path { font-family: var(--mono); font-size: 13.5px; color: var(--text); font-weight: 600; }
+.ep-desc { color: var(--dim); font-size: 13px; margin: 0; line-height: 1.6; }
+.try-btn { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, var(--border)) !important; }
 
-.codepanel {
-  background: var(--bg); border: 1px solid var(--border-soft);
-  border-radius: 8px; overflow: hidden; margin-bottom: 8px;
+.ep-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.code-block {
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px; overflow: hidden;
 }
-.codepanel-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 12px; background: var(--surface-2);
+.code-block header {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface-2);
+  padding: 7px 12px;
+  font-size: 10.5px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700;
   border-bottom: 1px solid var(--border-soft);
-  font-size: 11px; color: var(--dim); letter-spacing: 0.4px;
-  text-transform: uppercase; font-weight: 600;
 }
-.codepanel pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
-.codepanel code {
-  font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
-  color: var(--text); white-space: pre;
+.code-block pre {
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  color: var(--text); background: transparent;
+  white-space: pre;
 }
+.code-block.curl pre { color: var(--green); }
 
-.apidocs-cta {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; padding: 24px; margin: 32px 0;
+.docs-cta {
+  margin-top: 14px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+  padding: 14px 18px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--green) 30%, var(--border));
+  background: linear-gradient(135deg, var(--green-soft) 0%, color-mix(in srgb, var(--green-soft) 40%, transparent) 100%);
+  font-size: 13px; color: var(--text);
 }
-.apidocs-cta h3 { margin: 0 0 8px; font-size: 18px; }
-.apidocs-cta p { margin: 0 0 16px; color: var(--dim); font-size: 14px; line-height: 1.55; max-width: 540px; }
-.cta-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.docs-cta > span {
+  display: inline-flex; align-items: center; gap: 8px;
+  flex: 1; min-width: 240px;
+}
+.docs-cta svg { color: var(--green); flex-shrink: 0; }
+.cta-actions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); cursor: pointer;
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+  transition: 0.15s;
+}
+.btn:hover { border-color: var(--blue); }
+.btn.primary {
+  background: linear-gradient(135deg, #3fb950 0%, #2e9c40 100%);
+  border-color: transparent;
+  color: #0a0e14; font-weight: 700;
+  box-shadow: 0 4px 14px rgba(63, 185, 80, 0.25);
+}
+.btn.primary:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(63, 185, 80, 0.35); }
+.btn.ghost { background: transparent; }
 
+/* Footer */
 .apidocs-foot {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 24px 0 0; border-top: 1px solid var(--border-soft);
-  color: var(--dim); font-size: 12px; gap: 12px; flex-wrap: wrap;
+  flex-wrap: wrap; gap: 12px;
+  padding: 22px 0 0;
+  margin-top: 14px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--dim); font-size: 12px;
 }
-.foot-onie a { color: var(--text); text-decoration: none; font-weight: 600; }
+.apidocs-foot a { color: var(--dim); text-decoration: none; }
+.apidocs-foot a:hover { color: var(--text); }
+.foot-onie a { color: var(--text); font-weight: 600; }
 .foot-onie a:hover { color: var(--blue); }
 
-/* ── Tablet ── */
+/* Mobile */
 @media (max-width: 980px) {
-  .apidocs-shell { grid-template-columns: 1fr; }
-  .apidocs-sidebar {
-    position: relative; top: 0;
-    height: auto; max-height: 280px;
-    border-right: 0; border-bottom: 1px solid var(--border-soft);
-    padding: 16px 20px;
+  .apidocs { padding: 22px 18px 50px; gap: 18px; }
+  .apidocs-head h1 { font-size: 26px; }
+  .docs-layout { grid-template-columns: 1fr; gap: 14px; }
+  .docs-nav {
+    position: static;
+    max-height: 280px;
+    flex-direction: row; flex-wrap: wrap;
+    padding: 10px;
   }
-  .apidocs-sidebar h4 { margin-bottom: 8px; }
-  .apidocs-content { padding: 28px 20px 60px; }
-  .landing-nav { padding: 12px 16px; gap: 12px; }
-  .landing-nav-links { display: none; }
-  .desktop-only { display: none; }
+  .docs-nav h4 { display: none; }
+  .docs-nav button { flex: 1 1 auto; }
+  .ep-blocks { grid-template-columns: 1fr; }
+  .key-card { padding: 14px 16px; }
+  .key-val { max-width: 100%; }
 }
-/* ── Phone ── */
 @media (max-width: 640px) {
-  .landing-nav { padding: 10px 14px; gap: 8px; }
-  .landing-brand strong { font-size: 15px; }
-  .landing-brand .brand-sub { display: none; }
-  .theme-btn { display: none; }
-  .lang-toggle button { padding: 5px 8px; font-size: 11px; }
-  .btn { padding: 7px 12px; font-size: 12px; }
-
-  .apidocs-sidebar { max-height: 200px; padding: 12px 14px; }
-  .apidocs-sidebar a { padding: 6px 8px; font-size: 13px; }
-  .apidocs-content { padding: 22px 14px 50px; }
-  .apidocs-hero h1 { font-size: 24px; }
-  .apidocs-hero p { font-size: 14px; }
-  .apidocs-meta { padding: 4px 12px; }
-  .meta-row { gap: 8px; padding: 8px 0; flex-wrap: wrap; }
-  .meta-label { min-width: auto; flex-basis: 100%; margin-bottom: 2px; font-size: 12px; }
-  .meta-code { width: 100%; flex: none; font-size: 11.5px; }
-  .copy-mini { padding: 3px 6px; }
-  .curl-example { padding: 12px; font-size: 11.5px; }
+  .apidocs { padding: 18px 14px 40px; }
+  .apidocs-head h1 { font-size: 22px; }
+  .apidocs-head .sub { font-size: 13px; }
+  .key-card { gap: 10px; }
+  .key-right { width: 100%; }
+  .key-val { flex: 1; }
+  .docs-body h2 { font-size: 19px; }
+  .flow-step { padding: 12px 14px; }
   .endpoint { padding: 14px; }
-  .endpoint-head { gap: 8px; }
-  .endpoint-path { font-size: 12px; max-width: 100%; }
-  .codepanel pre { padding: 12px; }
-  .codepanel code { font-size: 11px; }
-  .codepanel-head { padding: 5px 10px; font-size: 10.5px; }
-  .apidocs-cta { padding: 18px; }
-  .apidocs-cta h3 { font-size: 16px; }
-  .codepanel code { font-size: 11.5px; }
+  .docs-cta { flex-direction: column; align-items: flex-start; }
+  .cta-actions { width: 100%; }
+  .cta-actions .btn { flex: 1; justify-content: center; }
   .apidocs-foot { flex-direction: column; align-items: flex-start; }
 }
 </style>
