@@ -1478,7 +1478,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
                 </button>
                 <button v-if="p.type === 'IPv6'" class="row-act-btn rotate-btn" type="button" :title="t('cust.proxies.tipRotate')" :disabled="rotating === p.id" @click="rotateProxy(p)">
                   <RotateCw :size="12" :class="{ spin: rotating === p.id }" />
-                  <span>{{ rotating === p.id ? 'Đang đổi…' : 'Đổi IP' }}</span>
+                  <span>{{ rotating === p.id ? t('cust.proxies.rotating') : t('cust.proxies.rotateIp') }}</span>
                 </button>
                 <button v-if="p.type === 'IPv6' && p.rotateUrl" class="row-act-btn" type="button" :title="t('cust.proxies.tipCopyRotate') + '\n' + p.rotateUrl" @click="copyRotateUrl(p, $event)">
                   <Link :size="12" />

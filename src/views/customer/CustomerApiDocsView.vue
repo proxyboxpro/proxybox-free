@@ -73,111 +73,111 @@ async function runTry(gid, i, e) {
 }
 
 // Endpoint groups. Each endpoint: method + path + description + sample request/response.
-const groups = [
+const groups = computed(() => [
   {
     id: 'flow', title: 'Quick start', icon: Zap,
-    intro: 'Luồng end-to-end để mua, dùng, và quản lý proxy qua API. Tất cả request đều cần header `X-Customer-Key: <api-key>` (lấy ở thẻ phía trên).',
+    intro: t('cust.apidocs.g.flowIntro'),
     flow: [
-      { step: 1, title: 'Nạp tiền + check số dư', detail: 'GET /api/v1/user/billing — kiểm tra wallet trước khi tạo đơn.' },
-      { step: 2, title: 'Tạo đơn (mua proxy)', detail: 'POST /api/v1/user/orders với `type`, `quantity`, `hours`, `zone`. Server tự cấp N proxy + trả về danh sách credentials.' },
-      { step: 3, title: 'Lấy danh sách proxy', detail: 'GET /api/v1/user/proxies — trả về tất cả proxy bạn sở hữu, mỗi cái có `orderId` để gom nhóm.' },
-      { step: 4, title: 'Sử dụng proxy', detail: 'Connect tới `bindIp:port` với `username:password` (HTTP CONNECT hoặc SOCKS5). Hoặc thêm IP của bạn vào whitelist để bỏ qua auth.' },
-      { step: 5, title: 'Quản lý proxy', detail: 'Check live (bulk), gia hạn (extend), xoá (DELETE), whitelist IP, xoay IPv6, xem SLA + lịch sử băng thông.' }
+      { step: 1, title: t('cust.apidocs.g.s1t'), detail: t('cust.apidocs.g.s1d') },
+      { step: 2, title: t('cust.apidocs.g.s2t'), detail: t('cust.apidocs.g.s2d') },
+      { step: 3, title: t('cust.apidocs.g.s3t'), detail: t('cust.apidocs.g.s3d') },
+      { step: 4, title: t('cust.apidocs.g.s4t'), detail: t('cust.apidocs.g.s4d') },
+      { step: 5, title: t('cust.apidocs.g.s5t'), detail: t('cust.apidocs.g.s5d') }
     ],
     endpoints: []
   },
   {
     id: 'auth', title: 'Authentication', icon: Lock,
-    intro: 'API key (header `X-Customer-Key`) hoặc Bearer token sau khi login. API key có ở thẻ trên — dùng cho automation. Bearer token dùng cho session đăng nhập tương tác.',
+    intro: t('cust.apidocs.g.authIntro'),
     endpoints: [
-      { method: 'POST', path: '/api/v1/user/auth/login', desc: 'Đăng nhập, trả về Bearer token (TTL 7 ngày).',
+      { method: 'POST', path: '/api/v1/user/auth/login', desc: t('cust.apidocs.g.authLogin'),
         request: '{\n  "email": "you@example.com",\n  "password": "secret"\n}',
         response: '{\n  "token": "abc123...",\n  "user": { "email": "you@example.com", "role": "customer" }\n}' },
-      { method: 'GET',  path: '/api/v1/user/auth/me',   desc: 'Thông tin user hiện tại.', response: '{ "id": "u-...", "email": "...", "role": "customer", "emailVerified": true }' },
-      { method: 'GET',  path: '/api/v1/user/account',   desc: 'Profile + balance + API key.', response: '{ "id": "u-...", "name": "...", "balance": 150000, "apiKey": "abc..." }' }
+      { method: 'GET',  path: '/api/v1/user/auth/me',   desc: t('cust.apidocs.g.authMe'), response: '{ "id": "u-...", "email": "...", "role": "customer", "emailVerified": true }' },
+      { method: 'GET',  path: '/api/v1/user/account',   desc: t('cust.apidocs.g.authAccount'), response: '{ "id": "u-...", "name": "...", "balance": 150000, "apiKey": "abc..." }' }
     ]
   },
   {
-    id: 'orders', title: 'Mua proxy (Orders)', icon: ShoppingCart,
-    intro: 'Tạo đơn = đặt mua N proxy cùng zone + cùng số giờ. Server tự cấp ngay và trả về full credentials.',
+    id: 'orders', title: t('cust.apidocs.g.ordersTitle'), icon: ShoppingCart,
+    intro: t('cust.apidocs.g.ordersIntro'),
     endpoints: [
-      { method: 'POST', path: '/api/v1/user/orders', desc: 'Mua N proxy cùng lúc theo giờ. Cần `type` ∈ {ipv4, ipv6}, `quantity` ≥ 1, `hours` ≥ 1, `zone` (bắt buộc — danh sách zone lấy từ /zones).',
+      { method: 'POST', path: '/api/v1/user/orders', desc: t('cust.apidocs.g.ordCreate'),
         request: '{\n  "type": "ipv4",\n  "quantity": 5,\n  "hours": 24,\n  "zone": "vn-hcm",\n  "autoRenew": false\n}',
         response: '{\n  "order": {\n    "id": "ORD-170747",\n    "proxyIds": ["px-20005","px-20006","px-20007","px-20008","px-20009"],\n    "totalCost": 49920,\n    "expiresAt": "2026-05-16T03:19:30Z"\n  },\n  "proxies": [\n    {\n      "id": "px-20005",\n      "orderId": "ORD-170747",\n      "bindIp": "103.189.73.2",\n      "port": 20005,\n      "username": "user_20005",\n      "password": "c0549d8275c5",\n      "http": "http://user_20005:c0549d8275c5@103.189.73.2:20005"\n    }, ...\n  ],\n  "balance": 100080\n}' },
-      { method: 'GET',  path: '/api/v1/user/zones', desc: 'List zone hợp lệ + số node online theo từng zone.', response: '[ { "id": "vn-hcm", "name": "Vietnam — HCM", "onlineNodes": 1 } ]' },
-      { method: 'GET',  path: '/api/v1/user/pricing', desc: 'Đơn giá / giờ + volume tier discount.', response: '{ "currency": "VND", "ipv4": { "perHour": 416 }, "ipv6": { "perHour": 291 }, "tiers": [...] }' }
+      { method: 'GET',  path: '/api/v1/user/zones', desc: t('cust.apidocs.g.ordZones'), response: '[ { "id": "vn-hcm", "name": "Vietnam — HCM", "onlineNodes": 1 } ]' },
+      { method: 'GET',  path: '/api/v1/user/pricing', desc: t('cust.apidocs.g.ordPricing'), response: '{ "currency": "VND", "ipv4": { "perHour": 416 }, "ipv6": { "perHour": 291 }, "tiers": [...] }' }
     ]
   },
   {
-    id: 'proxies', title: 'Quản lý proxy', icon: ArrowRight,
-    intro: 'List + control mọi proxy bạn sở hữu. Group theo `orderId` để xử lý theo nhóm. Mọi endpoint per-proxy check ownership trước.',
+    id: 'proxies', title: t('cust.apidocs.g.pxTitle'), icon: ArrowRight,
+    intro: t('cust.apidocs.g.pxIntro'),
     endpoints: [
-      { method: 'GET', path: '/api/v1/user/proxies', desc: 'List toàn bộ proxy (kèm `orderId` để gom nhóm, `expiresAt`, `allowedSrcIps`).',
+      { method: 'GET', path: '/api/v1/user/proxies', desc: t('cust.apidocs.g.pxList'),
         response: '[\n  {\n    "id": "px-20005",\n    "orderId": "ORD-170747",\n    "type": "IPv4",\n    "bindIp": "103.189.73.2",\n    "port": 20005,\n    "username": "user_20005",\n    "password": "...",\n    "http": "http://u:p@host:port",\n    "socks5": "socks5://u:p@host:port",\n    "status": "active",\n    "expiresAt": "2026-05-16T03:19:30Z",\n    "zone": "vn-hcm",\n    "allowedSrcIps": []\n  }\n]' },
-      { method: 'GET', path: '/api/v1/user/proxies/export?format=txt', desc: 'Export tất cả proxy ra file (format: txt | csv | json).',
+      { method: 'GET', path: '/api/v1/user/proxies/export?format=txt', desc: t('cust.apidocs.g.pxExport'),
         response: '103.189.73.2:20005:user_20005:c054...\n103.189.73.3:20006:user_20006:959a...' },
-      { method: 'POST', path: '/api/v1/user/proxies/check-bulk', desc: 'Check live N proxy song song. Limit 100 ids/lượt.',
+      { method: 'POST', path: '/api/v1/user/proxies/check-bulk', desc: t('cust.apidocs.g.pxCheckBulk'),
         request: '{ "ids": ["px-20005","px-20006","px-20007"] }',
         response: '{\n  "total": 3,\n  "ok": 3,\n  "results": [\n    { "id": "px-20005", "ok": true, "latencyMs": 290 },\n    { "id": "px-20006", "ok": true, "latencyMs": 313 },\n    { "id": "px-20007", "ok": true, "latencyMs": 303 }\n  ]\n}' },
-      { method: 'POST', path: '/api/v1/user/proxies/:id/check', desc: 'Check 1 proxy còn live không.', response: '{ "ok": true, "latencyMs": 42, "proxy": { ... } }' },
-      { method: 'POST', path: '/api/v1/user/proxies/:id/rotate', desc: 'Đổi IP cho proxy IPv6 (random IP mới trong pool /48 của node).', response: '{ "id": "px-...", "bindIp": "2602:f9ca:...", ... }' },
-      { method: 'POST', path: '/api/v1/user/proxies/:id/extend', desc: 'Gia hạn thêm giờ. Trừ phí vào ví (= perHour × hours). Status `expired`/`grace` → tự về `active`.',
+      { method: 'POST', path: '/api/v1/user/proxies/:id/check', desc: t('cust.apidocs.g.pxCheck'), response: '{ "ok": true, "latencyMs": 42, "proxy": { ... } }' },
+      { method: 'POST', path: '/api/v1/user/proxies/:id/rotate', desc: t('cust.apidocs.g.pxRotate'), response: '{ "id": "px-...", "bindIp": "2602:f9ca:...", ... }' },
+      { method: 'POST', path: '/api/v1/user/proxies/:id/extend', desc: t('cust.apidocs.g.pxExtend'),
         request: '{ "hours": 24 }',
         response: '{ "proxy": { "expiresAt": "..." }, "balance": 100080 }' },
-      { method: 'DELETE', path: '/api/v1/user/proxies/:id', desc: 'Xoá hẳn 1 proxy (release). Stop listener + remove khỏi config. Không hoàn tiền số giờ còn lại.', response: '{ "ok": true, "id": "px-..." }' },
-      { method: 'GET', path: '/api/v1/user/proxies/:id/whitelist', desc: 'Lấy danh sách IP whitelist hiện tại (IP auth — bỏ qua user/pass khi connect từ IP này).', response: '{ "allowedSrcIps": ["1.2.3.4", "5.6.7.8"] }' },
-      { method: 'PUT', path: '/api/v1/user/proxies/:id/whitelist', desc: 'Set whitelist (overwrite). Tối đa 20 IP. IPv4 + IPv6 đều OK.',
+      { method: 'DELETE', path: '/api/v1/user/proxies/:id', desc: t('cust.apidocs.g.pxDelete'), response: '{ "ok": true, "id": "px-..." }' },
+      { method: 'GET', path: '/api/v1/user/proxies/:id/whitelist', desc: t('cust.apidocs.g.pxWlGet'), response: '{ "allowedSrcIps": ["1.2.3.4", "5.6.7.8"] }' },
+      { method: 'PUT', path: '/api/v1/user/proxies/:id/whitelist', desc: t('cust.apidocs.g.pxWlPut'),
         request: '{ "allowedSrcIps": ["1.2.3.4", "5.6.7.8"] }',
         response: '{ "allowedSrcIps": ["1.2.3.4", "5.6.7.8"] }' },
-      { method: 'GET', path: '/api/v1/user/proxies/:id/sla?days=30', desc: 'Uptime % trong N ngày qua (1-365).', response: '{ "pct": 99.87, "samples": 720 }' },
-      { method: 'GET', path: '/api/v1/user/proxies/:id/history?hours=24', desc: 'Lịch sử băng thông từng giờ (1-720h).', response: '{ "samples": [ { "hour": "2026-05-15T03", "uploadBytes": 12345, "downloadBytes": 67890, "bpsIn": 1024, "bpsOut": 2048 } ] }' }
+      { method: 'GET', path: '/api/v1/user/proxies/:id/sla?days=30', desc: t('cust.apidocs.g.pxSla'), response: '{ "pct": 99.87, "samples": 720 }' },
+      { method: 'GET', path: '/api/v1/user/proxies/:id/history?hours=24', desc: t('cust.apidocs.g.pxHistory'), response: '{ "samples": [ { "hour": "2026-05-15T03", "uploadBytes": 12345, "downloadBytes": 67890, "bpsIn": 1024, "bpsOut": 2048 } ] }' }
     ]
   },
   {
     id: 'tools', title: 'Tools (diagnostics)', icon: Wrench,
-    intro: 'Network + proxy diagnostics. Mỗi tool có rate limit riêng (xem hint trong response 429).',
+    intro: t('cust.apidocs.g.toolsIntro'),
     endpoints: [
-      { method: 'POST', path: '/api/v1/user/tools/ping', desc: 'Ping 1 IP (auto-detect v4/v6). Limit 30/giờ.',
+      { method: 'POST', path: '/api/v1/user/tools/ping', desc: t('cust.apidocs.g.tPing'),
         request: '{ "ip": "8.8.8.8", "count": 4 }',
         response: '{ "target": "8.8.8.8", "family": "ipv4", "ok": true, "transmitted": 4, "received": 4, "loss": 0, "rtt": { "min": 44.6, "avg": 44.7, "max": 44.9 } }' },
-      { method: 'POST', path: '/api/v1/user/tools/ip-info', desc: 'ASN + CIDR + country + org của 1 IP. Data từ Team Cymru DNS. Limit 100/giờ.',
+      { method: 'POST', path: '/api/v1/user/tools/ip-info', desc: t('cust.apidocs.g.tIpInfo'),
         request: '{ "ip": "8.8.8.8" }',
         response: '{ "ip": "8.8.8.8", "asn": "AS15169", "cidr": "8.8.8.0/24", "country": "US", "org": "GOOGLE - Google LLC, US" }' },
-      { method: 'POST', path: '/api/v1/user/tools/blacklist', desc: 'Kiểm tra IPv4 có trong 10 DNSBL phổ biến không. Limit 100/giờ.',
+      { method: 'POST', path: '/api/v1/user/tools/blacklist', desc: t('cust.apidocs.g.tBlacklist'),
         request: '{ "ip": "127.0.0.2" }',
         response: '{ "ip": "127.0.0.2", "total": 10, "listed": 7, "clean": 2, "errors": 1, "results": [ { "name": "Spamhaus ZEN", "listed": true } ] }' },
-      { method: 'POST', path: '/api/v1/user/tools/bulk-check', desc: 'Check N proxy bất kỳ song song (HTTP + SOCKS5, IPv4 + IPv6). Max 50 dòng/batch. Limit 5 batches/giờ.',
+      { method: 'POST', path: '/api/v1/user/tools/bulk-check', desc: t('cust.apidocs.g.tBulk'),
         request: '{ "lines": "1.2.3.4:8080:user:pass\\nuser:pass@5.6.7.8:1080\\nsocks5://1.2.3.4:1080" }',
         response: '{ "total": 3, "ok": 1, "fail": 2, "results": [ { "idx": 0, "ok": true, "latencyMs": 234, "exitIp": "1.2.3.4" } ] }' },
-      { method: 'GET', path: '/api/v1/user/tools/speedtest-isps?country=VN', desc: 'List ISP/sponsor có server speedtest.net theo quốc gia. Dùng để filter trong speed-test.',
+      { method: 'GET', path: '/api/v1/user/tools/speedtest-isps?country=VN', desc: t('cust.apidocs.g.tSpeedIsps'),
         response: '{ "country": "VN", "countryName": "Vietnam", "totalServers": 20, "isps": [ { "sponsor": "Viettel IDC", "serverCount": 4 } ] }' },
-      { method: 'POST', path: '/api/v1/user/tools/speed-test', desc: 'Đo tốc độ download thực qua proxy của bạn (Ookla server). Test ~15s / max 80MB. Limit 5/giờ.',
+      { method: 'POST', path: '/api/v1/user/tools/speed-test', desc: t('cust.apidocs.g.tSpeed'),
         request: '{ "proxyId": "px-20005", "country": "VN", "isp": "viettel" }',
         response: '{ "ok": true, "mbps": 1470.95, "totalBytes": 31625365, "durationMs": 172, "ttfbMs": 81, "server": { "sponsor": "Viettel Network", "name": "Da Nang", "host": "speedtestkv2a.viettel.vn..." } }' }
     ]
   },
   {
     id: 'billing', title: 'Billing', icon: ArrowRight,
-    intro: 'Số dư ví, transaction history, Stripe checkout.',
+    intro: t('cust.apidocs.g.billIntro'),
     endpoints: [
-      { method: 'GET', path: '/api/v1/user/billing', desc: 'Wallet + plan + 10 tx gần nhất.', response: '{ "wallet": { "balance": 150000 }, "plan": { "name": "free" }, "recentTx": [ ... ] }' },
-      { method: 'GET', path: '/api/v1/user/billing/transactions', desc: 'Lịch sử giao dịch (pagination).', response: '{ "items": [ { "ts": "...", "type": "topup", "amount": 100000 } ], "total": 42 }' },
-      { method: 'POST', path: '/api/v1/user/billing/checkout', desc: 'Tạo Stripe Checkout session để nạp tiền.', request: '{ "amount": 100000 }', response: '{ "url": "https://checkout.stripe.com/...", "sessionId": "cs_..." }' }
+      { method: 'GET', path: '/api/v1/user/billing', desc: t('cust.apidocs.g.bGet'), response: '{ "wallet": { "balance": 150000 }, "plan": { "name": "free" }, "recentTx": [ ... ] }' },
+      { method: 'GET', path: '/api/v1/user/billing/transactions', desc: t('cust.apidocs.g.bTx'), response: '{ "items": [ { "ts": "...", "type": "topup", "amount": 100000 } ], "total": 42 }' },
+      { method: 'POST', path: '/api/v1/user/billing/checkout', desc: t('cust.apidocs.g.bCheckout'), request: '{ "amount": 100000 }', response: '{ "url": "https://checkout.stripe.com/...", "sessionId": "cs_..." }' }
     ]
   },
   {
     id: 'notifs', title: 'Notifications', icon: ArrowRight,
-    intro: 'In-app notifications cho events: đơn cấp xong, sắp hết hạn, ví thấp.',
+    intro: t('cust.apidocs.g.notifIntro'),
     endpoints: [
-      { method: 'GET', path: '/api/v1/user/notifications', desc: 'Danh sách notification.', response: '{ "items": [...], "unread": 3 }' },
-      { method: 'POST', path: '/api/v1/user/notifications/:id/read', desc: 'Đánh dấu đã đọc.', response: '{ "ok": true }' },
-      { method: 'POST', path: '/api/v1/user/notifications/read-all', desc: 'Đánh dấu tất cả đã đọc.', response: '{ "ok": true }' },
-      { method: 'DELETE', path: '/api/v1/user/notifications', desc: 'Xoá hết notifications.', response: '{ "ok": true }' }
+      { method: 'GET', path: '/api/v1/user/notifications', desc: t('cust.apidocs.g.nList'), response: '{ "items": [...], "unread": 3 }' },
+      { method: 'POST', path: '/api/v1/user/notifications/:id/read', desc: t('cust.apidocs.g.nRead'), response: '{ "ok": true }' },
+      { method: 'POST', path: '/api/v1/user/notifications/read-all', desc: t('cust.apidocs.g.nReadAll'), response: '{ "ok": true }' },
+      { method: 'DELETE', path: '/api/v1/user/notifications', desc: t('cust.apidocs.g.nDelete'), response: '{ "ok": true }' }
     ]
   }
-]
+])
 
-const activeGroup = ref(groups[0].id)
+const activeGroup = ref(groups.value[0].id)
 function curlSample(method, path, body) {
   const url = `${baseUrl.value}${path}`
   const headers = [`-H "X-Customer-Key: ${reveal.value ? apiKey.value : 'YOUR_API_KEY'}"`]
@@ -217,7 +217,7 @@ onMounted(refresh)
       </div>
       <div class="key-right">
         <code class="key-val" :class="{ blurred: !reveal }">{{ apiKey }}</code>
-        <button type="button" class="ghost-button" @click="reveal = !reveal">{{ reveal ? 'Ẩn' : 'Hiện' }}</button>
+        <button type="button" class="ghost-button" @click="reveal = !reveal">{{ reveal ? t('cust.dash.hide') : t('cust.dash.show') }}</button>
         <button type="button" class="ghost-button" :disabled="!reveal" @click="copy(apiKey)"><Copy :size="13" /></button>
       </div>
     </section>
@@ -262,7 +262,7 @@ onMounted(refresh)
                 <code class="path">{{ e.path }}</code>
                 <button type="button" class="ghost-button mini" @click="copy(`${baseUrl}${e.path}`)"><Copy :size="11" /></button>
                 <button type="button" class="ghost-button mini try-btn" @click="ensureTry(g.id, i, e).open = !tryState[tryKeyOf(g.id, i)].open">
-                  <Play :size="11" /> {{ tryState[tryKeyOf(g.id, i)]?.open ? 'Đóng' : 'Try it' }}
+                  <Play :size="11" /> {{ tryState[tryKeyOf(g.id, i)]?.open ? t('cust.apidocs.close') : 'Try it' }}
                 </button>
               </div>
               <p class="ep-desc">{{ e.desc }}</p>
@@ -309,7 +309,7 @@ onMounted(refresh)
                 </div>
                 <div class="try-actions">
                   <button class="primary-action" type="button" :disabled="tryState[tryKeyOf(g.id, i)].busy" @click="runTry(g.id, i, e)">
-                    <Play :size="12" /> {{ tryState[tryKeyOf(g.id, i)].busy ? 'Đang gọi…' : `Run ${e.method}` }}
+                    <Play :size="12" /> {{ tryState[tryKeyOf(g.id, i)].busy ? t('cust.apidocs.calling') : `Run ${e.method}` }}
                   </button>
                   <span v-if="tryState[tryKeyOf(g.id, i)].status != null" class="resp-meta">
                     <span :class="['status-chip', tryState[tryKeyOf(g.id, i)].status < 300 ? 'ok' : tryState[tryKeyOf(g.id, i)].status < 400 ? 'warn' : 'err']">{{ tryState[tryKeyOf(g.id, i)].status }}</span>
