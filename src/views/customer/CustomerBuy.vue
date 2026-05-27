@@ -244,7 +244,11 @@ async function placeOrder() {
     }
     const r = await apiFetch('/api/v1/user/orders', { method: 'POST', body })
     flash.value = t('cust.buy.success', { id: r.order?.id || '' })
-    setTimeout(() => router.push({ name: 'order-detail', params: { orderId: r.order.id } }), 1200)
+    // Orders page was removed in the /proxies refactor — proxy groups now live
+    // inside /proxies (route name 'proxy-order'). The old 'order-detail' name no
+    // longer resolves, so pushing it threw and the buyer was never redirected.
+    const orderId = r.order?.id
+    setTimeout(() => router.push(orderId ? { name: 'proxy-order', params: { orderId } } : { name: 'proxies' }), 1200)
   } catch (e) { err.value = e.message }
   finally { busy.value = false }
 }
