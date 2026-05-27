@@ -6789,10 +6789,15 @@ async function handleApi(req, res, url) {
         if ((p.nodeId || 'local') === 'local') stopProxy(p.id)
       }
       order.status = 'cancelled'
-      if (refund > 0 && order.ownerId) recordBillingTx(order.ownerId, 'refund', refund, `admin cancel ${order.id}`)
+      // Refund only the wallet-paid share (see customer cancel) — don't convert
+      // scoped free-credit into withdrawable wallet cash.
+      const totalVal = Number(order.amount) || 0
+      const walletShare = order.walletCharge != null ? Number(order.walletCharge) : totalVal
+      const refundWallet = totalVal > 0 ? Math.round(refund * walletShare / totalVal) : 0
+      if (refundWallet > 0 && order.ownerId) recordBillingTx(order.ownerId, 'refund', refundWallet, `admin cancel ${order.id}`)
       await Promise.all([saveConfig(), saveOrders()])
-      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id} refund=${refund}` })
-      return sendJson(res, 200, { ok: true, refund })
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id} refund=${refundWallet}` })
+      return sendJson(res, 200, { ok: true, refund: refundWallet })
     }
 
     // â”€â”€ admin: composite user detail â”€â”€
@@ -9167,10 +9172,16 @@ async function handleUserV1(req, res, url) {
       if ((p.nodeId || 'local') === 'local') stopProxy(p.id)
     }
     order.status = 'cancelled'
-    if (refund > 0) recordBillingTx(user.id, 'refund', refund, `cancel ${order.id} (${members.length} proxies, hourly refund)`)
+    // Refund only the WALLET-paid share — never refund the free-credit portion to the
+    // wallet, or scoped/expiring promo credit would become withdrawable cash. Old
+    // orders (no walletCharge field) fall back to full amount = unchanged behaviour.
+    const totalVal = Number(order.amount) || 0
+    const walletShare = order.walletCharge != null ? Number(order.walletCharge) : totalVal
+    const refundWallet = totalVal > 0 ? Math.round(refund * walletShare / totalVal) : 0
+    if (refundWallet > 0) recordBillingTx(user.id, 'refund', refundWallet, `cancel ${order.id} (${members.length} proxies, wallet share)`)
     await Promise.all([saveConfig(), saveOrders()])
-    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id}, refund=${refund}` })
-    return sendJson(res, 200, { ok: true, refund, balance: userBalance(user.id) })
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id}, refund=${refundWallet} (credit not refunded)` })
+    return sendJson(res, 200, { ok: true, refund: refundWallet, balance: userBalance(user.id) })
   }
 
   // HTML invoice â€” printable receipt for an order. Customer can save as PDF via browser print.
