@@ -43,6 +43,7 @@ onMounted(refresh)
         <label class="input-field"><span>Currency</span><input v-model="pricing.currency" maxlength="8" /></label>
         <label class="input-field"><span>Min hours</span><input v-model.number="pricing.minHours" type="number" min="1" /></label>
         <label class="input-field"><span>Max hours</span><input v-model.number="pricing.maxHours" type="number" min="1" /></label>
+        <label class="input-field"><span>Quota băng thông / proxy (GB/tháng, 0 = ∞)</span><input v-model.number="pricing.bandwidthQuotaGB" type="number" min="0" /></label>
       </div>
     </section>
 

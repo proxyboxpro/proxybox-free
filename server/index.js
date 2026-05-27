@@ -4586,11 +4586,13 @@ async function runHealthSweep() {
         proxy.lastCheckOk = r.ok
         if (r.ok) {
           proxy.checkFailCount = 0
+          proxy.totalFails = 0
           if (proxy.status === 'error') proxy.status = 'active'
           updateSlaTick(proxy.id, true)
           if (Number.isFinite(r.latencyMs)) proxy.latency = r.latencyMs
         } else {
           proxy.checkFailCount = (Number(proxy.checkFailCount) || 0) + 1
+          proxy.totalFails = (Number(proxy.totalFails) || 0) + 1
           updateSlaTick(proxy.id, false)
           if (proxy.checkFailCount === 3) {
             dispatchWebhook(proxy.ownerId, 'proxy.checkFailed', { proxyId: proxy.id, bindIp: proxy.bindIp, port: proxy.port, consecutiveFails: proxy.checkFailCount })
@@ -4612,6 +4614,11 @@ async function runHealthSweep() {
           } else if ((proxy.nodeId || 'local') === 'local') {
             proxy.status = 'error'
           }
+          // Auto-replace: dead past the rotate threshold (6 consecutive failed checks),
+          // pool proxy with an order, not already replaced, feature on → swap for a fresh one.
+          if ((Number(proxy.totalFails) || 0) >= 6 && proxy.orderId && !proxy.replacedBy && config.features?.autoReplace !== false && (proxy.nodeId || 'local') === 'local') {
+            try { await autoReplaceProxy(proxy) } catch { /* leave as error; retry next sweep */ }
+          }
           // For remote proxies: don't auto-error on panel-side check failure — agent manages status.
         }
       } catch { /* swallow */ }
@@ -4619,6 +4626,30 @@ async function runHealthSweep() {
   }
   await Promise.all(probes)
   if (probes.length) saveConfig().catch(() => {})
+}
+
+// Provision a fresh replacement for a persistently-dead pool proxy, attach it to
+// the same order (inheriting the remaining lifetime), and notify the owner. The
+// old proxy is marked 'replaced'. Local (managed) proxies only.
+async function autoReplaceProxy(proxy) {
+  const repl = createProxy({ type: proxy.type, rotate: !!proxy.rotate, nodeId: proxy.nodeId || 'local', durationDays: 1, name: `${proxy.name || proxy.type} (replacement)` })
+  repl.ownerId = proxy.ownerId
+  repl.orderId = proxy.orderId
+  repl.zone = proxy.zone || ''
+  repl.autoRenew = !!proxy.autoRenew
+  repl.expires = proxy.expires
+  repl.expiresAt = proxy.expiresAt            // inherit remaining lifetime — free swap
+  config.proxies.push(repl)
+  ensureStats(repl.id)
+  if ((repl.nodeId || 'local') === 'local') await startProxy(repl)
+  const order = orders.find((o) => o.id === proxy.orderId)
+  if (order && Array.isArray(order.proxyIds)) order.proxyIds.push(repl.id)
+  proxy.status = 'replaced'
+  proxy.replacedBy = repl.id
+  if ((proxy.nodeId || 'local') === 'local') stopProxy(proxy.id)
+  pushAlert(`proxy:${proxy.id}:replaced`, `Auto-replaced dead proxy ${proxy.id} → ${repl.id}`, 'warn')
+  pushNotification(proxy.ownerId, { type: 'proxy', severity: 'warn', text: `Proxy ${proxy.id} lỗi kéo dài — đã tự thay bằng ${repl.id} (cùng loại/zone, giữ nguyên hạn).`, link: '/proxies' })
+  dispatchWebhook(proxy.ownerId, 'proxy.replaced', { proxyId: proxy.id, replacedBy: repl.id })
 }
 
 // Health-check a proxy by performing an outbound HTTPS request through its own
@@ -7154,6 +7185,7 @@ async function handleApi(req, res, url) {
         if (Number(body.minHours) > 0) config.pricing.minHours = Math.floor(Number(body.minHours))
         if (Number(body.maxHours) > 0) config.pricing.maxHours = Math.floor(Number(body.maxHours))
         if (Array.isArray(body.tiers)) config.pricing.tiers = body.tiers
+        if (body.bandwidthQuotaGB !== undefined) config.pricing.bandwidthQuotaGB = Math.max(0, Number(body.bandwidthQuotaGB) || 0)
         await saveConfig()
         return sendJson(res, 200, config.pricing)
       }
@@ -8192,6 +8224,7 @@ async function handleApi(req, res, url) {
         proxy.lastCheckOk = result.ok
         if (result.ok) {
           proxy.checkFailCount = 0
+          proxy.totalFails = 0
           if (proxy.status === 'error') proxy.status = 'active'
           updateSlaTick(proxy.id, true)
         } else {
@@ -8360,7 +8393,7 @@ async function handleUserV1(req, res, url) {
   }
 
   if (req.method === 'GET' && sub === 'proxies') {
-    const owned = config.proxies.filter((p) => p.ownerId === user.id).map((p) => {
+    const mapProxy = (p, sharedFrom) => {
       const pub = publicProxy(p)
       const host = pub.ip || p.bindIp || p.listenHost   // customer-facing v4 for IPv6 proxies
       return {
@@ -8368,10 +8401,44 @@ async function handleUserV1(req, res, url) {
         username: p.username,
         password: p.password,
         http: `http://${p.username}:${p.password}@${host}:${p.port}`,
-        socks5: `socks5://${p.username}:${p.password}@${host}:${p.port}`
+        socks5: `socks5://${p.username}:${p.password}@${host}:${p.port}`,
+        ...(sharedFrom ? { shared: true, sharedFrom } : {})
       }
-    })
-    return sendJson(res, 200, owned)
+    }
+    const owned = config.proxies.filter((p) => p.ownerId === user.id).map((p) => mapProxy(p, null))
+    // Read-only proxies shared with this user by other owners (team view). Mutations
+    // stay owner-only — those endpoints already gate on ownerId === user.id.
+    const shared = []
+    for (const o of config.users.filter((u) => Array.isArray(u.sharedWith) && u.sharedWith.includes(user.id))) {
+      for (const p of config.proxies.filter((p) => p.ownerId === o.id)) shared.push(mapProxy(p, o.email))
+    }
+    return sendJson(res, 200, [...owned, ...shared])
+  }
+
+  // ── Team: read-only proxy sharing (owner shares their proxies with members) ──
+  if (sub === 'members' && req.method === 'GET') {
+    const list = (user.sharedWith || []).map((id) => { const m = config.users.find((u) => u.id === id); return m ? { id: m.id, email: m.email, name: m.name } : null }).filter(Boolean)
+    return sendJson(res, 200, list)
+  }
+  if (sub === 'members' && req.method === 'POST') {
+    const body = await readJson(req)
+    const email = String(body.email || '').trim().toLowerCase()
+    if (!email) return sendJson(res, 400, { error: 'email required' })
+    const member = config.users.find((u) => u.email.toLowerCase() === email)
+    if (!member) return sendJson(res, 404, { error: 'Chưa có tài khoản nào với email này — họ cần đăng ký trước.' })
+    if (member.id === user.id) return sendJson(res, 400, { error: 'cannot share with yourself' })
+    if (!Array.isArray(user.sharedWith)) user.sharedWith = []
+    if (!user.sharedWith.includes(member.id)) user.sharedWith.push(member.id)
+    await saveConfig()
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/members', note: `share with ${member.email}` })
+    pushNotification(member.id, { type: 'info', severity: 'info', text: `${user.email} đã chia sẻ proxy (chỉ xem) với bạn.`, link: '/proxies' })
+    return sendJson(res, 201, { id: member.id, email: member.email, name: member.name })
+  }
+  const memberDel = sub.match(/^members\/([^/]+)$/)
+  if (memberDel && req.method === 'DELETE') {
+    user.sharedWith = (user.sharedWith || []).filter((id) => id !== memberDel[1])
+    await saveConfig()
+    return sendJson(res, 200, { ok: true })
   }
 
   // â”€â”€ Customer self-service per-proxy actions on owned proxies â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -9421,6 +9488,7 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     perProxy.sort((a, b) => (b.uploadBytes + b.downloadBytes) - (a.uploadBytes + a.downloadBytes))
     return sendJson(res, 200, {
       totals: { upload: totalUp, download: totalDn, conns: totalConns, proxyCount: ownedIds.length },
+      quotaGB: Number(config.pricing?.bandwidthQuotaGB) || 0,
       perProxy,
       hourly
     })
@@ -11947,6 +12015,23 @@ function sweepExpired() {
   if (renewed > 0) pushAlert('proxy:renewed', `${renewed} proxy auto-renewed`, 'info')
   if (expiredCount > 0) pushAlert('proxy:expired', `${expiredCount} proxy expired`, 'warn')
   if (expiringSoon > 0) pushAlert('proxy:expiring', `${expiringSoon} proxy expiring within 6h`, 'info')
+  // Monthly bandwidth-quota alert: warn owner + admin once/month when a proxy's
+  // month usage exceeds config.pricing.bandwidthQuotaGB (0 = unlimited).
+  const quotaBytes = (Number(config.pricing?.bandwidthQuotaGB) || 0) * 1e9
+  if (quotaBytes > 0) {
+    const mk = new Date().toISOString().slice(0, 7)
+    for (const proxy of config.proxies) {
+      if (!proxy.ownerId || proxy.status === 'expired') continue
+      const used = Number(stats.get(proxy.id)?.monthBytes || 0)
+      if (used > quotaBytes && proxy.quotaAlertedMonth !== mk) {
+        proxy.quotaAlertedMonth = mk; changed = true
+        const owner = config.users.find((u) => u.id === proxy.ownerId)
+        pushNotification(proxy.ownerId, { type: 'proxy', severity: 'warn', text: `Proxy ${proxy.id} đã vượt quota ${config.pricing.bandwidthQuotaGB}GB tháng này (${(used / 1e9).toFixed(1)}GB).`, link: '/usage' })
+        pushAlert(`proxy:${proxy.id}:quota`, `Proxy ${proxy.id} over ${config.pricing.bandwidthQuotaGB}GB quota (${(used / 1e9).toFixed(1)}GB)`, 'warn')
+        if (owner) sendMail({ to: owner.email, subject: 'ProxyBox: proxy vượt quota băng thông', html: `<p>Proxy <code>${proxy.id}</code> đã dùng <strong>${(used / 1e9).toFixed(1)}GB</strong>, vượt quota ${config.pricing.bandwidthQuotaGB}GB tháng này.</p>` }).catch(() => {})
+      }
+    }
+  }
   // Reap credit grants that are spent (remaining 0), expired, or owned by a
   // deleted user, so config.creditGrants doesn't grow unbounded.
   if (Array.isArray(config.creditGrants) && config.creditGrants.length) {

@@ -42,6 +42,7 @@ function hoursAgoLabel(idx, total) {
 
 const totals = computed(() => data.value?.totals || { upload: 0, download: 0, conns: 0, proxyCount: 0 })
 const totalBytes = computed(() => (totals.value.upload || 0) + (totals.value.download || 0))
+const quotaGB = computed(() => Number(data.value?.quotaGB) || 0)
 
 // Normalize hourly into 24 fixed buckets — pad with zeros if API returns less.
 // No synthetic data: flat-empty is honest when no traffic yet.
@@ -171,6 +172,14 @@ onMounted(refresh)
         <span class="lbl">{{ t('cust.usage.kpiConns') }}</span>
         <span class="val">{{ Number(totals.conns || 0).toLocaleString() }}</span>
         <span class="foot"><span class="dot"></span> {{ t('cust.usage.totalConns') }}</span>
+      </div>
+    </div>
+    <div class="kpi-card-v2" v-if="quotaGB > 0">
+      <span class="ico" :class="(totalBytes / 1e9) > quotaGB ? 'red' : 'green'"><ArrowUp :size="22" /></span>
+      <div class="body">
+        <span class="lbl">Quota băng thông / proxy</span>
+        <span class="val" style="font-size:20px">{{ (totalBytes / 1e9).toFixed(1) }} / {{ quotaGB }} GB</span>
+        <span class="foot"><span class="dot"></span> tổng tháng này</span>
       </div>
     </div>
     <div class="kpi-card-v2">

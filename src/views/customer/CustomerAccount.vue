@@ -15,6 +15,8 @@ const wh = ref({ url: '', events: [] })
 const WH_EVENTS = ['proxy.expired', 'proxy.expiringSoon', 'proxy.checkFailed', 'proxy.ipRotated']
 const err = ref('')
 const flash = ref('')
+const members = ref([])
+const inviteEmail = ref('')
 
 async function refresh() {
   err.value = ''
@@ -24,7 +26,23 @@ async function refresh() {
     wh.value.events = Array.isArray(account.value.webhookEvents) && account.value.webhookEvents.length
       ? account.value.webhookEvents
       : WH_EVENTS.slice()
+    members.value = await apiFetch('/api/v1/user/members').catch(() => [])
   } catch (e) { err.value = e.message }
+}
+async function addMember() {
+  err.value = ''; flash.value = ''
+  const email = inviteEmail.value.trim()
+  if (!email) return
+  try {
+    const m = await apiFetch('/api/v1/user/members', { method: 'POST', body: { email } })
+    if (!members.value.find((x) => x.id === m.id)) members.value.push(m)
+    inviteEmail.value = ''
+    flash.value = `Đã chia sẻ proxy (chỉ xem) với ${m.email}.`
+  } catch (e) { err.value = e.message }
+}
+async function removeMember(id) {
+  try { await apiFetch(`/api/v1/user/members/${id}`, { method: 'DELETE' }); members.value = members.value.filter((m) => m.id !== id) }
+  catch (e) { err.value = e.message }
 }
 async function enrollTotp() {
   err.value = ''
@@ -239,6 +257,25 @@ onMounted(refresh)
         <button class="ghost-button" type="button" @click="gdpr"><Download :size="14" /> {{ t('cust.account.gdprBtn') }}</button>
       </div>
     </section>
+
+      <section class="surface">
+        <h2 style="margin:0 0 10px; color:var(--text); font-size:15px">
+          <User :size="14" style="vertical-align:-2px; color:var(--pxl)" /> Chia sẻ proxy (chỉ xem)
+        </h2>
+        <p style="font-size:12.5px; color:var(--muted); margin:0 0 12px">
+          Mời người khác (đã có tài khoản) xem danh sách proxy + thông tin kết nối của bạn. Họ chỉ <strong>xem</strong>, không sửa/huỷ/mua được.
+        </p>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; max-width:480px">
+          <input v-model="inviteEmail" type="email" placeholder="email@thanhvien.com" style="flex:1 1 220px; height:38px; padding:0 11px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px; color:var(--text); font-size:13px" @keyup.enter="addMember" />
+          <button class="primary-action small" type="button" @click="addMember"><User :size="13" /> Chia sẻ</button>
+        </div>
+        <div v-if="members.length" style="margin-top:12px; display:flex; flex-direction:column; gap:6px">
+          <div v-for="m in members" :key="m.id" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px">
+            <span style="font-size:13px; color:var(--text)">{{ m.email }}</span>
+            <button class="ghost-button" type="button" @click="removeMember(m.id)">Gỡ</button>
+          </div>
+        </div>
+      </section>
   </div>
 </template>
 
