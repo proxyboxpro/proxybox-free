@@ -49,11 +49,11 @@ function pickHubPlan(plan) {
 }
 async function placeHubOrder() {
   if (hubBusy.value) return
-  if (!hubForm.value.planId) { err.value = 'Chọn 1 hub plan'; return }
+  if (!hubForm.value.planId) { err.value = t('cust.buy.hub.pickPlanErr'); return }
   hubBusy.value = true; err.value = ''; flash.value = ''
   try {
     const r = await apiFetch('/api/v1/user/hubs/buy', { method: 'POST', body: hubForm.value })
-    flash.value = `${r.hint || 'Hub provisioned'}. Tổng phí ${r.totalCost?.toLocaleString() || ''} đã trừ.`
+    flash.value = t('cust.buy.hub.provisioned', { hint: r.hint || 'Hub provisioned', cost: r.totalCost?.toLocaleString() || '' })
     setTimeout(() => router.push('/my-nodes'), 1800)
   } catch (e) { err.value = e.message }
   finally { hubBusy.value = false }
@@ -66,13 +66,13 @@ async function loadByon() {
 const selectedByonNode = computed(() => byonNodes.value.find((n) => n.id === byonForm.value.nodeId) || null)
 async function placeFreeOrder() {
   if (byonBusy.value) return
-  if (!byonForm.value.nodeId) { err.value = 'Chọn 1 node của bạn'; return }
+  if (!byonForm.value.nodeId) { err.value = t('cust.buy.byon.noNodeErr'); return }
   byonBusy.value = true; err.value = ''; flash.value = ''
   try {
     const body = { ...byonForm.value }
     if (selectedByonNode.value?.family && selectedByonNode.value.family !== 'dual') body.type = selectedByonNode.value.family
     const r = await apiFetch('/api/v1/user/proxies/from-own-node', { method: 'POST', body })
-    flash.value = `Đã tạo ${r.count} proxy MIỄN PHÍ trên ${selectedByonNode.value?.name || r.nodeId}.`
+    flash.value = t('cust.buy.byon.created', { count: r.count, node: selectedByonNode.value?.name || r.nodeId })
     setTimeout(() => router.push({ name: 'proxies' }), 1500)
   } catch (e) { err.value = e.message }
   finally { byonBusy.value = false }
@@ -272,15 +272,15 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
   <div class="source-tabs">
     <button type="button" :class="{ active: sourceMode === 'pool' }" @click="sourceMode = 'pool'">
       <ShoppingCart :size="14" />
-      <span><strong>Mua Proxy</strong><small>IPv4 / IPv6 trả theo giờ</small></span>
+      <span><strong>{{ t('cust.buy.src.poolTitle') }}</strong><small>{{ t('cust.buy.src.poolSub') }}</small></span>
     </button>
     <button type="button" :class="{ active: sourceMode === 'hub' }" @click="sourceMode = 'hub'">
       <Cloud :size="14" />
-      <span><strong>Mua Hub Proxy <em class="badge-pro">PRO</em></strong><small>Thuê VPS riêng, auto-cài agent</small></span>
+      <span><strong>{{ t('cust.buy.src.hubTitle') }} <em class="badge-pro">PRO</em></strong><small>{{ t('cust.buy.src.hubSub') }}</small></span>
     </button>
     <button type="button" :class="{ active: sourceMode === 'byon' }" @click="sourceMode = 'byon'">
       <Cpu :size="14" />
-      <span><strong>Từ node của tôi <em class="badge-free">FREE</em></strong><small>VM bạn tự cung cấp</small></span>
+      <span><strong>{{ t('cust.buy.src.byonTitle') }} <em class="badge-free">FREE</em></strong><small>{{ t('cust.buy.src.byonSub') }}</small></span>
     </button>
   </div>
 
@@ -297,11 +297,11 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
       <section class="surface zone-section">
         <div class="step-head">
           <span class="step-num">1</span>
-          <h2><MapPinIcon :size="15" /> Chọn vị trí (zone)</h2>
-          <span class="step-help">Mỗi zone = 1 datacenter chứa Virtualizor backend.</span>
+          <h2><MapPinIcon :size="15" /> {{ t('cust.buy.hub.stepZone') }}</h2>
+          <span class="step-help">{{ t('cust.buy.hub.stepZoneHelp') }}</span>
         </div>
         <div v-if="!hubZones.length" class="empty-text" style="text-align:left; padding:14px">
-          Chưa có hub plan nào — admin cần cấu hình Virtualizor instance + tạo plan trước.
+          {{ t('cust.buy.hub.noPlans') }}
         </div>
         <div v-else class="zone-grid">
           <button v-for="z in hubZones" :key="z.id" type="button" class="zone-card" :class="{ selected: hubForm.zone === z.id }" @click="pickHubZone(z.id)">
@@ -319,8 +319,8 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
       <section class="surface" v-if="hubPlansForZone.length">
         <div class="step-head">
           <span class="step-num">2</span>
-          <h2><Cloud :size="15" /> Chọn cấu hình</h2>
-          <span class="step-help">Mỗi plan = 1 VPS template ở Virtualizor.</span>
+          <h2><Cloud :size="15" /> {{ t('cust.buy.hub.stepConfig') }}</h2>
+          <span class="step-help">{{ t('cust.buy.hub.stepConfigHelp') }}</span>
         </div>
         <div class="product-grid" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr))">
           <div v-for="p in hubPlansForZone" :key="p.id" class="product-card" :class="{ selected: hubForm.planId === p.id }" @click="pickHubPlan(p)">
@@ -346,19 +346,19 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
             <div class="price">
               {{ t('cust.product.from') }}
               <strong>{{ Number(p.hourlyPrice).toLocaleString() }}</strong>
-              <small>{{ p.currency }} / giờ</small>
+              <small>{{ p.currency }} {{ t('cust.buy.hub.perHour') }}</small>
             </div>
           </div>
         </div>
       </section>
       <section v-else-if="hubForm.zone" class="surface" style="padding:18px">
-        <p class="empty-text" style="margin:0; text-align:left">Zone {{ hubForm.zone }} chưa có plan nào — chọn zone khác.</p>
+        <p class="empty-text" style="margin:0; text-align:left">{{ t('cust.buy.hub.zoneNoPlan', { zone: hubForm.zone }) }}</p>
       </section>
     </div>
 
     <!-- RIGHT: hours + total + buy -->
     <aside class="surface" style="padding:18px">
-      <h3 style="margin:0 0 12px; font-size:15px"><Clock :size="14" style="vertical-align:-2px" /> Số giờ thuê</h3>
+      <h3 style="margin:0 0 12px; font-size:15px"><Clock :size="14" style="vertical-align:-2px" /> {{ t('cust.buy.hub.hoursLabel') }}</h3>
       <input v-model.number="hubForm.hours" type="number" :min="selectedHubPlan?.minHours || 1" :max="selectedHubPlan?.maxHours || 720"
         class="cell-mono"
         style="width:100%; height:38px; padding:0 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:14px; text-align:right" />
@@ -367,37 +367,30 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
           <span>Plan</span><span>{{ selectedHubPlan.name }}</span>
         </div>
         <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:4px">
-          <span>Giá / giờ</span><span class="cell-mono">{{ Number(selectedHubPlan.hourlyPrice).toLocaleString() }} {{ selectedHubPlan.currency }}</span>
+          <span>{{ t('cust.buy.hub.pricePerHour') }}</span><span class="cell-mono">{{ Number(selectedHubPlan.hourlyPrice).toLocaleString() }} {{ selectedHubPlan.currency }}</span>
         </div>
         <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:4px">
-          <span>Số giờ</span><span class="cell-mono">{{ hubForm.hours }}</span>
+          <span>{{ t('cust.buy.hub.numHours') }}</span><span class="cell-mono">{{ hubForm.hours }}</span>
         </div>
         <hr style="border:none; border-top:1px dashed var(--border); margin:8px 0" />
         <div style="display:flex; justify-content:space-between; align-items:baseline">
-          <strong>Tổng</strong>
+          <strong>{{ t('cust.buy.hub.total') }}</strong>
           <strong class="cell-mono" style="font-size:18px; color:var(--green)">{{ Number(hubCost).toLocaleString() }} {{ selectedHubPlan.currency }}</strong>
         </div>
       </div>
       <button class="primary-action" type="button" :disabled="hubBusy || !hubForm.planId" @click="placeHubOrder" style="margin-top:14px; width:100%">
-        <Plus :size="13" /> {{ hubBusy ? 'Đang khởi tạo VM…' : (hubForm.planId ? `Thuê Hub (${Number(hubCost).toLocaleString()} ${selectedHubPlan?.currency || 'VND'})` : 'Chọn plan trước') }}
+        <Plus :size="13" /> {{ hubBusy ? t('cust.buy.hub.creating') : (hubForm.planId ? t('cust.buy.hub.rentBtn', { cost: Number(hubCost).toLocaleString(), currency: selectedHubPlan?.currency || 'VND' }) : t('cust.buy.hub.pickPlan')) }}
       </button>
-      <p class="hub-note" style="margin:12px 0 0; font-size:11px; color:var(--muted); line-height:1.5">
-        VM tự khởi tạo qua Virtualizor + ProxyBox agent tự cài qua cloud-init. Mất 1-3 phút.
-        Sau đó node xuất hiện ở <strong>ProxyBox</strong> (/my-nodes) → bạn tạo proxy MIỄN PHÍ trên đó (chỉ trừ slot proxy theo plan).
-      </p>
+      <p class="hub-note" style="margin:12px 0 0; font-size:11px; color:var(--muted); line-height:1.5" v-html="t('cust.buy.hub.note')"></p>
     </aside>
   </section>
 
   <!-- ── BYON branch: free creation on customer's own node ── -->
   <section v-if="sourceMode === 'byon'" class="surface" style="padding:18px">
     <div v-if="!byonNodes.length" class="empty-text" style="text-align:left">
-      <p style="margin:0 0 10px"><strong>Chưa có node nào của bạn.</strong></p>
-      <p style="margin:0 0 10px; font-size:13px">
-        Vào trang <router-link to="/my-nodes" style="color:var(--green)">My Nodes</router-link> để sinh fleet token, paste lệnh cài lên VM của bạn → node tự đăng ký.
-      </p>
-      <p style="margin:0; font-size:11.5px; color:var(--muted)">
-        Proxy tạo trên node của bạn <strong style="color:var(--green)">miễn phí 100%</strong> — chỉ trả theo proxy mua từ hệ thống của chúng tôi.
-      </p>
+      <p style="margin:0 0 10px"><strong>{{ t('cust.buy.byon.noNodes') }}</strong></p>
+      <p style="margin:0 0 10px; font-size:13px" v-html="t('cust.buy.byon.noNodesHint')"></p>
+      <p style="margin:0; font-size:11.5px; color:var(--muted)" v-html="t('cust.buy.byon.freeNote')"></p>
     </div>
     <div v-else>
       <div class="byon-form-grid">
@@ -410,32 +403,30 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
           </select>
         </label>
         <label class="field" v-if="selectedByonNode && selectedByonNode.family === 'dual'">
-          <span>Loại</span>
+          <span>{{ t('cust.buy.byon.typeLabel') }}</span>
           <select v-model="byonForm.type">
             <option value="ipv4">IPv4</option>
             <option value="ipv6">IPv6 (rotating pool)</option>
           </select>
         </label>
         <label class="field">
-          <span>Số lượng</span>
+          <span>{{ t('cust.buy.quantity') }}</span>
           <input v-model.number="byonForm.quantity" type="number" min="1" max="20" />
         </label>
         <label class="field">
-          <span>Thời hạn (ngày)</span>
+          <span>{{ t('cust.buy.byon.durationDays') }}</span>
           <input v-model.number="byonForm.durationDays" type="number" min="1" max="3650" />
         </label>
         <label v-if="byonForm.type === 'ipv6' || selectedByonNode?.family === 'ipv6'" class="field" style="grid-column:span 2">
           <span style="display:flex; gap:6px; align-items:center">
-            <input v-model="byonForm.rotate" type="checkbox" /> Rotation pool (mỗi conn 1 IP)
+            <input v-model="byonForm.rotate" type="checkbox" /> {{ t('cust.buy.byon.rotationPool') }}
           </span>
         </label>
       </div>
       <button class="primary-action" type="button" :disabled="byonBusy || !byonForm.nodeId" @click="placeFreeOrder" style="margin-top:14px">
-        <Plus :size="13" /> {{ byonBusy ? 'Đang tạo…' : `Tạo ${byonForm.quantity} proxy MIỄN PHÍ` }}
+        <Plus :size="13" /> {{ byonBusy ? t('cust.buy.byon.creating') : t('cust.buy.byon.createBtn', { n: byonForm.quantity }) }}
       </button>
-      <p class="byon-note">
-        Proxy chạy trên <strong>node của bạn</strong> — không trừ ví, không phí. Chỉ chiếm slot trong plan ({{ byonForm.quantity }} proxy).
-      </p>
+      <p class="byon-note" v-html="t('cust.buy.byon.note', { n: byonForm.quantity })"></p>
     </div>
   </section>
 
