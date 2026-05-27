@@ -550,6 +550,8 @@ export default {
   'cust.billing.tierDiscount':   'Volume discount',
   'cust.billing.recentOrders':   'Đơn gần đây',
   'cust.billing.sessionCreated': 'Đã tạo Stripe session.',
+  'cust.billing.paypalSuccess': 'Đã nhận thanh toán PayPal: {amount} {currency}.',
+  'cust.billing.paypalAlreadyDone': 'Giao dịch PayPal này đã được xử lý trước đó.',
 
   // Usage
   'cust.usage.title':         'Băng thông sử dụng',
@@ -929,9 +931,9 @@ export default {
   'admin.rev.daily':        'Ngày',
   'admin.rev.weekly':       'Tuần',
   'admin.rev.monthly':      'Tháng',
-  'admin.rev.dayly':        'theo ngày',
-  'admin.rev.weekly':       'theo tuần',
-  'admin.rev.monthlyly':    'theo tháng',
+  'admin.rev.period.day':   'ngày',
+  'admin.rev.period.week':  'tuần',
+  'admin.rev.period.month': 'tháng',
   'admin.rev.kpiGross':     'Tổng thu',
   'admin.rev.kpiTopups':    'Nạp ví',
   'admin.rev.kpiRefunded':  'Refund',

@@ -532,6 +532,8 @@ export default {
   'cust.billing.tierDiscount':   'Volume discount',
   'cust.billing.recentOrders':   'Recent orders',
   'cust.billing.sessionCreated': 'Stripe session created.',
+  'cust.billing.paypalSuccess': 'PayPal payment received: {amount} {currency}.',
+  'cust.billing.paypalAlreadyDone': 'PayPal capture already processed.',
 
   // Usage
   'cust.usage.title':         'Bandwidth usage',
@@ -909,6 +911,9 @@ export default {
   'admin.rev.daily':        'Daily',
   'admin.rev.weekly':       'Weekly',
   'admin.rev.monthly':      'Monthly',
+  'admin.rev.period.day':   'daily',
+  'admin.rev.period.week':  'weekly',
+  'admin.rev.period.month': 'monthly',
   'admin.rev.kpiGross':     'Gross revenue',
   'admin.rev.kpiTopups':    'Top-ups',
   'admin.rev.kpiRefunded':  'Refunded',

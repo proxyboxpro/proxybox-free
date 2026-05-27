@@ -331,7 +331,7 @@ onMounted(refresh)
       <div class="card-head">
         <div>
           <h3>{{ t('admin.rev.trendTitle') }}</h3>
-          <p class="muted">{{ t('admin.rev.trendSub', { period: t('admin.rev.' + period + 'ly') }) }}</p>
+          <p class="muted">{{ t('admin.rev.trendSub', { period: t('admin.rev.period.' + period) }) }}</p>
         </div>
       </div>
       <apexchart v-if="series.length" type="area" :options="mainOptions" :series="mainSeries" :height="340" />
