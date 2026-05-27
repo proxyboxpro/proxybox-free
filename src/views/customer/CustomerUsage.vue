@@ -177,9 +177,9 @@ onMounted(refresh)
     <div class="kpi-card-v2" v-if="quotaGB > 0">
       <span class="ico" :class="(totalBytes / 1e9) > quotaGB ? 'red' : 'green'"><ArrowUp :size="22" /></span>
       <div class="body">
-        <span class="lbl">Quota băng thông / proxy</span>
+        <span class="lbl">{{ t('cust.usage.quotaLabel') }}</span>
         <span class="val" style="font-size:20px">{{ (totalBytes / 1e9).toFixed(1) }} / {{ quotaGB }} GB</span>
-        <span class="foot"><span class="dot"></span> tổng tháng này</span>
+        <span class="foot"><span class="dot"></span> {{ t('cust.usage.quotaFoot') }}</span>
       </div>
     </div>
     <div class="kpi-card-v2">

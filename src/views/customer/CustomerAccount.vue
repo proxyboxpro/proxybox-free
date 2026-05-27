@@ -37,7 +37,7 @@ async function addMember() {
     const m = await apiFetch('/api/v1/user/members', { method: 'POST', body: { email } })
     if (!members.value.find((x) => x.id === m.id)) members.value.push(m)
     inviteEmail.value = ''
-    flash.value = `Đã chia sẻ proxy (chỉ xem) với ${m.email}.`
+    flash.value = t('cust.account.shareDone', { email: m.email })
   } catch (e) { err.value = e.message }
 }
 async function removeMember(id) {
@@ -143,7 +143,7 @@ onMounted(refresh)
     </div>
 
     <!-- 2 columns -->
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px; margin-bottom:14px">
+    <div class="acct-2col">
       <!-- Profile -->
       <section class="surface">
         <h2 style="margin:0 0 10px; color:var(--text); font-size:15px"><User :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.account.profile') }}</h2>
@@ -258,24 +258,23 @@ onMounted(refresh)
       </div>
     </section>
 
-      <section class="surface">
-        <h2 style="margin:0 0 10px; color:var(--text); font-size:15px">
-          <User :size="14" style="vertical-align:-2px; color:var(--pxl)" /> Chia sẻ proxy (chỉ xem)
-        </h2>
-        <p style="font-size:12.5px; color:var(--muted); margin:0 0 12px">
-          Mời người khác (đã có tài khoản) xem danh sách proxy + thông tin kết nối của bạn. Họ chỉ <strong>xem</strong>, không sửa/huỷ/mua được.
-        </p>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; max-width:480px">
-          <input v-model="inviteEmail" type="email" placeholder="email@thanhvien.com" style="flex:1 1 220px; height:38px; padding:0 11px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px; color:var(--text); font-size:13px" @keyup.enter="addMember" />
-          <button class="primary-action small" type="button" @click="addMember"><User :size="13" /> Chia sẻ</button>
+    <!-- Read-only proxy sharing -->
+    <section class="surface" style="margin-bottom:14px">
+      <h2 style="margin:0 0 10px; color:var(--text); font-size:15px">
+        <User :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.account.shareTitle') }}
+      </h2>
+      <p style="font-size:12.5px; color:var(--muted); margin:0 0 12px">{{ t('cust.account.shareDesc') }}</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; max-width:480px">
+        <input v-model="inviteEmail" type="email" :placeholder="t('cust.account.sharePlaceholder')" style="flex:1 1 200px; min-width:0; height:38px; padding:0 11px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px; color:var(--text); font-size:13px" @keyup.enter="addMember" />
+        <button class="primary-action small" type="button" @click="addMember"><User :size="13" /> {{ t('cust.account.shareBtn') }}</button>
+      </div>
+      <div v-if="members.length" style="margin-top:12px; display:flex; flex-direction:column; gap:6px">
+        <div v-for="m in members" :key="m.id" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px">
+          <span class="cell-mono" style="font-size:12.5px; color:var(--text); word-break:break-all">{{ m.email }}</span>
+          <button class="ghost-button" type="button" @click="removeMember(m.id)">{{ t('cust.account.shareRemove') }}</button>
         </div>
-        <div v-if="members.length" style="margin-top:12px; display:flex; flex-direction:column; gap:6px">
-          <div v-for="m in members" :key="m.id" style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px">
-            <span style="font-size:13px; color:var(--text)">{{ m.email }}</span>
-            <button class="ghost-button" type="button" @click="removeMember(m.id)">Gỡ</button>
-          </div>
-        </div>
-      </section>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -289,4 +288,7 @@ onMounted(refresh)
 }
 .wh-event-chip:hover { color: var(--text); border-color: var(--muted); }
 .wh-event-chip.active { background: var(--green-soft); border-color: var(--green); color: var(--green); }
+/* Account cards: 2-col on desktop, stack on tablet/phone */
+.acct-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+@media (max-width: 900px) { .acct-2col { grid-template-columns: 1fr; } }
 </style>
