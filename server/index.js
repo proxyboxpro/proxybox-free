@@ -4146,6 +4146,10 @@ async function handleProxyClientTls(proxy, client) {
   }
   meter.activeConnections += 1
   meter.totalConnections += 1
+  // Decrement on socket close (see handleProxyClient) — never via finally, or a
+  // client that closes mid-handshake leaves the SocketReader read pending and
+  // the counter leaks. 'close' always fires exactly once.
+  client.once('close', () => { meter.activeConnections = Math.max(0, meter.activeConnections - 1) })
   client.setNoDelay(true)
   client.setTimeout(120_000)
   client.once('timeout', () => client.destroy())
@@ -4164,8 +4168,6 @@ async function handleProxyClientTls(proxy, client) {
     }
   } catch {
     if (!client.destroyed) client.destroy()
-  } finally {
-    meter.activeConnections = Math.max(0, meter.activeConnections - 1)
   }
 }
 
@@ -4227,6 +4229,11 @@ async function handleProxyClient(proxy, client) {
   }
   meter.activeConnections += 1
   meter.totalConnections += 1
+  // Decrement on socket close — fires exactly once for every socket (graceful
+  // FIN, RST, timeout, or destroy). Do NOT tie this to the handler's finally:
+  // a client that closes without 'end'/'error' mid-request leaves onceData()/
+  // SocketReader pending forever, so finally never runs and the counter leaks.
+  client.once('close', () => { meter.activeConnections = Math.max(0, meter.activeConnections - 1) })
 
   client.setNoDelay(true)
   client.setTimeout(120_000)
@@ -4242,8 +4249,6 @@ async function handleProxyClient(proxy, client) {
     }
   } catch {
     if (!client.destroyed) client.destroy()
-  } finally {
-    meter.activeConnections = Math.max(0, meter.activeConnections - 1)
   }
 }
 
