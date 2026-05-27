@@ -3,6 +3,9 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Activity, RefreshCw, Search } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber } from '../../utils/format'
+import { useI18n } from '../../i18n'
+
+const { t } = useI18n()
 
 function ccToFlag(cc) {
   if (!cc || cc.length !== 2) return ''
@@ -70,7 +73,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> Kết nối live · {{ proxies.length }} proxy</span>
+      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> {{ t('cust.conn.live') }} · {{ proxies.length }} proxy</span>
       <div class="spacer"></div>
       <button class="ghost-button" type="button" :disabled="loading" @click="refreshAll">
         <RefreshCw :size="12" /> refresh
@@ -83,24 +86,24 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     <div class="metric-cards">
       <article>
         <Activity :size="20" />
-        <span>Kết nối đang mở</span>
+        <span>{{ t('cust.conn.openConns') }}</span>
         <strong style="color:var(--green)">{{ formatNumber(summary.active || 0) }}</strong>
         <small style="color:var(--muted);font-size:11.5px">{{ formatNumber(summary.total || 0) }} all-time</small>
       </article>
       <article>
-        <span>Băng thông all-time</span>
+        <span>{{ t('cust.conn.bwAll') }}</span>
         <strong style="font-size:18px">{{ formatBytes((summary.uploadBytes || 0) + (summary.downloadBytes || 0)) }}</strong>
         <small style="color:var(--muted);font-size:11.5px">↑ {{ formatBytes(summary.uploadBytes || 0) }} · ↓ {{ formatBytes(summary.downloadBytes || 0) }}</small>
       </article>
       <article>
-        <span>Băng thông tháng</span>
+        <span>{{ t('cust.conn.bwMonth') }}</span>
         <strong style="font-size:18px">{{ formatBytes(summary.monthBytes || 0) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">tháng hiện tại</small>
+        <small style="color:var(--muted);font-size:11.5px">{{ t('cust.conn.thisMonth') }}</small>
       </article>
       <article>
-        <span>Top destination</span>
+        <span>{{ t('cust.conn.topDest') }}</span>
         <strong>{{ summary.topTargets?.length || 0 }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">host khác nhau</small>
+        <small style="color:var(--muted);font-size:11.5px">{{ t('cust.conn.uniqueHosts') }}</small>
       </article>
     </div>
 
@@ -109,8 +112,8 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
       <!-- Toolbar: time range + filters in one row -->
       <div class="cc-toolbar">
         <div class="cc-toolbar-left">
-          <span class="cc-section-title"><Activity :size="14" /> Kết nối live</span>
-          <span class="cc-count-chip">{{ sessions.length }} hiển thị · {{ sessionsTotal.toLocaleString() }} tổng</span>
+          <span class="cc-section-title"><Activity :size="14" /> {{ t('cust.conn.live') }}</span>
+          <span class="cc-count-chip">{{ sessions.length }} {{ t('cust.conn.shown') }} · {{ sessionsTotal.toLocaleString() }} {{ t('cust.conn.total') }}</span>
         </div>
         <div class="cc-toolbar-right">
           <div class="cc-range-pills">
@@ -124,14 +127,14 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
       <div class="cc-filter-bar">
         <div class="cc-filter-search">
           <Search :size="14" />
-          <input v-model="sessionFilters.host" type="search" placeholder="Lọc theo host (ví dụ: google.com)" @input="loadSessions" />
+          <input v-model="sessionFilters.host" type="search" :placeholder="t('cust.conn.filterHost')" @input="loadSessions" />
         </div>
         <select v-model="sessionFilters.proxyId" class="cc-select" @change="loadSessions">
-          <option value="">Tất cả proxy</option>
+          <option value="">{{ t('cust.conn.allProxies') }}</option>
           <option v-for="p in proxies" :key="p.id" :value="p.id">{{ p.ip || p.bindIp }}:{{ p.port }}</option>
         </select>
         <select v-model="sessionFilters.kind" class="cc-select" @change="loadSessions">
-          <option value="">Tất cả protocol</option>
+          <option value="">{{ t('cust.conn.allProtocols') }}</option>
           <option value="http">HTTP</option>
           <option value="connect">HTTPS (CONNECT)</option>
           <option value="socks5">SOCKS5</option>
@@ -140,7 +143,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
       <p v-if="!sessions.length && !loading" class="cc-empty">
         <Activity :size="20" style="opacity:0.4" />
-        <span>Chưa có kết nối nào trong khung giờ này.</span>
+        <span>{{ t('cust.conn.empty') }}</span>
       </p>
 
       <div v-if="sessions.length" class="cc-table">
@@ -171,9 +174,9 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
       </div>
 
       <div v-if="sessionsTotal > 0" class="cc-pager">
-        <span class="cc-pager-info">Trang <strong>{{ sessionsPage + 1 }}</strong> / {{ Math.max(1, Math.ceil(sessionsTotal / sessionsPageSize)) }}</span>
+        <span class="cc-pager-info">{{ t('cust.conn.page') }} <strong>{{ sessionsPage + 1 }}</strong> / {{ Math.max(1, Math.ceil(sessionsTotal / sessionsPageSize)) }}</span>
         <div class="cc-pager-spacer"></div>
-        <span class="cc-pager-info" style="margin-right:6px">Mỗi trang</span>
+        <span class="cc-pager-info" style="margin-right:6px">{{ t('cust.conn.perPage') }}</span>
         <select v-model.number="sessionsPageSize" class="cc-select cc-select-sm" @change="sessionsPage = 0; loadSessions()">
           <option :value="25">25</option>
           <option :value="50">50</option>

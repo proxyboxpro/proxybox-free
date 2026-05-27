@@ -283,7 +283,7 @@ async function rotateProxy(p) {
   finally { rotating.value = '' }
 }
 async function disconnectAllSessions(p) {
-  if (!confirm(`Ngắt tất cả kết nối đang active cho ${p.id}?\n\nMọi kết nối hiện tại sẽ bị drop ngay. Người dùng có thể kết nối lại sau đó.`)) return
+  if (!confirm(t('cust.proxies.disconnectConfirm', { id: p.id }))) return
   try {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}/disconnect-all`, { method: 'POST' })
     const n = r.kickedLocal ?? 0
@@ -1320,9 +1320,9 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
         <Zap :size="12" /> {{ t('cust.proxies.ipAuth') }}
         <span v-if="groupWhitelist(g).length" class="pill-count">{{ groupWhitelist(g).length }}</span>
       </button>
-      <span :class="['countdown-big', fmtCountdown(g.expiresAt).tier]" :title="'Hết hạn lúc: ' + fmtTs(g.expiresAt)">
+      <span :class="['countdown-big', fmtCountdown(g.expiresAt).tier]" :title="t('cust.proxies.expiresAtTitle') + fmtTs(g.expiresAt)">
         <Clock :size="12" />
-        <small>còn lại</small>
+        <small>{{ t('cust.proxies.remaining') }}</small>
         <strong>{{ fmtCountdown(g.expiresAt).text }}</strong>
       </span>
       <div class="extend-inline">
@@ -1470,21 +1470,21 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
               </svg>
               <span v-else class="spark spark-empty"></span>
               <span class="gt-row-actions">
-                <button class="row-act-btn connect-btn" type="button" :title="'Xem QR + URL kết nối'" @click="toggleProxyExpand(p)">
+                <button class="row-act-btn connect-btn" type="button" :title="t('cust.proxies.tipConnect')" @click="toggleProxyExpand(p)">
                   <Link :size="12" />
-                  <span>Kết nối</span>
+                  <span>{{ t('cust.proxies.connectLabel') }}</span>
                   <ChevronDown v-if="!expandedProxies.has(p.id)" :size="11" />
                   <ChevronUp v-else :size="11" />
                 </button>
-                <button v-if="p.type === 'IPv6'" class="row-act-btn rotate-btn" type="button" :title="'Đổi IPv6 egress ngay'" :disabled="rotating === p.id" @click="rotateProxy(p)">
+                <button v-if="p.type === 'IPv6'" class="row-act-btn rotate-btn" type="button" :title="t('cust.proxies.tipRotate')" :disabled="rotating === p.id" @click="rotateProxy(p)">
                   <RotateCw :size="12" :class="{ spin: rotating === p.id }" />
                   <span>{{ rotating === p.id ? 'Đang đổi…' : 'Đổi IP' }}</span>
                 </button>
-                <button v-if="p.type === 'IPv6' && p.rotateUrl" class="row-act-btn" type="button" :title="'Copy URL đổi IP để paste vào scraper — hit URL = đổi IP\n' + p.rotateUrl" @click="copyRotateUrl(p, $event)">
+                <button v-if="p.type === 'IPv6' && p.rotateUrl" class="row-act-btn" type="button" :title="t('cust.proxies.tipCopyRotate') + '\n' + p.rotateUrl" @click="copyRotateUrl(p, $event)">
                   <Link :size="12" />
-                  <span>Copy URL đổi</span>
+                  <span>{{ t('cust.proxies.copyRotateUrl') }}</span>
                 </button>
-                <button class="row-act-btn" type="button" :title="'Check live: dial proxy + reset trạng thái'" :disabled="checking === p.id" @click="checkProxy(p)">
+                <button class="row-act-btn" type="button" :title="t('cust.proxies.tipCheck')" :disabled="checking === p.id" @click="checkProxy(p)">
                   <RefreshCw :size="12" :class="{ spin: checking === p.id }" />
                   <span>{{ checking === p.id ? 'Checking…' : 'Check' }}</span>
                 </button>
@@ -1496,15 +1496,15 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
                   <ShieldCheck :size="13" />
                   <span>
                     <strong class="cell-mono">{{ p.session?.active ?? 0 }}/{{ p.session?.max ?? 100 }}</strong>
-                    kết nối đang active
-                    <small>· max <strong>{{ p.session?.max ?? 100 }}/proxy</strong> · <strong>{{ p.session?.maxPerIp ?? 60 }}/IP</strong> · burst <strong>{{ p.session?.rateLimit ?? 30 }}/s/IP</strong>. Vượt cap = từ chối kết nối mới.</small>
+                    {{ t('cust.proxies.activeConns') }}
+                    <small>· max <strong>{{ p.session?.max ?? 100 }}/proxy</strong> · <strong>{{ p.session?.maxPerIp ?? 60 }}/IP</strong> · burst <strong>{{ p.session?.rateLimit ?? 30 }}/s/IP</strong>. {{ t('cust.proxies.overCapNote') }}</small>
                   </span>
-                  <button class="row-act-btn" type="button" @click="disconnectAllSessions(p)" :title="'Drop tất cả kết nối đang active'">
-                    <RefreshCw :size="12" /> Ngắt tất cả
+                  <button class="row-act-btn" type="button" @click="disconnectAllSessions(p)" :title="t('cust.proxies.tipDisconnect')">
+                    <RefreshCw :size="12" /> {{ t('cust.proxies.disconnectAll') }}
                   </button>
                 </div>
                 <div v-if="(p.session?.byIp || []).length" class="session-byip">
-                  <div class="byip-title">Phân bổ theo source IP:</div>
+                  <div class="byip-title">{{ t('cust.proxies.byIpTitle') }}</div>
                   <div class="byip-list">
                     <div v-for="row in (p.session?.byIp || [])" :key="row.ip" class="byip-row" :class="{ near: row.count >= (p.session?.maxPerIp || 60) * 0.8 }">
                       <code>{{ row.ip }}</code>
@@ -1527,7 +1527,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
                     <span class="cell-mono trojan-port">:{{ p.tlsPort }}</span>
                   </div>
                   <p class="trojan-apps">v2rayN (Win) • v2rayNG (Android) • Shadowrocket (iOS) • Clash Verge (Mac) • Hiddify</p>
-                  <p class="trojan-note">TLS giả HTTPS, anti-DPI — scan QR rồi enable trong app. Cert self-signed: bật "<strong>Allow insecure</strong>" / "<strong>Skip cert verify</strong>".</p>
+                  <p class="trojan-note">{{ t('cust.proxies.trojanNote') }}</p>
                   <div class="trojan-url">
                     <code>{{ p.connectUrls?.trojan }}</code>
                     <button class="row-act-btn" @click="copyText(p.connectUrls?.trojan, 'Trojan')"><Copy :size="12" /> Copy URL</button>
