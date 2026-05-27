@@ -35,25 +35,25 @@ async function generateToken() {
   busy.value = true
   try {
     token.value = await apiFetch('/api/v1/user/nodes/fleet-token', { method: 'POST' })
-    flash.value = 'Đã sinh fleet token mới. Paste lệnh cài bên dưới vào VM của bạn.'
+    flash.value = t('cust.nodes.tokenGenerated')
     setTimeout(() => flash.value = '', 4000)
   } catch (e) { err.value = e.message }
   finally { busy.value = false }
 }
 async function revokeToken() {
-  if (!confirm('Thu hồi token? Lệnh cài cũ sẽ ngừng hoạt động (nodes đã đăng ký vẫn chạy).')) return
+  if (!confirm(t('cust.nodes.revokeConfirm'))) return
   try {
     await apiFetch('/api/v1/user/nodes/fleet-token', { method: 'DELETE' })
     token.value = null
-    flash.value = 'Token đã bị thu hồi.'
+    flash.value = t('cust.nodes.tokenRevoked')
     setTimeout(() => flash.value = '', 3000)
   } catch (e) { err.value = e.message }
 }
 async function deleteNode(node) {
-  if (!confirm(`Xóa node ${node.name} (${node.host})?\n\nMọi proxy đã tạo trên node này sẽ bị xóa luôn. Hành động không thể hoàn tác.`)) return
+  if (!confirm(t('cust.nodes.deleteConfirm', { name: node.name, host: node.host }))) return
   try {
     const r = await apiFetch(`/api/v1/user/nodes/${node.id}`, { method: 'DELETE' })
-    flash.value = `Đã xóa node + ${r.removedProxies} proxies.`
+    flash.value = t('cust.nodes.nodeDeleted', { n: r.removedProxies })
     setTimeout(() => flash.value = '', 3000)
     await loadNodes()
   } catch (e) { err.value = e.message }
@@ -85,7 +85,7 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
   <div class="page-head">
     <div>
       <h1>ProxyBox <small>· IPv4 / IPv6</small></h1>
-      <p class="sub">Đăng ký VM/server của bạn vào ProxyBox → tạo proxy <strong style="color:var(--green)">miễn phí</strong> chạy trên hạ tầng riêng. Cùng dashboard, cùng 4 protocol (HTTP / SOCKS5 / HTTPS-proxy / Trojan), cùng anti-abuse caps như proxy hệ thống.</p>
+      <p class="sub" v-html="t('cust.nodes.subtitle')"></p>
     </div>
     <router-link to="/api-docs" class="ghost-button">
       <Terminal :size="13" /> API docs
@@ -97,22 +97,22 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
     <button type="button" class="ht-step" :class="{ open: openStep === 1 }" @click="openStep = openStep === 1 ? 0 : 1">
       <span class="ht-num">1</span>
       <div class="ht-body">
-        <strong>Sinh token cá nhân <ChevronRight :size="12" class="chev" /></strong>
-        <p v-if="openStep === 1">Token <code>usr_…</code> ở dưới là <strong>API key + fleet token gộp 1</strong>. Dùng cùng giá trị cho REST API, SDK, và cài agent BYON.</p>
+        <strong>{{ t('cust.nodes.step1Title') }} <ChevronRight :size="12" class="chev" /></strong>
+        <p v-if="openStep === 1" v-html="t('cust.nodes.step1Body')"></p>
       </div>
     </button>
     <button type="button" class="ht-step" :class="{ open: openStep === 2 }" @click="openStep = openStep === 2 ? 0 : 2">
       <span class="ht-num">2</span>
       <div class="ht-body">
-        <strong>Cài agent lên VM <ChevronRight :size="12" class="chev" /></strong>
-        <p v-if="openStep === 2">Copy 1 dòng lệnh (Linux v4/v6 hoặc Windows) ở phần <strong>Token + lệnh cài</strong> dưới đây → paste vào VM → agent tự đăng ký. Hỗ trợ IPv6 prefix /48 hoặc /64.</p>
+        <strong>{{ t('cust.nodes.step2Title') }} <ChevronRight :size="12" class="chev" /></strong>
+        <p v-if="openStep === 2" v-html="t('cust.nodes.step2Body')"></p>
       </div>
     </button>
     <button type="button" class="ht-step" :class="{ open: openStep === 3 }" @click="openStep = openStep === 3 ? 0 : 3">
       <span class="ht-num">3</span>
       <div class="ht-body">
-        <strong>Tạo proxy miễn phí <ChevronRight :size="12" class="chev" /></strong>
-        <p v-if="openStep === 3">Click vào <strong>node</strong> dưới đây để mở trang quản lý → nút <strong>Tạo proxy mới</strong>, hoặc vào <router-link to="/buy" class="link-green">Mua proxy</router-link> → tab <strong>Từ node của tôi</strong>. Không trừ ví, không giới hạn số lượng.</p>
+        <strong>{{ t('cust.nodes.step3Title') }} <ChevronRight :size="12" class="chev" /></strong>
+        <p v-if="openStep === 3" v-html="t('cust.nodes.step3Body')"></p>
       </div>
     </button>
   </section>
@@ -155,11 +155,11 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
   <!-- Token + install (compact) -->
   <section class="surface tok-section">
     <div class="tok-head">
-      <span class="tok-title"><KeyRound :size="13" /> Token cá nhân</span>
+      <span class="tok-title"><KeyRound :size="13" /> {{ t('cust.nodes.tokenTitle') }}</span>
       <code v-if="token" class="tok-inline" :title="token.token">{{ token.token.slice(0, 14) }}…{{ token.token.slice(-6) }}</code>
       <span class="tok-actions">
         <button v-if="!token" class="primary-action small" type="button" :disabled="busy" @click="generateToken">
-          <Plus :size="12" /> Sinh token
+          <Plus :size="12" /> {{ t('cust.nodes.genToken') }}
         </button>
         <template v-else>
           <button class="ghost-button mini" type="button" @click="copyCmd(token.token, 'tok')">
@@ -175,9 +175,7 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
       </span>
     </div>
 
-    <div v-if="!token" class="tok-empty">
-      Chưa có token. Bấm <strong>Sinh token</strong> — token này đồng thời là API key + fleet enroll token.
-    </div>
+    <div v-if="!token" class="tok-empty" v-html="t('cust.nodes.tokenEmpty')"></div>
 
     <div v-else class="install-cmds">
       <div class="cmd-card">
@@ -205,31 +203,27 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
         <code class="cmd-line">{{ token.installWindows }}</code>
       </div>
       <div class="cmd-card uninstall">
-        <header><strong>Gỡ cài</strong>
+        <header><strong>{{ t('cust.nodes.uninstall') }}</strong>
           <button class="ghost-button mini" type="button" @click="copyCmd(token.uninstall, 'un')">
             <Copy :size="11" /> {{ copiedKey === 'un' ? '✓' : 'Copy' }}
           </button>
         </header>
         <code class="cmd-line">{{ token.uninstall }}</code>
       </div>
-      <p class="hint" style="grid-column:1/-1">
-        <strong>IPv6 /48</strong>: nếu provider route /48 cho VM, set <code>PROXYHUB_IPV6_PREFIX_LEN=48</code> trước khi paste. Mặc định /64 đủ cho mọi VPS.
-      </p>
+      <p class="hint" style="grid-column:1/-1" v-html="t('cust.nodes.ipv6Hint')"></p>
     </div>
   </section>
 
   <!-- Nodes list -->
   <section class="surface" style="padding:18px">
     <div class="section-head">
-      <h2><Server :size="14" style="vertical-align:-2px" /> Nodes của bạn</h2>
+      <h2><Server :size="14" style="vertical-align:-2px" /> {{ t('cust.nodes.yourNodes') }}</h2>
       <button class="ghost-button" type="button" style="margin-left:auto" @click="loadNodes">
         <RefreshCw :size="13" />
       </button>
     </div>
 
-    <p v-if="!nodes.length" class="empty-text" style="text-align:left; padding:18px 0">
-      Chưa có node nào. Sinh fleet token bên trên → paste lệnh cài lên VM của bạn → node tự động đăng ký vào đây.
-    </p>
+    <p v-if="!nodes.length" class="empty-text" style="text-align:left; padding:18px 0">{{ t('cust.nodes.emptyNodes') }}</p>
 
     <div v-else class="node-grid">
       <article
@@ -262,7 +256,7 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
         </div>
         <p v-if="n.version" class="ver muted-sm">agent v{{ n.version }} · last seen {{ n.lastSeenAt ? n.lastSeenAt.slice(0,19).replace('T',' ') : '—' }}</p>
         <footer class="open-cta">
-          <span>Quản lý node</span>
+          <span>{{ t('cust.nodes.manageNode') }}</span>
           <ExternalLink :size="12" />
         </footer>
       </article>

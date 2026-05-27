@@ -276,7 +276,7 @@ async function rotateProxy(p) {
   try {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}/rotate`, { method: 'POST' })
     p.bindIp = r.bindIp
-    flashMsg.value = `Đã đổi IP cho ${p.id}: ${r.bindIp}`
+    flashMsg.value = t('cust.proxies.ipChanged', { id: p.id, ip: r.bindIp })
     setTimeout(() => { flashMsg.value = '' }, 3000)
     await refresh()
   } catch (e) { err.value = e.message }
@@ -288,7 +288,7 @@ async function disconnectAllSessions(p) {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}/disconnect-all`, { method: 'POST' })
     const n = r.kickedLocal ?? 0
     p.session = r.session || p.session
-    flashMsg.value = `Đã ngắt ${n} kết nối cho ${p.id}.`
+    flashMsg.value = t('cust.proxies.disconnected', { n, id: p.id })
     setTimeout(() => { flashMsg.value = '' }, 3000)
     await refresh()
   } catch (e) { err.value = e.message }

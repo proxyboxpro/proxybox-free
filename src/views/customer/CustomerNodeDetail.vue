@@ -8,7 +8,9 @@ import {
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber } from '../../utils/format'
+import { useI18n } from '../../i18n'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const nodeId = computed(() => String(route.params.id || ''))
@@ -30,7 +32,7 @@ async function loadAll() {
   try {
     const nodes = await apiFetch('/api/v1/user/nodes')
     node.value = (nodes || []).find((n) => n.id === nodeId.value) || null
-    if (!node.value) { err.value = 'Node không tồn tại hoặc không thuộc về bạn.'; return }
+    if (!node.value) { err.value = t('cust.nodeDetail.notFound'); return }
   } catch (e) { err.value = e.message }
   try {
     const all = await apiFetch('/api/v1/user/proxies')
@@ -58,7 +60,7 @@ async function toggleNode() {
   try {
     await apiFetch(`/api/v1/user/nodes/${node.value.id}/${node.value.disabled ? 'enable' : 'disable'}`, { method: 'POST' })
     await loadAll()
-    flash.value = node.value?.disabled ? 'Node đã bật.' : 'Node đã tắt — agent ngừng nhận proxy mới.'
+    flash.value = node.value?.disabled ? t('cust.nodeDetail.enabled') : t('cust.nodeDetail.disabled')
     setTimeout(() => flash.value = '', 3500)
   } catch (e) { err.value = e.message }
   finally { busy.value = false }
@@ -66,7 +68,7 @@ async function toggleNode() {
 
 async function deleteNode() {
   if (!node.value) return
-  if (!confirm(`Xóa node ${node.value.name}? Toàn bộ proxy chạy trên node này sẽ bị gỡ.`)) return
+  if (!confirm(t('cust.nodeDetail.delNodeConfirm', { name: node.value.name }))) return
   busy.value = true; err.value = ''
   try {
     await apiFetch(`/api/v1/user/nodes/${node.value.id}`, { method: 'DELETE' })
@@ -75,11 +77,11 @@ async function deleteNode() {
 }
 
 async function deleteProxy(p) {
-  if (!confirm(`Xóa proxy ${p.id}? Listener sẽ ngừng ngay.`)) return
+  if (!confirm(t('cust.nodeDetail.delProxyConfirm', { id: p.id }))) return
   try {
     await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'DELETE' })
     await loadAll()
-    flash.value = `Đã xóa ${p.id}.`
+    flash.value = t('cust.nodeDetail.proxyDeleted', { id: p.id })
     setTimeout(() => flash.value = '', 3000)
   } catch (e) { err.value = e.message }
 }
@@ -88,7 +90,7 @@ async function rotateProxy(p) {
   try {
     await apiFetch(`/api/v1/user/proxies/${p.id}/rotate`, { method: 'POST' })
     await loadAll()
-    flash.value = `Đã xoay IP cho ${p.id}.`
+    flash.value = t('cust.nodeDetail.ipRotated', { id: p.id })
     setTimeout(() => flash.value = '', 3000)
   } catch (e) { err.value = e.message }
 }
@@ -114,7 +116,7 @@ async function createProxies() {
       durationDays: Math.max(1, Math.min(3650, Number(buyForm.value.durationDays) || 365))
     }
     const r = await apiFetch('/api/v1/user/proxies/from-own-node', { method: 'POST', body })
-    flash.value = `Đã tạo ${r.count} proxy MIỄN PHÍ trên ${node.value.name}.`
+    flash.value = t('cust.buy.byon.created', { count: r.count, node: node.value.name })
     setTimeout(() => flash.value = '', 4000)
     await loadAll()
   } catch (e) { err.value = e.message }
@@ -151,7 +153,7 @@ const ipv6PrefixHint = computed(() => {
 <template>
   <div class="page-head">
     <button class="ghost-button" type="button" @click="router.push('/my-nodes')">
-      <ArrowLeft :size="13" /> Quay lại
+      <ArrowLeft :size="13" /> {{ t('cust.nodeDetail.back') }}
     </button>
     <div class="title-wrap" v-if="node">
       <h1>{{ node.name }}</h1>
@@ -207,29 +209,29 @@ const ipv6PrefixHint = computed(() => {
       <!-- LEFT: proxies + create form -->
       <div class="col-main">
         <section class="surface buy-card">
-          <header><Plus :size="14" style="color:var(--green)" /> <strong>Tạo proxy mới trên node này</strong> <small>· miễn phí, không trừ ví</small></header>
+          <header><Plus :size="14" style="color:var(--green)" /> <strong>{{ t('cust.nodeDetail.createTitle') }}</strong> <small>{{ t('cust.nodeDetail.freeSmall') }}</small></header>
           <div class="buy-form">
             <label class="field">
-              <span>Loại</span>
+              <span>{{ t('cust.buy.byon.typeLabel') }}</span>
               <select v-model="buyForm.type">
                 <option v-if="!node.family || node.family === 'dual' || node.family === 'ipv4'" value="ipv4">IPv4</option>
                 <option v-if="!node.family || node.family === 'dual' || node.family === 'ipv6'" value="ipv6">IPv6 {{ ipv6PrefixHint ? `(${ipv6PrefixHint})` : '' }}</option>
               </select>
             </label>
             <label class="field">
-              <span>Số lượng</span>
+              <span>{{ t('cust.buy.quantity') }}</span>
               <input v-model.number="buyForm.quantity" type="number" min="1" max="50" />
             </label>
             <label class="field">
-              <span>Thời hạn (ngày)</span>
+              <span>{{ t('cust.buy.byon.durationDays') }}</span>
               <input v-model.number="buyForm.durationDays" type="number" min="1" max="3650" />
             </label>
             <label v-if="buyForm.type === 'ipv6'" class="field-checkbox">
               <input v-model="buyForm.rotate" type="checkbox" />
-              <span>Rotation pool (mỗi conn xoay IP)</span>
+              <span>{{ t('cust.nodeDetail.rotationPool') }}</span>
             </label>
             <button class="primary-action" type="button" :disabled="buyBusy" @click="createProxies">
-              <Plus :size="13" /> {{ buyBusy ? 'Đang tạo…' : `Tạo ${buyForm.quantity} proxy` }}
+              <Plus :size="13" /> {{ buyBusy ? t('cust.buy.byon.creating') : t('cust.nodeDetail.createBtn', { n: buyForm.quantity }) }}
             </button>
           </div>
         </section>
@@ -237,11 +239,11 @@ const ipv6PrefixHint = computed(() => {
         <section class="surface" style="padding:14px">
           <header style="display:flex; align-items:center; gap:8px; margin-bottom:10px">
             <Network :size="14" style="color:var(--green)" />
-            <strong>Proxy trên node ({{ proxies.length }})</strong>
+            <strong>{{ t('cust.nodeDetail.proxiesTitle', { n: proxies.length }) }}</strong>
           </header>
 
           <p v-if="!proxies.length" class="empty-text" style="text-align:left; padding:14px 0">
-            Chưa có proxy nào trên node này. Dùng form bên trên để tạo.
+            {{ t('cust.nodeDetail.emptyProxies') }}
           </p>
 
           <ul v-else class="proxy-list">
@@ -265,13 +267,13 @@ const ipv6PrefixHint = computed(() => {
                 <small style="margin-left:8px">bw:</small> {{ formatBytes((p.stats?.uploadBytes || 0) + (p.stats?.downloadBytes || 0)) }}
               </div>
               <div class="px-actions">
-                <button v-if="p.type === 'IPv6'" class="ghost-button mini" type="button" title="Xoay IP" @click="rotateProxy(p)">
+                <button v-if="p.type === 'IPv6'" class="ghost-button mini" type="button" :title="t('cust.nodeDetail.tipRotateIp')" @click="rotateProxy(p)">
                   <RotateCcw :size="11" />
                 </button>
                 <button class="ghost-button mini" type="button" title="Health check" @click="checkProxy(p)">
                   <ShieldCheck :size="11" />
                 </button>
-                <button class="ghost-button mini danger" type="button" title="Xóa" @click="deleteProxy(p)">
+                <button class="ghost-button mini danger" type="button" :title="t('cust.nodeDetail.del')" @click="deleteProxy(p)">
                   <Trash2 :size="11" />
                 </button>
               </div>
@@ -281,14 +283,14 @@ const ipv6PrefixHint = computed(() => {
 
         <!-- Hub-specific info (when this node is a rented hub VPS) -->
         <section v-if="isHub" class="surface hub-info">
-          <header><Server :size="14" style="color:#22d3ee" /> <strong>Thông tin Hub VPS</strong></header>
+          <header><Server :size="14" style="color:#22d3ee" /> <strong>{{ t('cust.nodeDetail.hubInfo') }}</strong></header>
           <dl class="kv-grid">
             <div><dt>Plan</dt><dd>{{ hub.planName }}</dd></div>
             <div><dt>VPS ID</dt><dd class="cell-mono">{{ hub.vpsid }}</dd></div>
-            <div><dt>Đã trả</dt><dd>{{ hub.hoursPaid }} giờ</dd></div>
-            <div><dt>Hết hạn</dt><dd class="cell-mono">{{ hub.expiresAt?.slice(0,16).replace('T',' ') }}</dd></div>
-            <div><dt>Trạng thái</dt><dd>{{ hub.state || '—' }}</dd></div>
-            <div><dt>Giá</dt><dd>{{ Number(hub.hourlyPrice || 0).toLocaleString() }} VND/giờ</dd></div>
+            <div><dt>{{ t('cust.nodeDetail.paid') }}</dt><dd>{{ hub.hoursPaid }} {{ t('cust.nodeDetail.hoursUnit') }}</dd></div>
+            <div><dt>{{ t('cust.nodeDetail.expires') }}</dt><dd class="cell-mono">{{ hub.expiresAt?.slice(0,16).replace('T',' ') }}</dd></div>
+            <div><dt>{{ t('cust.nodeDetail.status') }}</dt><dd>{{ hub.state || '—' }}</dd></div>
+            <div><dt>{{ t('cust.nodeDetail.price') }}</dt><dd>{{ Number(hub.hourlyPrice || 0).toLocaleString() }} {{ t('cust.nodeDetail.perHourUnit') }}</dd></div>
           </dl>
         </section>
       </div>
@@ -297,7 +299,7 @@ const ipv6PrefixHint = computed(() => {
       <aside class="col-aside">
         <section class="surface">
           <header style="display:flex; align-items:center; gap:6px; margin-bottom:10px">
-            <Server :size="14" /> <strong>Thông tin node</strong>
+            <Server :size="14" /> <strong>{{ t('cust.nodeDetail.nodeInfo') }}</strong>
           </header>
           <dl class="kv-grid">
             <div><dt>Host</dt><dd class="cell-mono">{{ node.host }}</dd></div>
@@ -322,18 +324,18 @@ const ipv6PrefixHint = computed(() => {
 
         <section class="surface">
           <header style="display:flex; align-items:center; gap:6px; margin-bottom:10px">
-            <ShieldCheck :size="14" /> <strong>Hành động</strong>
+            <ShieldCheck :size="14" /> <strong>{{ t('cust.nodeDetail.actions') }}</strong>
           </header>
           <div class="action-stack">
             <button class="action-row" type="button" :disabled="busy" @click="toggleNode">
               <component :is="node.disabled ? Power : PowerOff" :size="13" />
-              <span>{{ node.disabled ? 'Bật node' : 'Tạm dừng node' }}</span>
-              <small>{{ node.disabled ? 'Agent nhận lại proxy' : 'Agent ngừng nhận proxy mới' }}</small>
+              <span>{{ node.disabled ? t('cust.nodeDetail.enableNode') : t('cust.nodeDetail.pauseNode') }}</span>
+              <small>{{ node.disabled ? t('cust.nodeDetail.agentResume') : t('cust.nodeDetail.agentPause') }}</small>
             </button>
             <button class="action-row danger" type="button" :disabled="busy" @click="deleteNode">
               <Trash2 :size="13" />
-              <span>Xóa node</span>
-              <small>Toàn bộ proxy trên node sẽ bị gỡ</small>
+              <span>{{ t('cust.nodeDetail.deleteNode') }}</span>
+              <small>{{ t('cust.nodeDetail.deleteNodeHint') }}</small>
             </button>
           </div>
         </section>
@@ -341,7 +343,7 @@ const ipv6PrefixHint = computed(() => {
     </div>
   </template>
 
-  <p v-else-if="!err" class="empty-text" style="padding:60px">Đang tải…</p>
+  <p v-else-if="!err" class="empty-text" style="padding:60px">{{ t('common.loading') }}</p>
 </template>
 
 <style scoped>
