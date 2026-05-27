@@ -32,6 +32,7 @@ import AdminWebhookView from './views/admin/AdminWebhookView.vue'
 import AdminZonesView from './views/admin/AdminZonesView.vue'
 import AdminPricingView from './views/admin/AdminPricingView.vue'
 import AdminCouponsView from './views/admin/AdminCouponsView.vue'
+import AdminCreditCodesView from './views/admin/AdminCreditCodesView.vue'
 import AdminApiKeyRotateView from './views/admin/AdminApiKeyRotateView.vue'
 import AdminSmtpView from './views/admin/AdminSmtpView.vue'
 import AdminAnnouncementsView from './views/admin/AdminAnnouncementsView.vue'
@@ -97,6 +98,7 @@ const router = createRouter({
       { path: 'billing/orders/:orderId',       name: 'admin-order-detail',  component: OrderDetailView },
       { path: 'billing/pricing',               name: 'admin-pricing',       component: AdminPricingView },
       { path: 'billing/coupons',               name: 'admin-coupons',       component: AdminCouponsView },
+      { path: 'billing/credit-codes',          name: 'admin-credit-codes',  component: AdminCreditCodesView },
       { path: 'billing/revenue',               name: 'admin-revenue',       component: () => import('./views/admin/AdminRevenueView.vue') },
       { path: 'billing/payment',               name: 'admin-payment',       component: AdminPaymentView },
 
@@ -203,6 +205,7 @@ const ROUTE_TITLE_KEYS = {
   'admin-order-detail':      'page.order-detail',
   'admin-pricing':           'page.pricing',
   'admin-coupons':           'page.coupons',
+  'admin-credit-codes':      'page.credit-codes',
   'admin-revenue':           'page.revenue',
   'admin-payment':           'page.payment',
   'admin-features':          'page.features',

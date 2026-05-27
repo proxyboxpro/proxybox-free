@@ -2517,7 +2517,7 @@ function recordBillingTx(userId, type, amount, note) {
   const ts = new Date().toISOString()
   // Credit-style txns add positive delta; everything else (purchase/refund-debit/etc) is negative,
   // except 'refund' which is positive (paid back).
-  const positiveTypes = new Set(['topup', 'trial', 'affiliate', 'refund', 'admin-credit'])
+  const positiveTypes = new Set(['topup', 'trial', 'affiliate', 'refund', 'admin-credit', 'promo'])
   const sign = positiveTypes.has(type) ? 1 : -1
   const delta = sign * Math.abs(amount)
   if (sqliteDb) {
@@ -6922,6 +6922,65 @@ async function handleApi(req, res, url) {
       }
     }
 
+    // ── admin: free-credit promo codes CRUD ──
+    // Distinct from coupons (% discount at purchase). When a customer redeems a
+    // credit code on the top-up page, a fixed `amount` is added to their wallet.
+    // `productGroup` (all|ipv4|ipv6|hub) is an organizational label only — it does
+    // NOT restrict where the resulting balance can be spent.
+    const CREDIT_GROUPS = ['all', 'ipv4', 'ipv6', 'hub']
+    if (url.pathname === '/api/admin/credit-codes') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      if (!config.creditCodes) config.creditCodes = []
+      if (req.method === 'GET') return sendJson(res, 200, config.creditCodes)
+      if (req.method === 'POST') {
+        const body = await readJson(req)
+        const code = String(body.code || '').toUpperCase().trim()
+        if (!/^[A-Z0-9_-]{3,32}$/.test(code)) return sendJson(res, 400, { error: 'code must be 3-32 chars: A-Z 0-9 _ -' })
+        if (config.creditCodes.find((c) => c.code === code)) return sendJson(res, 409, { error: 'code exists' })
+        const amount = Math.round(Number(body.amount) || 0)
+        if (amount <= 0) return sendJson(res, 400, { error: 'amount must be > 0' })
+        const cc = {
+          code,
+          amount,
+          currency: (config.pricing?.currency || 'VND').toUpperCase(),
+          productGroup: CREDIT_GROUPS.includes(String(body.productGroup)) ? body.productGroup : 'all',
+          validUntil: typeof body.validUntil === 'string' ? body.validUntil : '',
+          usageLimit: Math.max(0, Number(body.usageLimit) || 0),
+          note: String(body.note || '').slice(0, 200),
+          enabled: body.enabled !== false,
+          redeemedBy: [],
+          createdAt: new Date().toISOString()
+        }
+        config.creditCodes.push(cc)
+        await saveConfig()
+        audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: '/api/admin/credit-codes', note: `create ${code} +${amount} ${cc.currency} group=${cc.productGroup}` })
+        return sendJson(res, 201, cc)
+      }
+    }
+    const creditCodeMatch = url.pathname.match(/^\/api\/admin\/credit-codes\/([A-Z0-9_-]+)$/)
+    if (creditCodeMatch) {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const idx = (config.creditCodes || []).findIndex((c) => c.code === creditCodeMatch[1])
+      if (idx === -1) return sendJson(res, 404, { error: 'not found' })
+      if (req.method === 'DELETE') {
+        config.creditCodes.splice(idx, 1); await saveConfig()
+        audit({ actor: actorOf(req), ip: clientIp(req), method: 'DELETE', path: `/api/admin/credit-codes/${creditCodeMatch[1]}`, note: 'deleted' })
+        return sendJson(res, 200, { ok: true })
+      }
+      if (req.method === 'PATCH') {
+        const body = await readJson(req)
+        const c = config.creditCodes[idx]
+        if (body.amount !== undefined) { const a = Math.round(Number(body.amount) || 0); if (a > 0) c.amount = a }
+        if (typeof body.validUntil === 'string') c.validUntil = body.validUntil
+        if (body.usageLimit !== undefined) c.usageLimit = Math.max(0, Number(body.usageLimit) || 0)
+        if (CREDIT_GROUPS.includes(String(body.productGroup))) c.productGroup = body.productGroup
+        if (typeof body.note === 'string') c.note = body.note.slice(0, 200)
+        if (typeof body.enabled === 'boolean') c.enabled = body.enabled
+        await saveConfig()
+        return sendJson(res, 200, c)
+      }
+    }
+
     // â”€â”€ admin: users management (list, promote, credit, suspend) â”€â”€
     if (req.method === 'GET' && url.pathname === '/api/admin/users') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
@@ -9387,6 +9446,41 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 500)
     const rows = sqliteDb ? sqliteDb.prepare('SELECT ts, type, amount, balance_after AS balanceAfter, note FROM billing_tx WHERE user_id = ? ORDER BY ts DESC LIMIT ?').all(user.id, limit) : []
     return sendJson(res, 200, { items: rows, limit, balance: userBalance(user.id) })
+  }
+
+  // ── Free-credit promo codes ──
+  // POST redeem { code } → credit wallet once per user. Checked BEFORE the generic
+  // GET :code validate match so 'redeem' is never treated as a code lookup.
+  if (req.method === 'POST' && sub === 'credit-codes/redeem') {
+    const body = await readJson(req)
+    const code = String(body.code || '').toUpperCase().trim()
+    if (!code) return sendJson(res, 400, { error: 'code required' })
+    const cc = (config.creditCodes || []).find((c) => c.code === code)
+    if (!cc || cc.enabled === false) return sendJson(res, 404, { error: 'invalid code' })
+    if (cc.validUntil && cc.validUntil < new Date().toISOString().slice(0, 10)) return sendJson(res, 400, { error: 'code expired' })
+    if (!Array.isArray(cc.redeemedBy)) cc.redeemedBy = []
+    if (cc.redeemedBy.includes(user.id)) return sendJson(res, 409, { error: 'already redeemed' })
+    if (cc.usageLimit && cc.redeemedBy.length >= cc.usageLimit) return sendJson(res, 409, { error: 'code fully redeemed' })
+    cc.redeemedBy.push(user.id)            // reserve slot atomically (single-threaded tick)
+    const newBalance = recordBillingTx(user.id, 'promo', cc.amount, `promo ${cc.code}${cc.productGroup && cc.productGroup !== 'all' ? ` (${cc.productGroup})` : ''}`)
+    await saveConfig()
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/credit-codes/redeem', note: `${cc.code} +${cc.amount}; bal=${newBalance}` })
+    pushNotification(user.id, { type: 'billing', severity: 'success', text: `Đã cộng ${Number(cc.amount).toLocaleString()} ${cc.currency} từ mã ${cc.code}`, link: '/billing' })
+    return sendJson(res, 200, { ok: true, code: cc.code, amount: cc.amount, currency: cc.currency, balance: newBalance })
+  }
+  // GET validate/preview — no mutation; powers the "shows amount + expiry" step.
+  const creditCodeValidate = sub.match(/^credit-codes\/([A-Za-z0-9_-]+)$/)
+  if (creditCodeValidate && req.method === 'GET') {
+    const cc = (config.creditCodes || []).find((c) => c.code === creditCodeValidate[1].toUpperCase())
+    if (!cc || cc.enabled === false) return sendJson(res, 404, { error: 'invalid code' })
+    const expired = !!(cc.validUntil && cc.validUntil < new Date().toISOString().slice(0, 10))
+    const already = Array.isArray(cc.redeemedBy) && cc.redeemedBy.includes(user.id)
+    const full = !!(cc.usageLimit && (cc.redeemedBy?.length || 0) >= cc.usageLimit)
+    return sendJson(res, 200, {
+      code: cc.code, amount: cc.amount, currency: cc.currency,
+      productGroup: cc.productGroup || 'all', validUntil: cc.validUntil || '',
+      expired, already, full, redeemable: !expired && !already && !full
+    })
   }
   // Test-mode manual topup. ONLY active when billing.testMode is true; otherwise
   // production traffic must go via /billing/checkout â†' Stripe â†' webhook.

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Activity, Book, Box, Cloud, CreditCard, DollarSign, Download, FileText, Globe, KeyRound, LayoutDashboard, LogOut,
   Mail, Megaphone, Menu, Moon, Network, Server, Settings, ShieldCheck, ShoppingCart, Sun,
-  Tag, Ticket, User, Users, Wallet, Webhook, ChevronRight, MoreHorizontal
+  Tag, Ticket, User, Users, Wallet, Webhook, ChevronRight, MoreHorizontal, Gift
 } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 import { token, logout as apiLogout } from '../api'
@@ -46,6 +46,7 @@ const navGroups = [
   { id: 'billing', labelKey: 'nav.billing', items: [
     { name: 'admin-pricing',       labelKey: 'page.pricing',      icon: DollarSign },
     { name: 'admin-coupons',       labelKey: 'page.coupons',      icon: Ticket },
+    { name: 'admin-credit-codes',  labelKey: 'page.credit-codes', icon: Gift },
     { name: 'admin-revenue',       labelKey: 'page.revenue',      icon: Wallet },
     { name: 'admin-payment',       labelKey: 'page.payment',      icon: CreditCard }
   ] },

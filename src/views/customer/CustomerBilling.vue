@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowDownLeft, ArrowUpRight, ChevronRight, CircleDollarSign, CreditCard,
-  FileText, Plus, RefreshCw, Search, Tag, Wallet
+  FileText, Gift, Plus, RefreshCw, Search, Tag, Wallet
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
@@ -21,6 +21,10 @@ const err = ref('')
 const flash = ref('')
 const txSearch = ref('')
 const txFilter = ref('all')
+const promoCode = ref('')
+const promoInfo = ref(null)   // validate result: { amount, currency, productGroup, validUntil, redeemable, expired, already, full }
+const promoBusy = ref(false)
+const promoErr = ref('')
 
 async function refresh() {
   err.value = ''
@@ -31,6 +35,41 @@ async function refresh() {
     pricing.value = await apiFetch('/api/v1/user/pricing')
     orders.value = await apiFetch('/api/v1/user/orders')
   } catch (e) { err.value = e.message }
+}
+function promoGroupLabel(g) {
+  if (!g || g === 'all') return t('cust.billing.promoAllProducts')
+  return ({ ipv4: 'IPv4', ipv6: 'IPv6', hub: 'Hub' })[g] || g
+}
+function mapPromoErr(m) {
+  return m === 'already redeemed' ? t('cust.billing.promoAlready')
+    : m === 'code expired' ? t('cust.billing.promoExpired')
+    : m === 'code fully redeemed' ? t('cust.billing.promoFull')
+    : (m === 'invalid code' || m === 'code required') ? t('cust.billing.promoInvalid')
+    : m
+}
+async function checkPromo() {
+  if (promoBusy.value) return
+  promoErr.value = ''; promoInfo.value = null
+  const code = promoCode.value.trim().toUpperCase()
+  if (!code) return
+  promoBusy.value = true
+  try { promoInfo.value = await apiFetch(`/api/v1/user/credit-codes/${encodeURIComponent(code)}`) }
+  catch (e) { promoErr.value = mapPromoErr(e.message) }
+  finally { promoBusy.value = false }
+}
+async function redeemPromo() {
+  if (promoBusy.value) return
+  promoErr.value = ''
+  const code = promoCode.value.trim().toUpperCase()
+  if (!code) return
+  promoBusy.value = true
+  try {
+    const r = await apiFetch('/api/v1/user/credit-codes/redeem', { method: 'POST', body: { code } })
+    flash.value = t('cust.billing.promoRedeemed', { amount: Number(r.amount).toLocaleString(), currency: r.currency })
+    promoCode.value = ''; promoInfo.value = null
+    await refresh()
+  } catch (e) { promoErr.value = mapPromoErr(e.message) }
+  finally { promoBusy.value = false }
 }
 async function pay() {
   if (busy.value) return
@@ -178,6 +217,28 @@ onMounted(async () => {
           </button>
           <button v-if="billing?.paymentMethods?.paypalEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithPaypal" style="background:#0070ba; border-color:#0070ba">
             <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : 'Pay with PayPal' }}
+          </button>
+        </div>
+      </section>
+
+      <!-- Redeem free-credit promo code -->
+      <section class="surface" style="padding:18px">
+        <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><Gift :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.billing.promoTitle') }}</h2>
+        <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.billing.promoDesc') }}</p>
+        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; max-width:560px">
+          <label class="input-field" style="flex:1 1 200px; margin:0">
+            <span>{{ t('cust.billing.promoCode') }}</span>
+            <input v-model="promoCode" :placeholder="t('cust.billing.promoPlaceholder')" style="text-transform:uppercase" @keyup.enter="checkPromo" />
+          </label>
+          <button class="ghost-button" type="button" :disabled="promoBusy || !promoCode.trim()" @click="checkPromo">{{ t('cust.billing.promoCheck') }}</button>
+        </div>
+        <p v-if="promoErr" class="error-text" style="margin:8px 0 0">{{ promoErr }}</p>
+        <div v-if="promoInfo" style="margin-top:12px; padding:12px 14px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:10px; max-width:560px">
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; margin-bottom:6px"><span style="color:var(--muted)">{{ t('cust.billing.promoValue') }}</span><strong class="cell-mono" style="color:var(--green); font-size:15px">+{{ Number(promoInfo.amount).toLocaleString() }} {{ promoInfo.currency }}</strong></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; margin-bottom:6px"><span style="color:var(--muted)">{{ t('cust.billing.promoGroup') }}</span><span class="tag-soft">{{ promoGroupLabel(promoInfo.productGroup) }}</span></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px"><span style="color:var(--muted)">{{ t('cust.billing.promoExpiry') }}</span><span class="cell-mono">{{ promoInfo.validUntil || t('cust.billing.promoNoExpiry') }}</span></div>
+          <button class="primary-action" type="button" :disabled="promoBusy || !promoInfo.redeemable" @click="redeemPromo" style="margin-top:12px; width:100%">
+            <Gift :size="15" /> {{ promoInfo.expired ? t('cust.billing.promoExpired') : promoInfo.already ? t('cust.billing.promoAlready') : promoInfo.full ? t('cust.billing.promoFull') : t('cust.billing.promoRedeem') }}
           </button>
         </div>
       </section>
