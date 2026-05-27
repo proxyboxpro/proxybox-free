@@ -11857,6 +11857,31 @@ function dispatchWebhook(userId, event, payload) {
   } catch { /* bad URL or unreachable — silent */ }
 }
 
+// Notify a proxy's owner ONCE per expiry window (throttled via expiryNotifiedFor):
+// either "renew soon", or — for auto-renew proxies the wallet can't cover — a
+// low-balance warning. Returns true if it sent something (so caller persists).
+function notifyProxyExpiry(proxy) {
+  if (!proxy.ownerId || proxy.expiryNotifiedFor === proxy.expiresAt) return false
+  const user = config.users.find((u) => u.id === proxy.ownerId)
+  if (!user) return false
+  if (proxy.autoRenew) {
+    const pricing = config.pricing || defaultPricing()
+    const perHour = (String(proxy.type).toLowerCase() === 'ipv6' ? pricing.ipv6 : pricing.ipv4)?.perHour || 0
+    const cost = perHour * Number(proxy.renewHours || 24)
+    const grp = String(proxy.type).toLowerCase() === 'ipv6' ? 'ipv6' : 'ipv4'
+    const need = cost - previewScopedCredit(proxy.ownerId, grp, cost).applied
+    if (userBalance(proxy.ownerId) >= need) return false   // renews fine — no nag
+    proxy.expiryNotifiedFor = proxy.expiresAt
+    pushNotification(proxy.ownerId, { type: 'billing', severity: 'warn', text: `Số dư không đủ để tự gia hạn proxy ${proxy.id} (cần ${need.toLocaleString()}). Nạp thêm để tránh gián đoạn.`, link: '/billing' })
+    sendMail({ to: user.email, subject: 'ProxyBox: số dư thấp — proxy sắp không gia hạn được', html: `<p>Proxy <code>${proxy.id}</code> đến hạn tự gia hạn nhưng số dư ví không đủ (cần <strong>${need.toLocaleString()}</strong>). <a href="/billing">Nạp thêm</a> để tránh gián đoạn.</p>` }).catch(() => {})
+  } else {
+    proxy.expiryNotifiedFor = proxy.expiresAt
+    pushNotification(proxy.ownerId, { type: 'proxy', severity: 'warn', text: `Proxy ${proxy.id} sắp hết hạn (dưới 6h). Gia hạn để không mất proxy.`, link: '/proxies' })
+    sendMail({ to: user.email, subject: 'ProxyBox: proxy sắp hết hạn', html: `<p>Proxy <code>${proxy.id}</code> sẽ hết hạn lúc <strong>${proxy.expiresAt}</strong>. <a href="/proxies">Gia hạn ngay</a> để giữ proxy.</p>` }).catch(() => {})
+  }
+  return true
+}
+
 function sweepExpired() {
   // Hourly precision: compare expiresAt (ISO datetime) when set, fall back to
   // expires (YYYY-MM-DD) for legacy proxies created before hourly migration.
@@ -11913,8 +11938,10 @@ function sweepExpired() {
       expiringSoon += 1
       pushAlert(`proxy:${proxy.id}:grace`, `Proxy ${proxy.id} entered grace period (1h to renew)`, 'warn')
       dispatchWebhook(proxy.ownerId, 'proxy.expiringSoon', { proxyId: proxy.id, expiresAt: proxy.expiresAt })
+      notifyProxyExpiry(proxy)
     } else if (expMs <= now + SOON_MS && proxy.status !== 'expired' && proxy.status !== 'grace') {
       expiringSoon += 1
+      if (notifyProxyExpiry(proxy)) changed = true
     }
   }
   if (renewed > 0) pushAlert('proxy:renewed', `${renewed} proxy auto-renewed`, 'info')
