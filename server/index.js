@@ -1493,7 +1493,7 @@ function defaultDocs() {
         '',
         '### Wallet + Billing',
         '- Ví VND/USD, auto-renew proxy, tier discount.',
-        '- Coupon code, refund partial/full, audit từng giao dịch.',
+        '- Refund partial/full, audit từng giao dịch.',
         '- Stripe integration (webhook signature verify + idempotency).',
         '- SMTP raw socket + Telegram alert + Webhook ra hệ thống ngoài.',
         '',
@@ -2538,6 +2538,36 @@ function recordBillingTx(userId, type, amount, note) {
   m.tx.unshift({ ts, type, amount: delta, balanceAfter: m.balance, note: note || '' })
   if (m.tx.length > 500) m.tx.length = 500
   return m.balance
+}
+
+// ── Scoped free-credit grants ───────────────────────────────────────────────
+// A redeemed credit code becomes a grant earmarked for ONE product group
+// (all|ipv4|ipv6|hub) with an optional expiry (YYYY-MM-DD). Grants are spent
+// automatically at checkout, before the wallet, and only on a matching group.
+function activeGrantsFor(userId, group) {
+  const today = new Date().toISOString().slice(0, 10)
+  return (config.creditGrants || [])
+    .filter((g) => g.userId === userId && Number(g.remaining) > 0 && (g.group === 'all' || g.group === group))
+    .filter((g) => !g.expiresAt || g.expiresAt >= today)
+    .sort((a, b) => (a.expiresAt || '9999-99-99').localeCompare(b.expiresAt || '9999-99-99')) // soonest-expiring first
+}
+// Non-mutating: how much scoped credit would cover `cost`, plus the per-grant plan.
+function previewScopedCredit(userId, group, cost) {
+  let remaining = Math.max(0, Math.round(Number(cost) || 0))
+  const plan = []
+  for (const g of activeGrantsFor(userId, group)) {
+    if (remaining <= 0) break
+    const take = Math.min(remaining, Number(g.remaining))
+    if (take > 0) { plan.push({ id: g.id, take }); remaining -= take }
+  }
+  return { applied: plan.reduce((s, p) => s + p.take, 0), plan }
+}
+// Mutating: deduct the planned amounts from grants. Call ONLY on the success path.
+function commitScopedCredit(plan) {
+  for (const p of plan || []) {
+    const g = (config.creditGrants || []).find((x) => x.id === p.id)
+    if (g) g.remaining = Math.max(0, Number(g.remaining) - p.take)
+  }
 }
 
 // Append an audit entry. Writes to SQLite when available (fast indexed search)
@@ -6788,6 +6818,7 @@ async function handleApi(req, res, url) {
           forcePasswordChange: !!u.forcePasswordChange
         },
         balance: userBalance(u.id),
+        creditGrants: (config.creditGrants || []).filter((g) => g.userId === u.id && Number(g.remaining) > 0).map((g) => ({ group: g.group, remaining: g.remaining, amount: g.amount, currency: g.currency, expiresAt: g.expiresAt || '', code: g.code })),
         orders: userOrders,
         proxies: userProxies,
         transactions: txs
@@ -6883,50 +6914,12 @@ async function handleApi(req, res, url) {
       }
     }
 
-    // â”€â”€ admin: coupons CRUD â”€â”€
-    if (url.pathname === '/api/admin/coupons') {
-      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
-      if (!config.coupons) config.coupons = []
-      if (req.method === 'GET') return sendJson(res, 200, config.coupons)
-      if (req.method === 'POST') {
-        const body = await readJson(req)
-        const code = String(body.code || '').toUpperCase().trim()
-        if (!code) return sendJson(res, 400, { error: 'code required' })
-        if (config.coupons.find((c) => c.code === code)) return sendJson(res, 409, { error: 'code exists' })
-        const coupon = {
-          code,
-          discount: Math.max(0, Math.min(0.9, Number(body.discount) || 0)),
-          validUntil: typeof body.validUntil === 'string' ? body.validUntil : '',
-          usageLimit: Number(body.usageLimit) || 0,
-          usageCount: 0
-        }
-        config.coupons.push(coupon)
-        await saveConfig()
-        return sendJson(res, 201, coupon)
-      }
-    }
-    const couponMatch = url.pathname.match(/^\/api\/admin\/coupons\/([A-Z0-9_-]+)$/)
-    if (couponMatch) {
-      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
-      const idx = (config.coupons || []).findIndex((c) => c.code === couponMatch[1])
-      if (idx === -1) return sendJson(res, 404, { error: 'not found' })
-      if (req.method === 'DELETE') { config.coupons.splice(idx, 1); await saveConfig(); return sendJson(res, 200, { ok: true }) }
-      if (req.method === 'PATCH') {
-        const body = await readJson(req)
-        const c = config.coupons[idx]
-        if (body.discount !== undefined) c.discount = Math.max(0, Math.min(0.9, Number(body.discount) || 0))
-        if (typeof body.validUntil === 'string') c.validUntil = body.validUntil
-        if (body.usageLimit !== undefined) c.usageLimit = Number(body.usageLimit) || 0
-        await saveConfig()
-        return sendJson(res, 200, c)
-      }
-    }
-
+    // â”€â”€ admin: free-credit promo codes (scoped, expiring) â”€â”€
     // ── admin: free-credit promo codes CRUD ──
-    // Distinct from coupons (% discount at purchase). When a customer redeems a
-    // credit code on the top-up page, a fixed `amount` is added to their wallet.
-    // `productGroup` (all|ipv4|ipv6|hub) is an organizational label only — it does
-    // NOT restrict where the resulting balance can be spent.
+    // Redeeming a credit code creates a SCOPED grant: spendable only on the code's
+    // productGroup (all|ipv4|ipv6|hub) and only until validUntil. Grants are consumed
+    // automatically at checkout (before the wallet). The old %-discount coupon
+    // system was removed.
     const CREDIT_GROUPS = ['all', 'ipv4', 'ipv6', 'hub']
     if (url.pathname === '/api/admin/credit-codes') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
@@ -7412,24 +7405,7 @@ async function handleApi(req, res, url) {
       audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `require2FA=${target.require2FA}` })
       return sendJson(res, 200, { ok: true, require2FA: target.require2FA })
     }
-    // â”€â”€ admin: coupon analytics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const couponStatsMatch = url.pathname.match(/^\/api\/admin\/coupons\/([A-Z0-9_-]+)\/analytics$/)
-    if (couponStatsMatch && req.method === 'GET') {
-      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
-      const code = couponStatsMatch[1]
-      const orders = (config.orders || []).filter((o) => (o.couponCode || '').toUpperCase() === code)
-      const buyers = new Set(orders.map((o) => o.ownerId))
-      const totalRevenue = orders.reduce((s, o) => s + Number(o.totalCost || 0), 0)
-      const totalDiscount = orders.reduce((s, o) => s + Number(o.discountAmount || 0), 0)
-      return sendJson(res, 200, {
-        code,
-        usageCount: orders.length,
-        uniqueBuyers: buyers.size,
-        totalRevenue,
-        totalDiscount,
-        orders: orders.slice(-20).map((o) => ({ id: o.id, ownerId: o.ownerId, totalCost: o.totalCost, discountAmount: o.discountAmount, createdAt: o.createdAt }))
-      })
-    }
+    // â”€â”€ admin: billing helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // â”€â”€ admin: audit CSV export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (req.method === 'GET' && url.pathname === '/api/admin/audit/export') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
@@ -8775,9 +8751,11 @@ async function handleUserV1(req, res, url) {
     if (!plan) return sendJson(res, 404, { error: 'hub plan not found' })
     const hours = Math.max(plan.minHours || 1, Math.min(plan.maxHours || 8760, Number(body.hours) || 1))
     const totalCost = Math.ceil(hours * (plan.hourlyPrice || 0))
+    const hubCredit = previewScopedCredit(user.id, 'hub', totalCost)
+    const hubWalletCharge = totalCost - hubCredit.applied
     const balance = userBalance(user.id)
-    if (balance < totalCost) {
-      return sendJson(res, 402, { error: `Số dư không đủ. Cần ${totalCost} ${plan.currency}, hiện có ${balance}.`, totalCost, balance })
+    if (balance < hubWalletCharge) {
+      return sendJson(res, 402, { error: `Số dư không đủ. Cần ${hubWalletCharge} ${plan.currency}, hiện có ${balance}.`, totalCost, creditApplied: hubCredit.applied, balance })
     }
     // Quota check
     if (plan.maxQuantity > 0) {
@@ -8882,7 +8860,10 @@ async function handleUserV1(req, res, url) {
     if (!vpsid) {
       return sendJson(res, 502, { error: 'Virtualizor accepted request but returned no vpsid', raw: provision })
     }
-    recordBillingTx(user.id, 'spend', -totalCost, `hub-buy ${plan.id} ${hours}h vpsid=${vpsid}`)
+    const hubCreditFinal = previewScopedCredit(user.id, 'hub', totalCost)
+    commitScopedCredit(hubCreditFinal.plan)
+    const hubCharge = totalCost - hubCreditFinal.applied
+    if (hubCharge > 0) recordBillingTx(user.id, 'spend', -hubCharge, `hub-buy ${plan.id} ${hours}h vpsid=${vpsid}${hubCreditFinal.applied ? ` credit=-${hubCreditFinal.applied}` : ''}`)
 
     // Fetch the actual IPs assigned to this VPS — Virtualizor populates these
     // post-addvs (the addvs response itself only has pool intent, not the
@@ -9064,7 +9045,7 @@ async function handleUserV1(req, res, url) {
   }
 
   // â”€â”€ Customer self-service purchase (HOURLY) â”€â”€
-  // POST /api/v1/user/orders { type, quantity, hours, zone?, rotate?, autoRenew?, coupon? }
+  // POST /api/v1/user/orders { type, quantity, hours, zone?, rotate?, autoRenew? }
   // Only sells by-the-hour. No daily/monthly packages. Zone filter restricts to
   // nodes in the requested geographic zone (e.g. "vn-hcm", "us-east").
   if (req.method === 'POST' && sub === 'orders') {
@@ -9081,30 +9062,17 @@ async function handleUserV1(req, res, url) {
     let tierDiscount = 0
     const tiers = (config.pricing.tiers || []).filter((t) => quantity >= (t.min || 0)).sort((a, b) => b.min - a.min)
     if (tiers[0]) tierDiscount = Number(tiers[0].discount) || 0
-    // Coupon validate + reserve usage atomically BEFORE any cost calc. Node is
-    // single-threaded so the read+write happens within one tick — no other
-    // request can squeeze through between the limit check and the increment.
-    // Decrement on any later failure path so concurrent requests don't all
-    // pass the limit check and then all increment after success.
-    let coupon = null
-    let couponDiscount = 0
-    if (body.coupon) {
-      const code = String(body.coupon).trim()
-      coupon = (config.coupons || []).find((c) => c.code === code)
-      if (!coupon) return sendJson(res, 400, { error: 'invalid coupon' })
-      if (coupon.validUntil && coupon.validUntil < new Date().toISOString().slice(0, 10)) return sendJson(res, 400, { error: 'coupon expired' })
-      const used = Number(coupon.usageCount || 0)
-      if (coupon.usageLimit && used >= coupon.usageLimit) return sendJson(res, 400, { error: 'coupon usage limit reached' })
-      coupon.usageCount = used + 1          // reserve slot atomically
-      couponDiscount = Math.max(0, Math.min(0.9, Number(coupon.discount) || 0))
-    }
-    const releaseCoupon = () => { if (coupon) coupon.usageCount = Math.max(0, Number(coupon.usageCount || 0) - 1) }
     const base = perHour * hours * quantity
-    const totalCost = Math.round(base * (1 - tierDiscount) * (1 - couponDiscount))
+    const totalCost = Math.round(base * (1 - tierDiscount))
+    // Scoped free-credit grants for this product type are spent first; the rest is
+    // charged to the wallet. Preview here (non-mutating) to size the wallet charge —
+    // grants are only deducted on the success path below.
+    const creditGroup = type === 'IPv6' ? 'ipv6' : 'ipv4'
+    const credit = previewScopedCredit(user.id, creditGroup, totalCost)
+    const walletCharge = totalCost - credit.applied
     const balance = userBalance(user.id)
-    if (balance < totalCost) {
-      releaseCoupon()
-      return sendJson(res, 402, { error: 'insufficient balance', required: totalCost, balance, topupUrl: '/api/v1/user/billing/checkout' })
+    if (balance < walletCharge) {
+      return sendJson(res, 402, { error: 'insufficient balance', required: walletCharge, creditApplied: credit.applied, balance, topupUrl: '/api/v1/user/billing/checkout' })
     }
     // Zone-aware node picking: filter candidates to nodes whose `zone` field
     // matches the customer's requested zone (or any zone if blank). Local control
@@ -9133,6 +9101,8 @@ async function handleUserV1(req, res, url) {
       ownerId: user.id,
       item: `${type} x ${quantity} · ${hours}h${zone ? ' · ' + zone : ''}`,
       amount: totalCost,
+      creditApplied: credit.applied,
+      walletCharge,
       hours,
       zone: zone || '',
       type,
@@ -9144,9 +9114,12 @@ async function handleUserV1(req, res, url) {
       autoRenew: Boolean(body.autoRenew)
     }
     orders.unshift(order)
-    const newBalance = recordBillingTx(user.id, 'purchase', totalCost, `order ${orderId}: ${type} x ${quantity} (${hours}h)${coupon ? ` coupon=${coupon.code}` : ''}${tierDiscount ? ` tier=-${(tierDiscount * 100).toFixed(0)}%` : ''}`)
+    commitScopedCredit(credit.plan)        // deduct scoped grants now (success path)
+    const newBalance = walletCharge > 0
+      ? recordBillingTx(user.id, 'purchase', walletCharge, `order ${orderId}: ${type} x ${quantity} (${hours}h)${credit.applied ? ` credit=-${credit.applied}` : ''}${tierDiscount ? ` tier=-${(tierDiscount * 100).toFixed(0)}%` : ''}`)
+      : userBalance(user.id)
     await Promise.all([saveConfig(), saveOrders()])
-    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/orders', note: `${orderId} base=${base} discount=${(tierDiscount + couponDiscount).toFixed(2)} â†' ${totalCost}; bal=${newBalance}` })
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/orders', note: `${orderId} base=${base} credit=${credit.applied} wallet=${walletCharge} â†' ${totalCost}; bal=${newBalance}` })
     pushNotification(user.id, { type: 'order', severity: 'success', text: `Đơn ${orderId} đã được cấp ${quantity} proxy ${type} (${hours}h)`, link: `/orders/${orderId}` })
     await saveConfig()
     sendMail({
@@ -9451,6 +9424,14 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
   // ── Free-credit promo codes ──
   // POST redeem { code } → credit wallet once per user. Checked BEFORE the generic
   // GET :code validate match so 'redeem' is never treated as a code lookup.
+  // Active scoped grants for this user (powers the wallet-side display + buy summary).
+  if (req.method === 'GET' && sub === 'credit-grants') {
+    const today = new Date().toISOString().slice(0, 10)
+    const list = (config.creditGrants || [])
+      .filter((g) => g.userId === user.id && Number(g.remaining) > 0 && (!g.expiresAt || g.expiresAt >= today))
+      .map((g) => ({ group: g.group, remaining: g.remaining, amount: g.amount, currency: g.currency, expiresAt: g.expiresAt || '', code: g.code }))
+    return sendJson(res, 200, list)
+  }
   if (req.method === 'POST' && sub === 'credit-codes/redeem') {
     const body = await readJson(req)
     const code = String(body.code || '').toUpperCase().trim()
@@ -9462,11 +9443,24 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     if (cc.redeemedBy.includes(user.id)) return sendJson(res, 409, { error: 'already redeemed' })
     if (cc.usageLimit && cc.redeemedBy.length >= cc.usageLimit) return sendJson(res, 409, { error: 'code fully redeemed' })
     cc.redeemedBy.push(user.id)            // reserve slot atomically (single-threaded tick)
-    const newBalance = recordBillingTx(user.id, 'promo', cc.amount, `promo ${cc.code}${cc.productGroup && cc.productGroup !== 'all' ? ` (${cc.productGroup})` : ''}`)
+    if (!Array.isArray(config.creditGrants)) config.creditGrants = []
+    const grant = {
+      id: `GR-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`,
+      userId: user.id,
+      group: cc.productGroup || 'all',
+      amount: cc.amount,
+      remaining: cc.amount,
+      currency: cc.currency,
+      expiresAt: cc.validUntil || '',          // credit usable until this date (per product decision)
+      code: cc.code,
+      createdAt: new Date().toISOString()
+    }
+    config.creditGrants.push(grant)
     await saveConfig()
-    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/credit-codes/redeem', note: `${cc.code} +${cc.amount}; bal=${newBalance}` })
-    pushNotification(user.id, { type: 'billing', severity: 'success', text: `Đã cộng ${Number(cc.amount).toLocaleString()} ${cc.currency} từ mã ${cc.code}`, link: '/billing' })
-    return sendJson(res, 200, { ok: true, code: cc.code, amount: cc.amount, currency: cc.currency, balance: newBalance })
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/credit-codes/redeem', note: `${cc.code} +${cc.amount} group=${grant.group} exp=${grant.expiresAt || 'never'}` })
+    const groupTxt = grant.group === 'all' ? 'mọi sản phẩm' : grant.group.toUpperCase()
+    pushNotification(user.id, { type: 'billing', severity: 'success', text: `Đã nhận ${Number(cc.amount).toLocaleString()} ${cc.currency} credit cho ${groupTxt}${grant.expiresAt ? `, dùng tới ${grant.expiresAt}` : ''}`, link: '/billing' })
+    return sendJson(res, 200, { ok: true, code: cc.code, amount: cc.amount, currency: cc.currency, group: grant.group, expiresAt: grant.expiresAt })
   }
   // GET validate/preview — no mutation; powers the "shows amount + expiry" step.
   const creditCodeValidate = sub.match(/^credit-codes\/([A-Za-z0-9_-]+)$/)

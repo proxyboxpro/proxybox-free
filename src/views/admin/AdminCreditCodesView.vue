@@ -52,8 +52,8 @@ onMounted(refresh)
       <button class="ghost-button" type="button" @click="refresh">Refresh</button>
     </div>
     <p style="color:var(--muted); font-size:12.5px; margin:-4px 0 0; max-width:760px">
-      Mã cộng tiền thẳng vào ví khi khách nhập ở trang <strong>Nạp tiền</strong>. Mỗi khách chỉ dùng được 1 lần / mã.
-      Nhóm sản phẩm chỉ là <strong>nhãn phân loại</strong> — không giới hạn tiền dùng cho sản phẩm nào.
+      Khách nhập mã ở trang <strong>Nạp tiền</strong> để nhận free credit. Credit <strong>chỉ dùng mua đúng nhóm sản phẩm</strong>
+      của mã (tự trừ khi mua, trước ví) và <strong>hết hạn vào ngày Hết hạn</strong>. Mỗi khách dùng 1 lần / mã.
     </p>
     <p v-if="err" class="error-text">{{ err }}</p>
     <p v-if="flash" style="color:var(--green)">{{ flash }}</p>
@@ -88,7 +88,7 @@ onMounted(refresh)
             <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.label }}</option>
           </select>
         </label>
-        <label class="input-field"><span>Hết hạn (trống = ∞)</span><input v-model="form.validUntil" type="date" /></label>
+        <label class="input-field"><span>Hết hạn credit (trống = vô hạn)</span><input v-model="form.validUntil" type="date" /></label>
         <label class="input-field"><span>Giới hạn lượt (0 = ∞)</span><input v-model.number="form.usageLimit" type="number" min="0" /></label>
         <label class="input-field"><span>Ghi chú</span><input v-model="form.note" placeholder="Campaign…" /></label>
       </div>

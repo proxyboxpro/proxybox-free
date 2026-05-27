@@ -32,8 +32,7 @@ const form = ref({
   hours: 24,
   quantity: 1,
   rotate: false,
-  autoRenew: false,
-  coupon: ''
+  autoRenew: false
 })
 
 const hubForm = ref({ zone: '', planId: null })
@@ -126,7 +125,6 @@ function buyNow() {
     quantity: String(form.value.quantity)
   }
   if (form.value.autoRenew) q.autoRenew = '1'
-  if (form.value.coupon) q.coupon = form.value.coupon
   if (form.value.rotate) q.rotate = '1'
   if (token.value) router.push({ name: 'buy', query: q })
   else router.push({ name: 'login', query: { next: '/buy?' + new URLSearchParams(q).toString() } })
@@ -299,7 +297,7 @@ onMounted(refresh)
             <div class="step-head">
               <span class="step-num">3</span>
               <h2><Clock :size="15" /> {{ locale === 'vi' ? 'Cấu hình proxy' : 'Proxy configuration' }}</h2>
-              <span class="step-help">{{ locale === 'vi' ? 'Thời lượng, số lượng, coupon.' : 'Duration, quantity, coupon.' }}</span>
+              <span class="step-help">{{ locale === 'vi' ? 'Thời lượng, số lượng.' : 'Duration, quantity.' }}</span>
             </div>
             <div class="form-grid" style="grid-template-columns: 1fr; gap: 14px">
               <label class="input-field" v-if="form.type === 'ipv6'">
@@ -361,14 +359,6 @@ onMounted(refresh)
                 <button v-for="q in quantityPresets" :key="q" type="button"
                   :class="{ active: form.quantity === q }" @click="setQuantity(q)">{{ q }} proxy</button>
               </div>
-            </div>
-
-            <!-- Coupon -->
-            <div style="margin-top: 18px; max-width: 320px">
-              <label class="input-field">
-                <span>{{ locale === 'vi' ? 'Coupon' : 'Coupon' }} <small style="color: var(--muted); font-weight: 400">({{ locale === 'vi' ? 'tuỳ chọn' : 'optional' }})</small></span>
-                <input v-model="form.coupon" placeholder="LAUNCH10" />
-              </label>
             </div>
 
             <div style="margin-top: 14px; padding: 10px 14px; border: 1px dashed var(--border); border-radius: 10px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px">

@@ -102,8 +102,8 @@ const groups = [
     intro: 'Tạo đơn = đặt mua N proxy cùng zone + cùng số giờ. Server tự cấp ngay và trả về full credentials.',
     endpoints: [
       { method: 'POST', path: '/api/v1/user/orders', desc: 'Mua N proxy cùng lúc theo giờ. Cần `type` ∈ {ipv4, ipv6}, `quantity` ≥ 1, `hours` ≥ 1, `zone` (bắt buộc — danh sách zone lấy từ /zones).',
-        request: '{\n  "type": "ipv4",\n  "quantity": 5,\n  "hours": 24,\n  "zone": "vn-hcm",\n  "autoRenew": false,\n  "coupon": "LAUNCH10"\n}',
-        response: '{\n  "order": {\n    "id": "ORD-170747",\n    "proxyIds": ["px-20005","px-20006","px-20007","px-20008","px-20009"],\n    "totalCost": 49920,\n    "expiresAt": "2026-05-16T03:19:30Z"\n  },\n  "proxies": [\n    {\n      "id": "px-20005",\n      "orderId": "ORD-170747",\n      "bindIp": "192.0.2.2",\n      "port": 20005,\n      "username": "user_20005",\n      "password": "c0549d8275c5",\n      "http": "http://user_20005:c0549d8275c5@192.0.2.2:20005"\n    }, ...\n  ],\n  "balance": 100080\n}' },
+        request: '{\n  "type": "ipv4",\n  "quantity": 5,\n  "hours": 24,\n  "zone": "vn-hcm",\n  "autoRenew": false\n}',
+        response: '{\n  "order": {\n    "id": "ORD-170747",\n    "proxyIds": ["px-20005","px-20006","px-20007","px-20008","px-20009"],\n    "totalCost": 49920,\n    "expiresAt": "2026-05-16T03:19:30Z"\n  },\n  "proxies": [\n    {\n      "id": "px-20005",\n      "orderId": "ORD-170747",\n      "bindIp": "103.189.73.2",\n      "port": 20005,\n      "username": "user_20005",\n      "password": "c0549d8275c5",\n      "http": "http://user_20005:c0549d8275c5@103.189.73.2:20005"\n    }, ...\n  ],\n  "balance": 100080\n}' },
       { method: 'GET',  path: '/api/v1/user/zones', desc: 'List zone hợp lệ + số node online theo từng zone.', response: '[ { "id": "vn-hcm", "name": "Vietnam — HCM", "onlineNodes": 1 } ]' },
       { method: 'GET',  path: '/api/v1/user/pricing', desc: 'Đơn giá / giờ + volume tier discount.', response: '{ "currency": "VND", "ipv4": { "perHour": 416 }, "ipv6": { "perHour": 291 }, "tiers": [...] }' }
     ]
@@ -113,9 +113,9 @@ const groups = [
     intro: 'List + control mọi proxy bạn sở hữu. Group theo `orderId` để xử lý theo nhóm. Mọi endpoint per-proxy check ownership trước.',
     endpoints: [
       { method: 'GET', path: '/api/v1/user/proxies', desc: 'List toàn bộ proxy (kèm `orderId` để gom nhóm, `expiresAt`, `allowedSrcIps`).',
-        response: '[\n  {\n    "id": "px-20005",\n    "orderId": "ORD-170747",\n    "type": "IPv4",\n    "bindIp": "192.0.2.2",\n    "port": 20005,\n    "username": "user_20005",\n    "password": "...",\n    "http": "http://u:p@host:port",\n    "socks5": "socks5://u:p@host:port",\n    "status": "active",\n    "expiresAt": "2026-05-16T03:19:30Z",\n    "zone": "vn-hcm",\n    "allowedSrcIps": []\n  }\n]' },
+        response: '[\n  {\n    "id": "px-20005",\n    "orderId": "ORD-170747",\n    "type": "IPv4",\n    "bindIp": "103.189.73.2",\n    "port": 20005,\n    "username": "user_20005",\n    "password": "...",\n    "http": "http://u:p@host:port",\n    "socks5": "socks5://u:p@host:port",\n    "status": "active",\n    "expiresAt": "2026-05-16T03:19:30Z",\n    "zone": "vn-hcm",\n    "allowedSrcIps": []\n  }\n]' },
       { method: 'GET', path: '/api/v1/user/proxies/export?format=txt', desc: 'Export tất cả proxy ra file (format: txt | csv | json).',
-        response: '192.0.2.2:20005:user_20005:c054...\n192.0.2.3:20006:user_20006:959a...' },
+        response: '103.189.73.2:20005:user_20005:c054...\n103.189.73.3:20006:user_20006:959a...' },
       { method: 'POST', path: '/api/v1/user/proxies/check-bulk', desc: 'Check live N proxy song song. Limit 100 ids/lượt.',
         request: '{ "ids": ["px-20005","px-20006","px-20007"] }',
         response: '{\n  "total": 3,\n  "ok": 3,\n  "results": [\n    { "id": "px-20005", "ok": true, "latencyMs": 290 },\n    { "id": "px-20006", "ok": true, "latencyMs": 313 },\n    { "id": "px-20007", "ok": true, "latencyMs": 303 }\n  ]\n}' },

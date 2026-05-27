@@ -111,7 +111,6 @@ export async function adminForcePasswordReset(userId) { return apiFetch(`/api/ad
 export async function adminUpdateUserNotes(userId, body) { return apiFetch(`/api/admin/users/${userId}/notes`, { method: 'PATCH', body }) }
 export async function adminEnforce2FA(userId, enforce) { return apiFetch(`/api/admin/users/${userId}/enforce-2fa`, { method: 'POST', body: { enforce } }) }
 export async function adminDeleteUser(userId, { force = false } = {}) { return apiFetch(`/api/admin/users/${userId}${force ? '?force=1' : ''}`, { method: 'DELETE' }) }
-export async function adminCouponAnalytics(code) { return apiFetch(`/api/admin/coupons/${encodeURIComponent(code)}/analytics`) }
 export async function adminEmailPreview(key, sample) { return apiFetch('/api/admin/email-templates/preview', { method: 'POST', body: { key, sample } }) }
 export async function adminSystemStatus() { return apiFetch('/api/admin/system/status') }
 export async function adminAnalyticsHeatmap() { return apiFetch('/api/admin/analytics/heatmap') }

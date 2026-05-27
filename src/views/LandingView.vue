@@ -214,7 +214,7 @@ const useCases = computed(() => ([
               <rect width="200" height="88" rx="8" class="sub sub-green"/>
               <text x="14" y="22" class="sub-title">Billing</text>
               <text x="14" y="42" class="sub-line">Stripe + PayPal · wallet</text>
-              <text x="14" y="58" class="sub-line">auto-renew · coupon · tier</text>
+              <text x="14" y="58" class="sub-line">auto-renew · credit · tier</text>
               <text x="14" y="74" class="sub-line">audit trail per tx</text>
             </g>
             <g transform="translate(500, 78)">
@@ -357,7 +357,7 @@ const useCases = computed(() => ([
 ┌────────────────────────────────────────────────────────────┐
 │  Control plane (Node.js 22 monolith, AES-256-GCM at rest)  │
 │  - auth + scrypt password + TOTP                           │
-│  - billing (wallet, auto-renew, coupon, tier)              │
+│  - billing (wallet, auto-renew, credit, tier)              │
 │  - admin & customer REST API + webhook                     │
 │  - PKI (node-forge), SQLite (audit, billing_tx)            │
 └────────────────────────────────────────────────────────────┘</code></pre>

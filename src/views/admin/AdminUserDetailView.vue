@@ -84,6 +84,7 @@ onMounted(refresh)
         <div><span>Name</span><strong>{{ detail.account.name }}</strong></div>
         <div><span>Role</span><strong>{{ detail.account.role }}</strong></div>
         <div><span>Balance</span><strong>{{ Number(detail.balance).toLocaleString() }}</strong></div>
+        <div v-if="detail.creditGrants?.length"><span>Free credit</span><strong style="color:var(--green)">{{ detail.creditGrants.reduce((s,g)=>s+Number(g.remaining||0),0).toLocaleString() }} <small style="color:var(--muted); font-weight:400">{{ detail.creditGrants.map(g => g.group.toUpperCase()+' '+Number(g.remaining).toLocaleString()+(g.expiresAt?(' →'+g.expiresAt):'')).join(' · ') }}</small></strong></div>
         <div><span>2FA</span><strong>{{ detail.account.totpEnabled ? 'enabled' : 'disabled' }}<span v-if="detail.account.require2FA" style="margin-left:6px; color:#f59e0b">(enforced)</span></strong></div>
         <div><span>Email verified</span><strong :style="detail.account.emailVerified ? 'color:#15803d' : 'color:#b91c1c'">{{ detail.account.emailVerified ? 'yes' : 'no' }}</strong></div>
         <div><span>Status</span><strong :style="detail.account.suspended ? 'color:#b91c1c' : ''">{{ detail.account.suspended ? 'SUSPENDED' : 'active' }}</strong></div>

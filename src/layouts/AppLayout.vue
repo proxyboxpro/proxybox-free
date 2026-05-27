@@ -45,7 +45,6 @@ const navGroups = [
   ] },
   { id: 'billing', labelKey: 'nav.billing', items: [
     { name: 'admin-pricing',       labelKey: 'page.pricing',      icon: DollarSign },
-    { name: 'admin-coupons',       labelKey: 'page.coupons',      icon: Ticket },
     { name: 'admin-credit-codes',  labelKey: 'page.credit-codes', icon: Gift },
     { name: 'admin-revenue',       labelKey: 'page.revenue',      icon: Wallet },
     { name: 'admin-payment',       labelKey: 'page.payment',      icon: CreditCard }

@@ -25,6 +25,7 @@ const promoCode = ref('')
 const promoInfo = ref(null)   // validate result: { amount, currency, productGroup, validUntil, redeemable, expired, already, full }
 const promoBusy = ref(false)
 const promoErr = ref('')
+const grants = ref([])   // active scoped free-credit grants
 
 async function refresh() {
   err.value = ''
@@ -34,6 +35,7 @@ async function refresh() {
     txs.value = r.items || []
     pricing.value = await apiFetch('/api/v1/user/pricing')
     orders.value = await apiFetch('/api/v1/user/orders')
+    grants.value = await apiFetch('/api/v1/user/credit-grants').catch(() => [])
   } catch (e) { err.value = e.message }
 }
 function promoGroupLabel(g) {
@@ -240,6 +242,21 @@ onMounted(async () => {
           <button class="primary-action" type="button" :disabled="promoBusy || !promoInfo.redeemable" @click="redeemPromo" style="margin-top:12px; width:100%">
             <Gift :size="15" /> {{ promoInfo.expired ? t('cust.billing.promoExpired') : promoInfo.already ? t('cust.billing.promoAlready') : promoInfo.full ? t('cust.billing.promoFull') : t('cust.billing.promoRedeem') }}
           </button>
+        </div>
+      </section>
+
+      <!-- Active scoped free credit -->
+      <section class="surface" v-if="grants.length" style="padding:18px">
+        <h2 style="margin:0 0 10px; color:var(--text); font-size:15px"><Gift :size="13" style="vertical-align:-2px; color:var(--green)" /> {{ t('cust.billing.grantsTitle') }}</h2>
+        <div class="data-table">
+          <div class="table-head" style="grid-template-columns: 1fr 1fr 1fr">
+            <span>{{ t('cust.billing.promoGroup') }}</span><span>{{ t('cust.billing.promoValue') }}</span><span>{{ t('cust.billing.promoExpiry') }}</span>
+          </div>
+          <div v-for="(g, i) in grants" :key="i" class="table-row" style="grid-template-columns: 1fr 1fr 1fr">
+            <span><span class="tag-soft">{{ promoGroupLabel(g.group) }}</span></span>
+            <span class="cell-mono" style="color:var(--green)">{{ Number(g.remaining).toLocaleString() }} {{ g.currency }}</span>
+            <span class="cell-mono">{{ g.expiresAt || t('cust.billing.promoNoExpiry') }}</span>
+          </div>
         </div>
       </section>
 

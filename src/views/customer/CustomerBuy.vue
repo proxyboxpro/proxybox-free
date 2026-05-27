@@ -81,6 +81,7 @@ async function placeFreeOrder() {
 const pricing = ref(null)   // { currency, ipv4:{perHour}, ipv6:{perHour}, minHours, maxHours, tiers:[{min,discount}] }
 const zones = ref([])       // [{ id, name, flag, timezone, onlineNodes }]
 const account = ref(null)
+const grants = ref([])   // active scoped free-credit grants for this user
 const busy = ref(false)
 const err = ref('')
 const flash = ref('')
@@ -91,7 +92,6 @@ const form = ref({
   rotate: false,         // only meaningful when type === 'ipv6'
   hours: 24,
   quantity: 1,
-  coupon: '',
   autoRenew: false
 })
 
@@ -110,6 +110,7 @@ async function refresh() {
     pricing.value = await apiFetch('/api/v1/user/pricing')
     zones.value = await apiFetch('/api/v1/user/zones').catch(() => [])
     account.value = await apiFetch('/api/v1/user/account')
+    grants.value = await apiFetch('/api/v1/user/credit-grants').catch(() => [])
     // clamp hours to backend min/max once pricing loads
     if (pricing.value) {
       form.value.hours = Math.min(Math.max(form.value.hours, pricing.value.minHours || 1), pricing.value.maxHours || 8760)
@@ -199,7 +200,13 @@ const tierDiscount = computed(() => {
 const discountAmount = computed(() => Math.round(base.value * tierDiscount.value))
 const total = computed(() => Math.max(0, Math.round(base.value - discountAmount.value)))
 const balance = computed(() => Number(account.value?.balance || 0))
-const canAfford = computed(() => balance.value >= total.value)
+// Scoped free-credit applicable to the selected product type (group match or 'all').
+const applicableCredit = computed(() => grants.value
+  .filter((g) => g.group === 'all' || g.group === form.value.type)
+  .reduce((s, g) => s + Number(g.remaining || 0), 0))
+const creditApplied = computed(() => Math.min(total.value, applicableCredit.value))
+const walletNeeded = computed(() => Math.max(0, total.value - creditApplied.value))
+const canAfford = computed(() => balance.value >= walletNeeded.value)
 
 const selectedZoneInfo = computed(() => {
   if (!form.value.zone) return null
@@ -239,8 +246,7 @@ async function placeOrder() {
       hours: form.value.hours,
       zone: safeZone,
       rotate: form.value.type === 'ipv6' && form.value.rotate,
-      autoRenew: form.value.autoRenew,
-      coupon: form.value.coupon
+      autoRenew: form.value.autoRenew
     }
     const r = await apiFetch('/api/v1/user/orders', { method: 'POST', body })
     flash.value = t('cust.buy.success', { id: r.order?.id || '' })
@@ -571,13 +577,6 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
           </div>
         </div>
 
-        <!-- Coupon -->
-        <div style="margin-top:18px; max-width: 320px">
-          <label class="input-field">
-            <span>{{ t('cust.buy.coupon') }} <small style="color:var(--muted); font-weight:400">({{ t('cust.buy.optional') }})</small></span>
-            <input v-model="form.coupon" placeholder="LAUNCH10" />
-          </label>
-        </div>
 
         <div style="margin-top:14px; padding:10px 14px; border: 1px dashed var(--pxl-bd); border-radius:10px; display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px">
           <Sparkles :size="14" style="color: var(--pxl)" />
@@ -638,6 +637,8 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
           <span class="lbl">{{ t('cust.buy.total') }}</span>
           <span class="val cell-mono">{{ fmtMoney(total) }} {{ currencyCode }}</span>
         </div>
+        <div class="sum-kv" v-if="creditApplied > 0"><span class="k">{{ t('cust.buy.creditApplied') }} <small style="color:#4ade80">({{ form.type.toUpperCase() }})</small></span><span class="v cell-mono" style="color:#4ade80">-{{ fmtMoney(creditApplied) }}</span></div>
+        <div class="sum-kv" v-if="creditApplied > 0" style="font-weight:600"><span class="k">{{ t('cust.buy.walletNeeded') }}</span><span class="v cell-mono">{{ fmtMoney(walletNeeded) }} {{ currencyCode }}</span></div>
         <div class="sum-kv" style="font-size:12px"><span class="k">{{ t('cust.side.balance') }}</span><span class="v" :style="{ color: canAfford ? '#4ade80' : '#f87171' }">{{ fmtMoney(balance) }} {{ currencyCode }}</span></div>
 
         <button class="detail-action" type="button" :disabled="busy || !canAfford || !form.zone" @click="placeOrder">
