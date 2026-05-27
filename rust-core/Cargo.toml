@@ -1,6 +1,6 @@
 [package]
 name = "proxybox-core"
-version = "1.4.10"
+version = "1.4.11"
 edition = "2021"
 description = "ProxyBox high-performance proxy engine (Rust + Tokio)"
 

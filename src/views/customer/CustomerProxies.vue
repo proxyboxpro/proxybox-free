@@ -1456,11 +1456,11 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
                   </button>
                 </template>
               </span>
-              <span class="cell-mono">
+              <span class="cell-mono tap-copy" @click="copyText((p.ip || p.bindIp) + ':' + portOf(p), 'Endpoint', $event)">
                 <span class="ip-line">{{ p.ip || p.bindIp }}:{{ portOf(p) }}</span>
                 <small v-if="p.type === 'IPv6' && p.bindIp && p.bindIp !== p.ip" class="egress-line" :title="p.bindIp">↳ {{ p.bindIp }}</small>
               </span>
-              <span class="cell-mono creds">{{ p.username }}:{{ p.password }}</span>
+              <span class="cell-mono creds tap-copy" @click="copyText(p.username + ':' + p.password, 'user:pass', $event)">{{ p.username }}:{{ p.password }}</span>
               <span class="gt-row-status">
                 <span :class="['status-pill', p.status === 'active' ? 'active' : p.status === 'expired' ? 'expired' : 'pending']">{{ p.status }}</span>
               </span>
@@ -3141,5 +3141,83 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
   .trojan-qr-wrap { align-items: flex-start; }
   .proto-row { flex-wrap: wrap; }
   .proto-tag { min-width: 60px; }
+}
+
+/* Tap the endpoint / credentials to copy (handy on mobile, harmless on desktop) */
+.tap-copy { cursor: pointer; }
+.tap-copy:active { opacity: 0.6; }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   MOBILE — compact, app-like proxy cards.
+   Desktop packs 8 columns into one row; on a phone that collapsed into 8
+   full-width stacked lines per proxy (very cluttered). Here each proxy is a
+   tight card: endpoint is the hero, credentials beneath, a status pill in the
+   corner, and a single full-width action bar. #index + sparkline are dropped
+   as noise. Last in the file so it wins the cascade over the desktop grid.
+   ────────────────────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .gt-row {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "cbx label    status"
+      "cbx endpoint endpoint"
+      "cbx creds    creds"
+      "act act      act";
+    gap: 2px 10px;
+    padding: 10px 12px 8px;
+    align-items: center;
+    min-height: 0;
+    margin-bottom: 8px;
+  }
+  /* Drop noise on a small screen */
+  .gt-row > .pc-idx,
+  .gt-row > .spark { display: none !important; }
+
+  .gt-row > .cbx { grid-area: cbx; align-self: center; margin: 0; }
+  .gt-row > .gt-row-label { grid-area: label; padding: 0; min-width: 0; }
+  .gt-row > .gt-row-label input { width: 100%; }
+  .gt-row > .cell-mono:not(.creds) { grid-area: endpoint; padding: 0; }
+  .gt-row > .cell-mono:not(.creds) .ip-line { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  .gt-row > .cell-mono.creds {
+    grid-area: creds; padding: 0; flex-direction: row;
+    font-size: 12px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  }
+  .gt-row > .gt-row-status { grid-area: status; justify-content: flex-end; padding: 0; }
+  .gt-row > .gt-row-actions { grid-area: act; }
+
+  /* Full-width action bar: Connect on its own line, secondary actions split below */
+  .gt-row-actions {
+    margin-top: 4px;
+    padding: 8px 0 0 !important;
+    border-top: 1px solid var(--border-soft);
+    display: flex; gap: 6px; flex-wrap: wrap;
+    justify-content: stretch !important;
+  }
+  .gt-row-actions .row-act-btn {
+    flex: 1 1 0; min-width: 90px; justify-content: center;
+    height: 36px; padding: 0 10px !important;
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+  }
+  .gt-row-actions .row-act-btn.connect-btn {
+    flex-basis: 100%; order: -1;
+    background: var(--green-soft) !important; border-color: var(--green) !important;
+  }
+
+  /* Connect / detail view — stack cleanly, full-tap copy buttons */
+  .gt-row-connect { padding: 12px; }
+  .trojan-feature { flex-direction: column; align-items: stretch; gap: 12px; padding: 12px; }
+  .trojan-qr-wrap { align-items: center; }
+  .trojan-url { flex-direction: column; align-items: stretch; gap: 6px; }
+  .trojan-url .row-act-btn { justify-content: center; height: 34px; }
+  .proto-row { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px; }
+  .proto-tag { min-width: 52px; }
+  .proto-url { flex-basis: 100%; order: 3; }
+  .proto-row .row-act-btn { flex: 1 1 auto; justify-content: center; height: 32px; }
+  .session-head > span { min-width: 0; }
+  .byip-row { grid-template-columns: 1fr auto; gap: 4px 10px; }
+  .byip-row .byip-bar { grid-column: 1 / -1; }
 }
 </style>
