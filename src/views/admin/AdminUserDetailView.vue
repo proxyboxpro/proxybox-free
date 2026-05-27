@@ -34,6 +34,14 @@ async function credit() {
   try { await apiFetch(`/api/admin/users/${route.params.userId}/credit`, { method: 'POST', body: { amount: Number(a), note } }); await refresh() }
   catch (e) { err.value = e.message }
 }
+async function giftCredit() {
+  const a = prompt('Tặng FREE CREDIT (khoá theo loại) — số tiền:', '50000')
+  if (!a || Number(a) <= 0) return
+  const group = (prompt('Nhóm sản phẩm: all / ipv4 / ipv6 / hub', 'ipv6') || 'all').toLowerCase()
+  const validUntil = prompt('Hết hạn (YYYY-MM-DD, trống = vô hạn):', '') || ''
+  try { await apiFetch(`/api/admin/users/${route.params.userId}/grant-credit`, { method: 'POST', body: { amount: Number(a), productGroup: group, validUntil } }); flash.value = 'Đã tặng free credit.'; await refresh() }
+  catch (e) { err.value = e.message }
+}
 async function revokeAllSessions() {
   if (!confirm('Revoke all active sessions for this user? They will be logged out everywhere.')) return
   try { const r = await adminRevokeUserSessions(route.params.userId); flash.value = `Revoked ${r.revoked} sessions`; await loadSessions() }
@@ -76,6 +84,7 @@ onMounted(refresh)
           <button v-if="!detail.account.suspended" class="ghost-button" type="button" @click="suspend('suspend')">Suspend</button>
           <button v-else class="ghost-button" type="button" @click="suspend('unsuspend')">Unsuspend</button>
           <button class="ghost-button" type="button" @click="credit">Credit/Debit</button>
+          <button class="ghost-button" type="button" @click="giftCredit">Tặng free credit</button>
           <button class="ghost-button" type="button" @click="forceReset">Force password reset</button>
           <button class="ghost-button" type="button" @click="toggle2FAEnforce">{{ detail.account.require2FA ? 'Disable 2FA enforce' : 'Enforce 2FA' }}</button>
         </div>

@@ -2569,6 +2569,23 @@ function commitScopedCredit(plan) {
     if (g) g.remaining = Math.max(0, Number(g.remaining) - p.take)
   }
 }
+// Re-credit a cancelled order's prorated free-credit share as a fresh grant
+// (same product group + original expiry). If that expiry has already passed the
+// grant is born expired = effectively forfeited, which is correct.
+function recreditGrant(order, amount) {
+  if (!(amount > 0) || !order.ownerId) return
+  if (!Array.isArray(config.creditGrants)) config.creditGrants = []
+  config.creditGrants.push({
+    id: `GR-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`,
+    userId: order.ownerId,
+    group: order.creditGroup || (String(order.type).toLowerCase() === 'ipv6' ? 'ipv6' : 'ipv4'),
+    amount, remaining: amount,
+    currency: (config.pricing?.currency || 'VND').toUpperCase(),
+    expiresAt: order.creditExpiresAt || '',
+    code: `refund-${order.id}`,
+    createdAt: new Date().toISOString()
+  })
+}
 
 // Append an audit entry. Writes to SQLite when available (fast indexed search)
 // and ALWAYS mirrors to audit.log (cheap rotation + backup-friendly). Best-effort.
@@ -6794,10 +6811,12 @@ async function handleApi(req, res, url) {
       const totalVal = Number(order.amount) || 0
       const walletShare = order.walletCharge != null ? Number(order.walletCharge) : totalVal
       const refundWallet = totalVal > 0 ? Math.round(refund * walletShare / totalVal) : 0
+      const creditRefund = totalVal > 0 ? Math.round(refund * (Number(order.creditApplied) || 0) / totalVal) : 0
       if (refundWallet > 0 && order.ownerId) recordBillingTx(order.ownerId, 'refund', refundWallet, `admin cancel ${order.id}`)
+      if (creditRefund > 0) recreditGrant(order, creditRefund)
       await Promise.all([saveConfig(), saveOrders()])
-      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id} refund=${refundWallet}` })
-      return sendJson(res, 200, { ok: true, refund: refundWallet })
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id} wallet+${refundWallet} credit+${creditRefund}` })
+      return sendJson(res, 200, { ok: true, refund: refundWallet, creditRefund })
     }
 
     // â”€â”€ admin: composite user detail â”€â”€
@@ -6954,6 +6973,64 @@ async function handleApi(req, res, url) {
         audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: '/api/admin/credit-codes', note: `create ${code} +${amount} ${cc.currency} group=${cc.productGroup}` })
         return sendJson(res, 201, cc)
       }
+    }
+    // Batch-generate N unique credit codes for a campaign
+    if (url.pathname === '/api/admin/credit-codes/batch' && req.method === 'POST') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      if (!config.creditCodes) config.creditCodes = []
+      const body = await readJson(req)
+      const count = Math.max(1, Math.min(500, Number(body.count) || 1))
+      const amount = Math.round(Number(body.amount) || 0)
+      if (amount <= 0) return sendJson(res, 400, { error: 'amount must be > 0' })
+      const group = CREDIT_GROUPS.includes(String(body.productGroup)) ? body.productGroup : 'all'
+      const prefix = (String(body.prefix || 'PROMO').toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 12)) || 'PROMO'
+      const made = []
+      for (let i = 0; i < count; i++) {
+        let code, tries = 0
+        do { code = `${prefix}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`; tries++ } while (config.creditCodes.find((c) => c.code === code) && tries < 6)
+        config.creditCodes.push({ code, amount, currency: (config.pricing?.currency || 'VND').toUpperCase(), productGroup: group, validUntil: typeof body.validUntil === 'string' ? body.validUntil : '', usageLimit: Math.max(1, Number(body.usageLimit) || 1), note: String(body.note || '').slice(0, 200), enabled: true, redeemedBy: [], createdAt: new Date().toISOString() })
+        made.push(code)
+      }
+      await saveConfig()
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `batch ${made.length} x ${amount} ${group}` })
+      return sendJson(res, 201, { created: made.length, codes: made })
+    }
+    // Export all credit codes as CSV
+    if (url.pathname === '/api/admin/credit-codes/export' && req.method === 'GET') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const rows = [['code', 'amount', 'currency', 'group', 'validUntil', 'usageLimit', 'redeemed', 'enabled']]
+      for (const c of (config.creditCodes || [])) rows.push([c.code, c.amount, c.currency, c.productGroup, c.validUntil || '', c.usageLimit || 0, (c.redeemedBy || []).length, c.enabled !== false])
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="credit-codes.csv"' })
+      return res.end(rows.map((r) => r.join(',')).join('\n'))
+    }
+    // Per-code usage analytics (redeemed count + granted/spent/remaining)
+    const ccAnalytics = url.pathname.match(/^\/api\/admin\/credit-codes\/([A-Z0-9_-]+)\/analytics$/)
+    if (ccAnalytics && req.method === 'GET') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const cc = (config.creditCodes || []).find((c) => c.code === ccAnalytics[1])
+      if (!cc) return sendJson(res, 404, { error: 'not found' })
+      const gs = (config.creditGrants || []).filter((g) => g.code === cc.code)
+      const granted = gs.reduce((s, g) => s + Number(g.amount || 0), 0)
+      const remaining = gs.reduce((s, g) => s + Number(g.remaining || 0), 0)
+      return sendJson(res, 200, { code: cc.code, amount: cc.amount, group: cc.productGroup, validUntil: cc.validUntil || '', usageLimit: cc.usageLimit || 0, redeemed: (cc.redeemedBy || []).length, granted, spent: granted - remaining, remaining })
+    }
+    // Gift scoped credit directly to a user (no code) — support / compensation
+    const grantCreditMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/grant-credit$/)
+    if (grantCreditMatch && req.method === 'POST') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const target = config.users.find((u) => u.id === grantCreditMatch[1])
+      if (!target) return sendJson(res, 404, { error: 'user not found' })
+      const body = await readJson(req)
+      const amount = Math.round(Number(body.amount) || 0)
+      if (amount <= 0) return sendJson(res, 400, { error: 'amount must be > 0' })
+      const group = CREDIT_GROUPS.includes(String(body.productGroup)) ? body.productGroup : 'all'
+      if (!Array.isArray(config.creditGrants)) config.creditGrants = []
+      const grant = { id: `GR-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`, userId: target.id, group, amount, remaining: amount, currency: (config.pricing?.currency || 'VND').toUpperCase(), expiresAt: typeof body.validUntil === 'string' ? body.validUntil : '', code: 'admin-gift', createdAt: new Date().toISOString() }
+      config.creditGrants.push(grant)
+      await saveConfig()
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `gift ${amount} ${group} to ${target.email} exp=${grant.expiresAt || 'never'}` })
+      pushNotification(target.id, { type: 'billing', severity: 'success', text: `Bạn được tặng ${amount.toLocaleString()} ${grant.currency} credit (${group === 'all' ? 'mọi sản phẩm' : group.toUpperCase()})${grant.expiresAt ? `, hạn ${grant.expiresAt}` : ''}`, link: '/billing' })
+      return sendJson(res, 201, grant)
     }
     const creditCodeMatch = url.pathname.match(/^\/api\/admin\/credit-codes\/([A-Z0-9_-]+)$/)
     if (creditCodeMatch) {
@@ -9101,12 +9178,19 @@ async function handleUserV1(req, res, url) {
       if (targetNodeId === 'local') await startProxy(proxy)
       created.push({ ...publicProxy(proxy), username: proxy.username, password: proxy.password, expiresAt: proxy.expiresAt })
     }
+    // Capture the earliest expiry among consumed grants so a later cancel can
+    // re-credit the credit portion with the right (non-extended) expiry.
+    const creditExpiresAt = credit.plan.length
+      ? (credit.plan.map((p) => config.creditGrants.find((g) => g.id === p.id)?.expiresAt || '').filter(Boolean).sort()[0] || '')
+      : ''
     const order = {
       id: orderId,
       ownerId: user.id,
       item: `${type} x ${quantity} · ${hours}h${zone ? ' · ' + zone : ''}`,
       amount: totalCost,
       creditApplied: credit.applied,
+      creditGroup,
+      creditExpiresAt,
       walletCharge,
       hours,
       zone: zone || '',
@@ -9130,7 +9214,7 @@ async function handleUserV1(req, res, url) {
     sendMail({
       to: user.email,
       subject: `ProxyBox: ${quantity} ${type} proxy provisioned (Order ${orderId})`,
-      html: `<h2>Your order is ready</h2><p>Order <code>${orderId}</code>: <strong>${quantity} Ã— ${type}</strong> for ${hours} hours.</p><p>Charged: <strong>${totalCost.toLocaleString()}</strong> ${(config.pricing.currency || 'vnd').toUpperCase()}</p><p>Proxies:</p><pre>${created.map((p) => `${customerFacingHost(p)}:${p.port}:${p.username}:${p.password}`).join('\n')}</pre><p>Invoice: <a href="/api/v1/user/orders/${orderId}/invoice">download</a></p>`
+      html: `<h2>Your order is ready</h2><p>Order <code>${orderId}</code>: <strong>${quantity} Ã— ${type}</strong> for ${hours} hours.</p><p>Total: <strong>${totalCost.toLocaleString()}</strong> ${(config.pricing.currency || 'vnd').toUpperCase()}${credit.applied ? ` — free credit -${credit.applied.toLocaleString()}, charged from wallet ${walletCharge.toLocaleString()}` : ''}</p><p>Proxies:</p><pre>${created.map((p) => `${customerFacingHost(p)}:${p.port}:${p.username}:${p.password}`).join('\n')}</pre><p>Invoice: <a href="/api/v1/user/orders/${orderId}/invoice">download</a></p>`
     }).catch(() => {})
     if (user.webhookUrl) sendCustomerWebhook(user.webhookUrl, { event: 'order.created', orderId, amount: totalCost, quantity, type, hours }).catch(() => {})
     return sendJson(res, 201, { order, proxies: created, balance: newBalance })
@@ -9172,16 +9256,18 @@ async function handleUserV1(req, res, url) {
       if ((p.nodeId || 'local') === 'local') stopProxy(p.id)
     }
     order.status = 'cancelled'
-    // Refund only the WALLET-paid share — never refund the free-credit portion to the
-    // wallet, or scoped/expiring promo credit would become withdrawable cash. Old
-    // orders (no walletCharge field) fall back to full amount = unchanged behaviour.
+    // Refund the WALLET-paid share to the wallet; RE-CREDIT the prorated free-credit
+    // share as a fresh grant. Never let promo credit become withdrawable wallet cash.
+    // Old orders (no walletCharge field) fall back to full amount = unchanged.
     const totalVal = Number(order.amount) || 0
     const walletShare = order.walletCharge != null ? Number(order.walletCharge) : totalVal
     const refundWallet = totalVal > 0 ? Math.round(refund * walletShare / totalVal) : 0
+    const creditRefund = totalVal > 0 ? Math.round(refund * (Number(order.creditApplied) || 0) / totalVal) : 0
     if (refundWallet > 0) recordBillingTx(user.id, 'refund', refundWallet, `cancel ${order.id} (${members.length} proxies, wallet share)`)
+    if (creditRefund > 0) recreditGrant(order, creditRefund)
     await Promise.all([saveConfig(), saveOrders()])
-    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id}, refund=${refundWallet} (credit not refunded)` })
-    return sendJson(res, 200, { ok: true, refund: refundWallet, balance: userBalance(user.id) })
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: url.pathname, note: `cancel ${order.id}, wallet+${refundWallet} credit+${creditRefund}` })
+    return sendJson(res, 200, { ok: true, refund: refundWallet, creditRefund, balance: userBalance(user.id) })
   }
 
   // HTML invoice â€” printable receipt for an order. Customer can save as PDF via browser print.
@@ -11792,13 +11878,18 @@ function sweepExpired() {
     if (perHour <= 0) continue
     const renewHours = Number(proxy.renewHours || 24) // default = renew 24h
     const cost = perHour * renewHours
+    // Spend matching scoped free-credit first; wallet covers the remainder.
+    const rgrp = String(proxy.type).toLowerCase() === 'ipv6' ? 'ipv6' : 'ipv4'
+    const rc = previewScopedCredit(proxy.ownerId, rgrp, cost)
+    const walletCost = cost - rc.applied
     const balance = userBalance(proxy.ownerId)
-    if (balance >= cost) {
+    if (balance >= walletCost) {
       const t = addHours(renewHours)
       proxy.expires = t.expires
       proxy.expiresAt = t.expiresAt
       proxy.status = 'active'
-      recordBillingTx(proxy.ownerId, 'renewal', cost, `auto-renew ${proxy.id} +${renewHours}h`)
+      commitScopedCredit(rc.plan)
+      if (walletCost > 0) recordBillingTx(proxy.ownerId, 'renewal', walletCost, `auto-renew ${proxy.id} +${renewHours}h${rc.applied ? ` credit=-${rc.applied}` : ''}`)
       renewed += 1
       changed = true
     }
@@ -11829,6 +11920,14 @@ function sweepExpired() {
   if (renewed > 0) pushAlert('proxy:renewed', `${renewed} proxy auto-renewed`, 'info')
   if (expiredCount > 0) pushAlert('proxy:expired', `${expiredCount} proxy expired`, 'warn')
   if (expiringSoon > 0) pushAlert('proxy:expiring', `${expiringSoon} proxy expiring within 6h`, 'info')
+  // Reap credit grants that are spent (remaining 0), expired, or owned by a
+  // deleted user, so config.creditGrants doesn't grow unbounded.
+  if (Array.isArray(config.creditGrants) && config.creditGrants.length) {
+    const today = new Date().toISOString().slice(0, 10)
+    const kept = config.creditGrants.filter((g) =>
+      Number(g.remaining) > 0 && (!g.expiresAt || g.expiresAt >= today) && config.users.some((u) => u.id === g.userId))
+    if (kept.length !== config.creditGrants.length) { config.creditGrants = kept; changed = true }
+  }
   if (changed) saveConfig().catch((error) => console.error(`[api] saveConfig failed: ${error.message}`))
 }
 
