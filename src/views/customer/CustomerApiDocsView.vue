@@ -211,8 +211,8 @@ onMounted(refresh)
       <div class="key-left">
         <span class="ico"><KeyRound :size="18" /></span>
         <div>
-          <strong>Token cá nhân <small class="badge">duy nhất · tất cả trong một</small></strong>
-          <p class="muted">Dùng <strong style="color:var(--green)">cùng 1 giá trị</strong> cho REST API (<code>X-Customer-Key</code>), SDK (<code>Authorization: Bearer</code>) và cài agent BYON. Tự tạo khi đăng ký, rotate bất cứ lúc nào.</p>
+          <strong>{{ t('cust.apidocs.tokenTitle') }} <small class="badge">{{ t('cust.apidocs.tokenBadge') }}</small></strong>
+          <p class="muted" v-html="t('cust.apidocs.tokenDesc')"></p>
         </div>
       </div>
       <div class="key-right">
@@ -289,12 +289,12 @@ onMounted(refresh)
               <!-- Interactive try-it panel -->
               <div v-if="tryState[tryKeyOf(g.id, i)]?.open" class="try-panel">
                 <div class="try-head">
-                  <Send :size="13" /> <strong>Test API tại chỗ</strong>
-                  <span class="muted" style="margin-left:auto; font-size:11px">Edit path để fill <code>:id</code> hoặc query, sau đó Run.</span>
+                  <Send :size="13" /> <strong>{{ t('cust.apidocs.tryTitle') }}</strong>
+                  <span class="muted" style="margin-left:auto; font-size:11px" v-html="t('cust.apidocs.tryHint')"></span>
                 </div>
                 <div class="try-row">
                   <label>Auth</label>
-                  <span class="muted-sm">Sẽ gửi <code>X-Customer-Key</code> với token cá nhân của bạn ở trên.</span>
+                  <span class="muted-sm" v-html="t('cust.apidocs.willSend')"></span>
                 </div>
                 <div class="try-row">
                   <label>URL</label>

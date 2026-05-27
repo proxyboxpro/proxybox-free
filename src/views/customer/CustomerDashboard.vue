@@ -49,7 +49,7 @@ function fmtCountdown(expiresAt) {
   if (!expiresAt) return { text: '—', tier: 'muted' }
   const target = new Date(expiresAt).getTime()
   const diff = target - nowMs.value
-  if (diff <= 0) return { text: 'Đã hết hạn', tier: 'expired' }
+  if (diff <= 0) return { text: t('cust.dash.expired'), tier: 'expired' }
   const d = Math.floor(diff / 86400000)
   const h = Math.floor((diff % 86400000) / 3600000)
   const m = Math.floor((diff % 3600000) / 60000)
@@ -99,8 +99,8 @@ const products = computed(() => {
   return [
     { kind: 'proxy', type: 'ipv4', color: 'blue',  icon: Server, labelKey: 'cust.buy.t.ipv4', subKey: 'cust.buy.t.ipv4Sub', descKey: 'cust.buy.t.ipv4Desc', perHour: Number(pricing.value.ipv4?.perHour || 0) },
     { kind: 'proxy', type: 'ipv6', color: 'green', icon: Globe,  labelKey: 'cust.buy.t.ipv6', subKey: 'cust.buy.t.ipv6Sub', descKey: 'cust.buy.t.ipv6Desc', perHour: Number(pricing.value.ipv6?.perHour || 0) },
-    { kind: 'hub',   type: 'hub',  color: 'cyan',  icon: Cloud,  label: 'Hub Proxy',          sub: 'VPS riêng · IPv4 / IPv6', desc: 'Thuê VPS chạy ProxyBox agent — trả theo giờ',  cta: 'Xem Hub →' },
-    { kind: 'tool',  type: 'byon', color: 'amber', icon: Wrench, label: 'Tạo proxy từ node',  sub: 'Miễn phí trên VM của bạn', desc: 'Cài agent rồi tạo proxy không tốn phí (BYON)', cta: 'Tới /my-nodes' }
+    { kind: 'hub',   type: 'hub',  color: 'cyan',  icon: Cloud,  labelKey: 'cust.dash.hubLabel',  subKey: 'cust.dash.hubSub',  descKey: 'cust.dash.hubDesc',  ctaKey: 'cust.dash.hubCta' },
+    { kind: 'tool',  type: 'byon', color: 'amber', icon: Wrench, labelKey: 'cust.dash.byonLabel', subKey: 'cust.dash.byonSub', descKey: 'cust.dash.byonDesc', ctaKey: 'cust.dash.byonCta' }
   ]
 })
 
@@ -289,16 +289,16 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
           <small>{{ currencyCode }} / {{ t('cust.buy.hour') }}</small>
         </template>
         <template v-else-if="p.kind === 'hub'">
-          <strong style="color: #22d3ee">VPS riêng</strong>
+          <strong style="color: #22d3ee">{{ t('cust.dash.vpsOwn') }}</strong>
           <small>billed per hour</small>
         </template>
         <template v-else>
           <strong style="color: #fbbf24">FREE</strong>
-          <small>node của bạn · 0₫</small>
+          <small>{{ t('cust.dash.nodeYours') }}</small>
         </template>
       </div>
       <button class="buy-btn" type="button" @click.stop="goBuy(p)">
-        {{ p.cta || t('cust.product.buy') }}
+        {{ p.ctaKey ? t(p.ctaKey) : (p.cta || t('cust.product.buy')) }}
       </button>
     </div>
     <p v-if="!products.length" class="empty-text" style="grid-column: 1 / -1; color: var(--muted)">{{ t('common.loading') }}</p>
@@ -307,18 +307,18 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
   <!-- ── BYON: token + install commands row (compact, persistent) ── -->
   <section class="byon-row surface">
     <header>
-      <span><Cpu :size="14" style="vertical-align:-2px; color: var(--green)" /> <strong>ProxyBox</strong> <small>· cài agent miễn phí trên VM của bạn</small></span>
-      <router-link to="/my-nodes" class="ghost-button" style="margin-left:auto"><Server :size="13" /> Quản lý nodes</router-link>
+      <span><Cpu :size="14" style="vertical-align:-2px; color: var(--green)" /> <strong>ProxyBox</strong> <small>{{ t('cust.dash.agentFree') }}</small></span>
+      <router-link to="/my-nodes" class="ghost-button" style="margin-left:auto"><Server :size="13" /> {{ t('cust.dash.manageNodes') }}</router-link>
     </header>
     <div v-if="!fleetToken" class="byon-empty">
-      <p>Tài khoản đã có token sẵn — bấm để hiển thị lệnh cài agent.</p>
-      <button class="primary-action small" type="button" @click="generateFleetToken"><Plus :size="13" /> Hiển thị token</button>
+      <p>{{ t('cust.dash.tokenReady') }}</p>
+      <button class="primary-action small" type="button" @click="generateFleetToken"><Plus :size="13" /> {{ t('cust.dash.showToken') }}</button>
     </div>
     <template v-else>
       <div class="tok-line">
         <KeyRound :size="13" style="color: var(--muted)" />
         <code class="tok-val" :class="{ blurred: !tokenReveal }">{{ fleetToken.token }}</code>
-        <button class="ghost-button mini" type="button" @click="tokenReveal = !tokenReveal">{{ tokenReveal ? 'Ẩn' : 'Hiện' }}</button>
+        <button class="ghost-button mini" type="button" @click="tokenReveal = !tokenReveal">{{ tokenReveal ? t('cust.dash.hide') : t('cust.dash.show') }}</button>
         <button class="ghost-button mini" type="button" :disabled="!tokenReveal" @click="copyCmd(fleetToken.token, 'tok')"><Copy :size="11" /> {{ copiedCmd === 'tok' ? '✓' : 'Copy' }}</button>
       </div>
       <div class="cmd-grid">
@@ -341,15 +341,13 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
           <code>{{ fleetToken.installWindows }}</code>
         </div>
         <div class="cmd-card danger">
-          <header><strong>🗑 Gỡ cài đặt</strong>
+          <header><strong>🗑 {{ t('cust.dash.uninstall') }}</strong>
             <button class="ghost-button mini" type="button" @click="copyCmd(fleetToken.uninstall, 'un')"><Copy :size="11" /> {{ copiedCmd === 'un' ? '✓' : 'Copy' }}</button>
           </header>
           <code>{{ fleetToken.uninstall }}</code>
         </div>
       </div>
-      <p class="byon-hint">
-        Cùng <strong>1 token</strong> cho API + agent + SDK. Format <code>usr_…</code> nhận diện được. IPv6 /48: set <code>PROXYHUB_IPV6_PREFIX_LEN=48</code> trước khi paste.
-      </p>
+      <p class="byon-hint" v-html="t('cust.dash.tokenHint')"></p>
     </template>
   </section>
 
@@ -394,7 +392,7 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
             ⏱ {{ fmtCountdown(g.expiresAt).text }}
           </small>
         </span>
-        <span><span :class="['tag-soft', groupStatus(g)]">{{ ({ active: 'active', expiring: 'sắp hết hạn', expired: 'đã hết hạn', mixed: 'hỗn hợp' })[groupStatus(g)] || groupStatus(g) }}</span></span>
+        <span><span :class="['tag-soft', groupStatus(g)]">{{ ({ active: 'active', expiring: t('cust.dash.stExpiring'), expired: t('cust.dash.stExpired'), mixed: t('cust.dash.stMixed') })[groupStatus(g)] || groupStatus(g) }}</span></span>
         <button class="row-action" type="button" @click="g.orderId ? router.push({ name: 'proxies', query: { order: g.orderId } }) : router.push({ name: 'proxies' })">{{ t('cust.col.detail') }}</button>
       </div>
     </template>
