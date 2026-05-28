@@ -250,10 +250,28 @@ struct IfaceAddr {
     cidr: String,
 }
 
+// Per-proxy runtime handle. `stop` is a tokio watch sender — send(true) is a
+// reliable broadcast that all currently-attached AND future receivers will
+// see (unlike Notify::notify_waiters which only wakes already-pending
+// .notified() futures and can drop the signal between accept-loop
+// iterations — that race was the source of 'stale bindIp' staleness on
+// rotation: the new listener got spawned via REUSEPORT alongside the old
+// one, kernel hash-balanced between them, and some traffic kept using the
+// old/dead egress IP). task / tls_task are aborted as belt-and-suspenders.
 struct ProxyHandle {
     #[allow(dead_code)] cfg: ProxyCfg,
-    stop: Arc<Notify>,
-    #[allow(dead_code)] task: JoinHandle<()>,
+    stop: tokio::sync::watch::Sender<bool>,
+    task: JoinHandle<()>,
+    tls_task: Option<JoinHandle<()>>,
+}
+
+// Force-aborts a Vec<AbortHandle> when dropped. Used by serve_proxy/_tls to
+// guarantee inner accept-loop workers stop when the outer task is aborted —
+// dropping a JoinHandle merely detaches, so without this the workers (and
+// their REUSEPORT listener sockets) would keep running.
+struct AbortOnDrop(Vec<tokio::task::AbortHandle>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) { for h in self.0.drain(..) { h.abort(); } }
 }
 
 #[derive(Default, Clone)]
@@ -1686,7 +1704,7 @@ async fn serve_unified_tls(
     }
 }
 
-async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: bool, stop: Arc<Notify>, stats: Arc<ProxyStats>) {
+async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: bool, stop: tokio::sync::watch::Receiver<bool>, stats: Arc<ProxyStats>) {
     let host: IpAddr = cfg.listen_host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let addr = SocketAddr::new(host, cfg.port);
     // For IPv6 proxies the bindIp the master assigns is a random address from
@@ -1730,7 +1748,7 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
     let cfg_arc = Arc::new(cfg);
     let mut handles = Vec::with_capacity(listeners.len());
     for listener in listeners {
-        let stop = stop.clone();
+        let mut stop = stop.clone();
         let cfg_w = cfg_arc.clone();
         let stats_w = stats.clone();
         let locks_w = locks.clone();
@@ -1744,11 +1762,22 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
                         }
                         Err(e) => { eprintln!("[proxy:{}] accept: {e}", cfg_w.id); break; }
                     },
-                    _ = stop.notified() => { break; }
+                    // watch::Receiver::changed() reliably resolves once the value
+                    // moves off its last-seen mark (initial false → send(true)) —
+                    // unlike Notify::notify_waiters there's no "no current waiter
+                    // → signal dropped" race. Listener drops on break → socket
+                    // closes → kernel removes it from the REUSEPORT group.
+                    res = stop.changed() => { if res.is_err() || *stop.borrow() { break; } }
                 }
             }
         }));
     }
+    // AbortGuard: when the outer serve_proxy task is aborted, drop this guard
+    // and force-abort every inner accept worker. Without this, an aborted
+    // outer would detach the inner JoinHandles (drop = detach, not abort) and
+    // the listeners would keep accepting on REUSEPORT alongside the new task.
+    let abort_handles: Vec<tokio::task::AbortHandle> = handles.iter().map(|h| h.abort_handle()).collect();
+    let _guard = AbortOnDrop(abort_handles);
     for h in handles { let _ = h.await; }
     eprintln!("[proxy:{}] stopped", cfg_arc.id);
 }
@@ -1924,7 +1953,7 @@ fn trojan_hash(password: &str) -> String {
 
 // Serve the TLS-wrap listener — same per-proxy lifecycle as serve_proxy but
 // dispatches Trojan vs HTTPS-proxy after the TLS handshake.
-async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyLockMap>, allow_private: bool, stop: Arc<Notify>, stats: Arc<ProxyStats>) {
+async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyLockMap>, allow_private: bool, mut stop: tokio::sync::watch::Receiver<bool>, stats: Arc<ProxyStats>) {
     if cfg.tls_port == 0 { return; }
     let host: IpAddr = cfg.listen_host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     let addr = SocketAddr::new(host, cfg.tls_port);
@@ -1951,7 +1980,12 @@ async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyL
     let trojan_hex = trojan_hash(&cfg_arc.password);
     loop {
         tokio::select! {
-            _ = stop.notified() => { eprintln!("[tls:{}] stopped", cfg_arc.id); return; }
+            res = stop.changed() => {
+                if res.is_err() || *stop.borrow() {
+                    eprintln!("[tls:{}] stopped", cfg_arc.id);
+                    return;
+                }
+            }
             res = listener.accept() => {
                 let (stream, _peer) = match res { Ok(x) => x, Err(_) => continue };
                 let _ = stream.set_nodelay(true);
@@ -2569,8 +2603,9 @@ impl Agent {
                 let ids: Vec<String> = lst.keys().cloned().collect();
                 for id in &ids {
                     if let Some(h) = lst.remove(id) {
-                        h.stop.notify_waiters();
-                        let _ = h.task;
+                        let _ = h.stop.send(true);
+                        h.task.abort();
+                        if let Some(t) = h.tls_task { t.abort(); }
                     }
                 }
                 self.stats.lock().await.clear();
@@ -2682,9 +2717,10 @@ impl Agent {
                     let ids: Vec<String> = lst.keys().cloned().collect();
                     for id in ids {
                         if let Some(h) = lst.remove(&id) {
-                            h.stop.notify_waiters();
+                            let _ = h.stop.send(true);
+                            h.task.abort();
+                            if let Some(t) = h.tls_task { t.abort(); }
                             eprintln!("[agent] disowned — stopping proxy {id}");
-                            let _ = h.task;
                         }
                         self.stats.lock().await.remove(&id);
                     }
@@ -2705,9 +2741,10 @@ impl Agent {
         let to_remove: Vec<String> = lst.keys().filter(|k| !want_ids.contains(*k)).cloned().collect();
         for id in to_remove {
             if let Some(h) = lst.remove(&id) {
-                h.stop.notify_waiters();
+                let _ = h.stop.send(true);
+                h.task.abort();
+                if let Some(t) = h.tls_task { t.abort(); }
                 eprintln!("[agent] removing proxy {id}");
-                let _ = h.task;
             }
             self.stats.lock().await.remove(&id);
         }
@@ -2738,31 +2775,34 @@ impl Agent {
                 }
                 // bind-affecting drift: stop and re-create.
                 if let Some(h) = lst.remove(&p.id) {
-                    h.stop.notify_waiters();
+                    let _ = h.stop.send(true);
+                    h.task.abort();
+                    if let Some(t) = h.tls_task { t.abort(); }
                     eprintln!("[agent] restarting proxy {} (bind/auth changed)", p.id);
-                    let _ = h.task;
                 }
             }
             let stats_arc = {
                 let mut sm = self.stats.lock().await;
                 sm.entry(p.id.clone()).or_insert_with(|| Arc::new(ProxyStats::default())).clone()
             };
-            let stop = Arc::new(Notify::new());
+            // watch::channel(false) — reliable broadcast: send(true) is visible
+            // to every Receiver clone, including any spawned just before the
+            // send. Replaces the previous Arc<Notify> which dropped signals
+            // when no .notified() future was currently being polled.
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             let cfg_clone = p.clone();
-            let stop_clone = stop.clone();
             let stats_arc2 = stats_arc.clone();
             let locks_plain = self.proxy_locks.clone();
-            let task = tokio::spawn(serve_proxy(cfg_clone, locks_plain, allow_private, stop_clone, stats_arc));
-            // Spawn TLS listener if cert is available and proxy has a tlsPort.
+            let task = tokio::spawn(serve_proxy(cfg_clone, locks_plain, allow_private, stop_rx.clone(), stats_arc));
+            let mut tls_task: Option<JoinHandle<()>> = None;
             if let Some(acc) = self.tls_acceptor.lock().await.clone() {
                 if p.tls_port > 0 {
                     let cfg_tls = p.clone();
-                    let stop_tls = stop.clone();
                     let locks_tls = self.proxy_locks.clone();
-                    tokio::spawn(serve_proxy_tls(cfg_tls, acc, locks_tls, allow_private, stop_tls, stats_arc2));
+                    tls_task = Some(tokio::spawn(serve_proxy_tls(cfg_tls, acc, locks_tls, allow_private, stop_rx, stats_arc2)));
                 }
             }
-            lst.insert(p.id.clone(), ProxyHandle { cfg: p, stop, task });
+            lst.insert(p.id.clone(), ProxyHandle { cfg: p, stop: stop_tx, task, tls_task });
         }
         // Rebuild the unified-listener user index + trojan-hash index from
         // the current set of listeners + stats. Done under the tokio mutex
