@@ -8497,6 +8497,35 @@ async function handleApi(req, res, url) {
       return sendMetrics(res)
     }
 
+    // ── admin: slim fleet metrics for the realtime monitor view ──
+    // /api/nodes includes IPv4/IPv6 address arrays per node (can be hundreds
+    // of KB); polling that every 3s is wasteful. This endpoint keeps only
+    // what the monitor view plots: id/name/host/status/version/family/metrics/alerts.
+    if (req.method === 'GET' && url.pathname === '/api/admin/fleet-metrics') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const proxyCountByNode = new Map()
+      for (const p of config.proxies) {
+        const k = p.nodeId || 'local'
+        proxyCountByNode.set(k, (proxyCountByNode.get(k) || 0) + 1)
+      }
+      const slim = (n, id, isLocal) => ({
+        id,
+        name: n.name || id,
+        host: n.host || '',
+        status: n.status || (isLocal ? 'online' : 'unknown'),
+        version: n.version || null,
+        family: (n.family || 'auto').toLowerCase(),
+        metrics: n.metrics || null,
+        alerts: n.alerts || {},
+        proxies: proxyCountByNode.get(id) || 0,
+        lastSeenAt: n.lastSeenAt || null,
+        isLocal: !!isLocal
+      })
+      const local = localNode()
+      const list = [slim(local, 'local', true), ...config.nodes.map((n) => slim(n, n.id, false))]
+      return sendJson(res, 200, { ts: Date.now(), nodes: list })
+    }
+
     if (url.pathname === '/api/nodes') {
       if (req.method === 'GET') return sendJson(res, 200, [localNode(), ...config.nodes.map(publicNode)])
       if (req.method === 'POST') {

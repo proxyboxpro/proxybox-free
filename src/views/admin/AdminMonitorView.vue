@@ -31,18 +31,19 @@ const nodes = ref([])
 async function refresh() {
   if (paused.value) return
   try {
-    const arr = await apiFetch('/api/nodes')
-    nodes.value = (Array.isArray(arr) ? arr : []).map((n) => ({
+    const r = await apiFetch('/api/admin/fleet-metrics')
+    const list = Array.isArray(r?.nodes) ? r.nodes : []
+    nodes.value = list.map((n) => ({
       id: n.id,
       name: n.name || n.id,
-      host: n.host || (n.id === 'local' ? 'control plane' : ''),
+      host: n.host || (n.isLocal ? 'control plane' : ''),
       status: n.status,
       version: n.version || '',
       family: n.family || 'auto',
-      isLocal: n.id === 'local',
+      isLocal: !!n.isLocal,
       metrics: n.metrics || null,
       alerts: n.alerts || {},
-      proxies: (n.proxies || []).length || n.proxiesCount || 0
+      proxies: Number(n.proxies) || 0
     }))
     for (const n of nodes.value) if (n.metrics) push(n.id, n.metrics)
     lastFetchMs.value = Date.now()
