@@ -8653,20 +8653,33 @@ async function handleApi(req, res, url) {
         }
       }).sort((a, b) => b.bytes30dTotal - a.bytes30dTotal || b.total - a.total)
       // Bandwidth windows for the whole node (1h / 24h / 30d, split up/down).
-      const windowsBandwidth = connWindowTotals && proxiesOnNode.length
-        ? (() => {
-            // Aggregate by summing per-proxy windows, since the helper is
-            // proxy/owner scoped (no node-scoped variant yet).
-            const tot = { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
-            for (const p of proxiesOnNode) {
-              const w = connWindowTotals({ by: 'proxy', id: p.id })
-              tot.h1.up += w.h1.up; tot.h1.down += w.h1.down
-              tot.h24.up += w.h24.up; tot.h24.down += w.h24.down
-              tot.d30.up += w.d30.up; tot.d30.down += w.d30.down
-            }
-            return tot
-          })()
-        : { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
+      // ONE conditional-SUM query across this node's proxy_id set, not the
+      // per-proxy helper in a loop — the loop would fire 2000+ statements
+      // and gate the /api/nodes/:id response on SQLite throughput.
+      let windowsBandwidth = { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
+      if (sqliteDb && proxiesOnNode.length) {
+        try {
+          const now = Date.now()
+          const c1 = now - 3600 * 1000
+          const c24 = now - 86_400 * 1000
+          const c30 = now - 2_592_000 * 1000
+          const ph = proxiesOnNode.map(() => '?').join(',')
+          const r = sqliteDb.prepare(`
+            SELECT
+              COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up1,
+              COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn1,
+              COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up24,
+              COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn24,
+              COALESCE(SUM(up), 0) AS up30, COALESCE(SUM(dn), 0) AS dn30
+            FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ?
+          `).get(c1, c1, c24, c24, ...proxiesOnNode.map((p) => p.id), c30)
+          windowsBandwidth = {
+            h1:  { up: Number(r.up1)  || 0, down: Number(r.dn1)  || 0 },
+            h24: { up: Number(r.up24) || 0, down: Number(r.dn24) || 0 },
+            d30: { up: Number(r.up30) || 0, down: Number(r.dn30) || 0 }
+          }
+        } catch { /* leave zeroed on error */ }
+      }
       // Recent auto-heal events on this node (from audit table).
       let recentFixes = []
       if (sqliteDb) {
