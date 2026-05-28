@@ -5,7 +5,7 @@ import {
   Activity, AlertOctagon, ArrowLeft, Check, ChevronDown, ChevronUp, Clock, Copy,
   Download, ExternalLink, Eye, Gauge, Globe, KeyRound, Layers, Link, ListChecks,
   Pencil, Play, Plus, QrCode, Radio, RefreshCw, RotateCw, Search, ShieldAlert, ShieldCheck,
-  Tag, Terminal, Timer, Trash2, Wrench, X, Zap
+  Smartphone, Tag, Terminal, Timer, Trash2, Wrench, X, Zap
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
@@ -705,6 +705,7 @@ function closeToolsModal() { toolsModal.value = null }
 // ── Group tabs ─────────────────────────────────────────────────────────
 const GROUP_TABS = [
   { id: 'list',       labelKey: 'cust.proxies.tabList',      icon: Layers },
+  { id: 'apps',       labelKey: 'cust.proxies.tabApps',      icon: Smartphone },
   { id: 'copy',       labelKey: 'cust.proxies.tabCopy',      icon: Copy },
   { id: 'test',       labelKey: 'cust.proxies.tabTest',      icon: Eye },
   { id: 'speed-test', labelKey: 'cust.proxies.tabSpeed',     icon: Gauge },
@@ -1121,10 +1122,45 @@ async function ensureDetailExpanded() {
 }
 watch(groups, ensureDetailExpanded)
 
+// ── Subscription URLs ──────────────────────────────────────────────────
+// One token per customer → public /api/sub/<token>?format=… URL that
+// Clash / Shadowrocket / Surge / v2rayN fetch directly. Loaded once on
+// mount; same token re-used for every group, scoped with &orderId so each
+// order has its own subscription link.
+const subscription = ref(null)
+async function loadSubscription() {
+  try { subscription.value = await apiFetch('/api/v1/user/account/subscription') }
+  catch (e) { /* silent — sub URL is a convenience, not critical */ }
+}
+async function rotateSubscriptionToken() {
+  if (!confirm(t('cust.proxies.subRotateConfirm'))) return
+  try {
+    await apiFetch('/api/v1/user/account/subscription/rotate', { method: 'POST' })
+    await loadSubscription()
+    flash.value = t('cust.proxies.subRotated')
+    setTimeout(() => (flash.value = ''), 2400)
+  } catch (e) { alert(e.message) }
+}
+// Build the per-format subscription URL for one group (order). Appends
+// orderId so the link only carries this order's proxies.
+function subUrlFor(format, orderId) {
+  if (!subscription.value?.urls?.[format]) return ''
+  const u = subscription.value.urls[format]
+  return orderId ? `${u}&orderId=${encodeURIComponent(orderId)}` : u
+}
+const SUB_FORMATS = [
+  { id: 'sub',   label: 'Subscription', hint: 'v2rayN · Hiddify · Shadowrocket · Stash' },
+  { id: 'clash', label: 'Clash',        hint: 'Clash Verge · Mihomo · ClashX' },
+  { id: 'surge', label: 'Surge',        hint: 'Surge · Stash (INI)' },
+  { id: 'plain', label: 'Plain URLs',   hint: 'curl / scripts' },
+  { id: 'json',  label: 'JSON',         hint: 'API automation' }
+]
+
 onMounted(async () => {
   applyQueryFilter()
   await refresh()
   await ensureDetailExpanded()
+  loadSubscription()
   // Live countdown — tick nowMs every second so expiry timers refresh.
   countdownTimer = setInterval(() => { nowMs.value = Date.now() }, 1000)
 })
@@ -1556,6 +1592,32 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
               </div>
             </div>
           </template>
+        </template>
+
+        <!-- ── APPS tab: subscription URLs for Clash / Shadowrocket / Surge / v2rayN ── -->
+        <template v-else-if="activeTab(g.id) === 'apps'">
+          <p class="gt-hint">{{ t('cust.proxies.tabAppsHint') }}</p>
+          <p v-if="!subscription" class="empty-text" style="padding:14px 0">{{ t('cust.proxies.subLoading') }}</p>
+          <div v-else class="sub-list">
+            <article v-for="fmt in SUB_FORMATS" :key="fmt.id" class="sub-card">
+              <div class="sub-card-head">
+                <strong>{{ fmt.label }}</strong>
+                <small>{{ fmt.hint }}</small>
+              </div>
+              <div class="sub-card-url">
+                <code>{{ subUrlFor(fmt.id, g.id) }}</code>
+              </div>
+              <div class="sub-card-actions">
+                <button class="row-act-btn" type="button" @click="copyText(subUrlFor(fmt.id, g.id), fmt.label + ' subscription')"><Copy :size="12" /> {{ t('cust.proxies.copyUrl') }}</button>
+                <button class="row-act-btn" type="button" @click="openQrModal(subUrlFor(fmt.id, g.id), fmt.label + ' sub')"><QrCode :size="12" /> QR</button>
+                <a class="row-act-btn" :href="subUrlFor(fmt.id, g.id)" target="_blank" rel="noopener"><ExternalLink :size="12" /> {{ t('cust.proxies.openUrl') }}</a>
+              </div>
+            </article>
+          </div>
+          <div v-if="subscription" class="sub-rotate">
+            <small>{{ t('cust.proxies.subRotateNote') }}</small>
+            <button class="ghost-button" type="button" @click="rotateSubscriptionToken"><RotateCw :size="12" /> {{ t('cust.proxies.subRotate') }}</button>
+          </div>
         </template>
 
         <!-- ── COPY tab ── -->
@@ -3142,6 +3204,18 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
   .proto-row { flex-wrap: wrap; }
   .proto-tag { min-width: 60px; }
 }
+
+/* Subscription URL cards (Apps tab) */
+.sub-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+.sub-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.sub-card-head { display: flex; align-items: baseline; gap: 8px; }
+.sub-card-head strong { font-size: 13.5px; color: var(--text); }
+.sub-card-head small { font-size: 11.5px; color: var(--muted); }
+.sub-card-url code { display: block; padding: 8px 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--border); border-radius: 6px; font-family: var(--mono); font-size: 11px; color: #9bb8b1; word-break: break-all; }
+.sub-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.sub-card-actions .row-act-btn { flex: 1; min-width: 80px; justify-content: center; text-decoration: none; }
+.sub-rotate { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(255,255,255,0.02); border: 1px dashed var(--border-soft); border-radius: 8px; margin-top: 6px; }
+.sub-rotate small { flex: 1; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
 
 /* Tap the endpoint / credentials to copy (handy on mobile, harmless on desktop) */
 .tap-copy { cursor: pointer; }

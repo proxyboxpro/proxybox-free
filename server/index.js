@@ -5650,6 +5650,10 @@ async function handleAgentRequest(req, res, url, node) {
 
 function isPublicEndpoint(req, url) {
   if (url.pathname === '/api/health') return true
+  // Subscription endpoint: token-in-path auth (long random hex), no
+  // session/cookie needed so customers paste the URL into Clash /
+  // Shadowrocket / v2rayN and the app fetches without any login flow.
+  if (req.method === 'GET' && /^\/api\/sub\/[a-f0-9]{16,}$/.test(url.pathname)) return true
   if (req.method === 'POST' && (url.pathname === '/api/auth/login' || url.pathname === '/api/auth/register')) return true
   // OAuth: provider catalogue + start/callback must be reachable without auth.
   if (req.method === 'GET' && url.pathname === '/api/auth/oauth/providers') return true
@@ -6039,6 +6043,64 @@ async function handleApi(req, res, url) {
         }))
       return sendJson(res, 200, list)
     }
+    // ── Subscription endpoint (public, token-in-path auth) ──────────────
+    // GET /api/sub/<token>?format=clash|surge|sub|plain&orderId=...
+    // Returns the customer's proxies in the requested format. Designed to
+    // be pasted into Clash Verge / Mihomo / Shadowrocket / Surge / etc.
+    // The subscription-userinfo response header carries quota so apps
+    // like Clash can display remaining bandwidth in their UI.
+    const subMatch = url.pathname.match(/^\/api\/sub\/([a-f0-9]{16,})$/)
+    if (subMatch && req.method === 'GET') {
+      const token = subMatch[1]
+      const user = (config.users || []).find((u) => u.subscriptionToken === token)
+      if (!user) return sendJson(res, 404, { error: 'subscription not found or revoked' })
+      const format = String(url.searchParams.get('format') || 'sub').toLowerCase()
+      const orderId = url.searchParams.get('orderId') || ''
+      let owned = config.proxies.filter((p) => p.ownerId === user.id && p.status === 'active')
+      if (orderId) owned = owned.filter((p) => p.orderId === orderId)
+      const hostFor = (p) => customerFacingHost(p) || p.listenHost
+      // Body builder by format. Default to v2ray-style base64 sub which
+      // every modern client (Clash Meta, v2rayN, Hiddify, Shadowrocket,
+      // Stash) reads natively.
+      let body, contentType, filename
+      if (format === 'clash' || format === 'mihomo' || format === 'yaml') {
+        body = buildClashConfig(owned, hostFor); contentType = 'text/yaml; charset=utf-8'; filename = 'proxybox.clash.yaml'
+      } else if (format === 'surge' || format === 'stash' || format === 'ini') {
+        body = buildSurgeConfig(owned, hostFor); contentType = 'text/plain; charset=utf-8'; filename = 'proxybox.surge.conf'
+      } else if (format === 'plain' || format === 'list' || format === 'txt') {
+        body = buildPlainList(owned, hostFor); contentType = 'text/plain; charset=utf-8'; filename = 'proxybox.urls.txt'
+      } else if (format === 'json') {
+        body = JSON.stringify(owned.map((p) => ({ id: p.id, host: hostFor(p), port: p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port, tlsPort: p.tlsPort, username: p.username, password: p.password, type: p.type, bindIp: p.bindIp })), null, 2); contentType = 'application/json; charset=utf-8'; filename = 'proxybox.json'
+      } else {
+        body = buildSubscriptionBase64(owned, hostFor); contentType = 'text/plain; charset=utf-8'; filename = 'proxybox.sub.txt'
+      }
+      // Compute total bytes used this month + the user's quota (if any).
+      // Clash Meta / Verge read this header and display in the UI.
+      let upload = 0, download = 0
+      for (const p of owned) {
+        const s = stats.get(p.id)
+        upload += Number(s?.uploadBytes) || 0
+        download += Number(s?.downloadBytes) || 0
+      }
+      const quotaGB = Number(config.pricing?.bandwidthQuotaGB) || 0
+      const total = quotaGB > 0 ? quotaGB * 1_000_000_000 : 0
+      const expireSec = (() => {
+        // Use the earliest expiresAt across owned proxies; clients see "remaining days".
+        let earliest = 0
+        for (const p of owned) { const t = p.expiresAt ? new Date(p.expiresAt).getTime() / 1000 : 0; if (t && (!earliest || t < earliest)) earliest = t }
+        return Math.floor(earliest)
+      })()
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${filename}"`,
+        'Cache-Control': 'no-store',
+        'Subscription-Userinfo': `upload=${upload}; download=${download}; total=${total}; expire=${expireSec}`,
+        'Profile-Update-Interval': '24'
+      })
+      res.end(body)
+      return
+    }
+
     // Public pricing (read-only mirror of /api/v1/user/pricing for the landing/pricing pages).
     if (req.method === 'GET' && url.pathname === '/api/public/pricing') {
       if (!config.pricing) config.pricing = defaultPricing()
@@ -9925,6 +9987,26 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       balance: userBalance(user.id)
     })
   }
+  // Subscription token — used in the public /api/sub/<token> URL. Auto-
+  // generated the first time the customer hits this endpoint so existing
+  // accounts get one lazily without a migration. POST /rotate burns the
+  // old token (invalidates any subscription links shared elsewhere).
+  if (req.method === 'GET' && sub === 'account/subscription') {
+    if (!user.subscriptionToken) {
+      user.subscriptionToken = crypto.randomBytes(20).toString('hex')
+      await saveConfig()
+    }
+    const base = (config.api?.publicUrl || `http://${req.headers.host || '127.0.0.1:8787'}`).replace(/\/$/, '')
+    const fmts = ['sub', 'clash', 'surge', 'plain', 'json']
+    const urls = Object.fromEntries(fmts.map((f) => [f, `${base}/api/sub/${user.subscriptionToken}?format=${f}`]))
+    return sendJson(res, 200, { token: user.subscriptionToken, urls })
+  }
+  if (req.method === 'POST' && sub === 'account/subscription/rotate') {
+    user.subscriptionToken = crypto.randomBytes(20).toString('hex')
+    await saveConfig()
+    audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: url.pathname, note: 'subscription token rotated' })
+    return sendJson(res, 200, { token: user.subscriptionToken })
+  }
   if (req.method === 'POST' && sub === 'account/regenerate-api-key') {
     user.apiKey = generateUserToken(user.id)
     user.fleetTokens = []   // legacy slot cleared on rotation — single-source-of-truth
@@ -10964,6 +11046,137 @@ function nextPort() {
 }
 function tlsPortFor(port) { return Number(port) + 443 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Multi-client format exports. Same credentials, same egress — different
+// wire format so customers can paste into whatever app they already use:
+// Clash Verge / ClashX / Mihomo (YAML), Shadowrocket (deep link), Surge
+// (INI), v2rayN/Hiddify (base64 subscription of trojan:// + http:// + ...).
+// All formats are derived from the existing connectUrls — zero new
+// backend protocol, zero new server. The customer downloads one URL and
+// pastes / opens it.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Yaml-escape a string for safe embedding in a quoted scalar. Just double
+// the inner quotes — Clash configs are simple enough that we don't need a
+// full YAML library.
+function yamlQ(s) { return '"' + String(s ?? '').replace(/"/g, '""') + '"' }
+
+// One proxy → Clash/Mihomo YAML entries. Returns multiple lines (a trojan
+// entry + an HTTP-proxy entry + a SOCKS5 entry) so the customer can pick
+// whichever fits their app. `name` is unique per protocol so Clash doesn't
+// collide on the proxies list.
+function proxyToClashYaml(proxy, host) {
+  const port = Number(proxy.unifiedPort && proxy.unifiedPort > 0 ? proxy.unifiedPort : proxy.port)
+  const tlsPort = Number(proxy.tlsPort) || (port + 443)
+  const lines = []
+  // Trojan — best modern fit (TLS + password). Mihomo/Clash Verge/Stash all support.
+  if (tlsPort > 0) {
+    lines.push(`  - { name: ${yamlQ('PB-' + proxy.id + '-trojan')}, type: trojan, server: ${yamlQ(host)}, port: ${tlsPort}, password: ${yamlQ(proxy.password)}, sni: ${yamlQ(host)}, skip-cert-verify: true, udp: true }`)
+  }
+  // HTTP CONNECT proxy.
+  lines.push(`  - { name: ${yamlQ('PB-' + proxy.id + '-http')}, type: http, server: ${yamlQ(host)}, port: ${port}, username: ${yamlQ(proxy.username)}, password: ${yamlQ(proxy.password)} }`)
+  // SOCKS5.
+  lines.push(`  - { name: ${yamlQ('PB-' + proxy.id + '-socks')}, type: socks5, server: ${yamlQ(host)}, port: ${port}, username: ${yamlQ(proxy.username)}, password: ${yamlQ(proxy.password)}, udp: true }`)
+  return lines
+}
+
+// Build a full Clash config snippet for a SET of proxies (one order, or
+// all owned). Includes a sensible default proxy-group ("Auto") so the
+// file is usable as-is, not just a fragment.
+function buildClashConfig(proxies, hostFor) {
+  const proxyLines = []
+  const nameTrojan = []; const nameHttp = []; const nameSocks = []
+  for (const p of proxies) {
+    const host = hostFor(p)
+    if (!host) continue
+    const ls = proxyToClashYaml(p, host)
+    proxyLines.push(...ls)
+    const tlsPort = Number(p.tlsPort) || (Number(p.port) + 443)
+    if (tlsPort > 0) nameTrojan.push('PB-' + p.id + '-trojan')
+    nameHttp.push('PB-' + p.id + '-http')
+    nameSocks.push('PB-' + p.id + '-socks')
+  }
+  const all = [...nameTrojan, ...nameHttp, ...nameSocks]
+  const lines = [
+    '# ProxyBox — Clash / Mihomo / Stash config',
+    `# ${proxies.length} proxies, ${all.length} entries`,
+    'mixed-port: 7890',
+    'mode: rule',
+    'log-level: info',
+    'proxies:',
+    ...proxyLines,
+    'proxy-groups:',
+    `  - { name: Auto, type: url-test, proxies: [${all.map(yamlQ).join(', ')}], url: "http://www.gstatic.com/generate_204", interval: 300 }`,
+    `  - { name: Manual, type: select, proxies: [${all.map(yamlQ).join(', ')}] }`,
+    'rules:',
+    '  - MATCH,Auto'
+  ]
+  return lines.join('\n') + '\n'
+}
+
+// Surge / Stash INI format — one block per proxy. Surge's "http" + "socks5"
+// + "trojan" types all match exactly what we already serve.
+function buildSurgeConfig(proxies, hostFor) {
+  const lines = ['# ProxyBox — Surge / Stash config', '[Proxy]']
+  const names = []
+  for (const p of proxies) {
+    const host = hostFor(p)
+    if (!host) continue
+    const port = Number(p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port)
+    const tlsPort = Number(p.tlsPort) || (port + 443)
+    lines.push(`PB-${p.id}-trojan = trojan, ${host}, ${tlsPort}, password=${p.password}, sni=${host}, skip-cert-verify=true`)
+    lines.push(`PB-${p.id}-http = http, ${host}, ${port}, ${p.username}, ${p.password}`)
+    lines.push(`PB-${p.id}-socks = socks5, ${host}, ${port}, ${p.username}, ${p.password}`)
+    names.push(`PB-${p.id}-trojan`, `PB-${p.id}-http`, `PB-${p.id}-socks`)
+  }
+  lines.push('', '[Proxy Group]')
+  lines.push(`Auto = url-test, ${names.join(', ')}, url=http://www.gstatic.com/generate_204, interval=300`)
+  lines.push('', '[Rule]', 'FINAL,Auto')
+  return lines.join('\n') + '\n'
+}
+
+// Shadowrocket / v2rayN / Hiddify all accept a base64-encoded list of
+// per-line URIs (trojan:// + http:// + socks://). One subscription URL
+// → app fetches → base64-decodes → imports all entries.
+function buildSubscriptionBase64(proxies, hostFor) {
+  const lines = []
+  for (const p of proxies) {
+    const host = hostFor(p); if (!host) continue
+    const port = Number(p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port)
+    const tlsPort = Number(p.tlsPort) || (port + 443)
+    if (tlsPort > 0) {
+      lines.push(`trojan://${encodeURIComponent(p.password)}@${host}:${tlsPort}?security=tls&sni=${host}&allowInsecure=1&type=tcp#${encodeURIComponent('PB-' + p.id)}`)
+    }
+    lines.push(`http://${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@${host}:${port}#${encodeURIComponent('PB-' + p.id + '-http')}`)
+    lines.push(`socks://${Buffer.from(p.username + ':' + p.password).toString('base64').replace(/=+$/, '')}@${host}:${port}#${encodeURIComponent('PB-' + p.id + '-socks')}`)
+  }
+  return Buffer.from(lines.join('\n')).toString('base64')
+}
+
+// Plain newline-separated URL list (works with curl-pipe scripts + any
+// app that takes a list of URLs, e.g. simple scrapers).
+function buildPlainList(proxies, hostFor) {
+  const lines = []
+  for (const p of proxies) {
+    const host = hostFor(p); if (!host) continue
+    const port = Number(p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port)
+    lines.push(`http://${p.username}:${p.password}@${host}:${port}`)
+    lines.push(`socks5://${p.username}:${p.password}@${host}:${port}`)
+  }
+  return lines.join('\n') + '\n'
+}
+
+// Shadowrocket "import URL" for one proxy — deep-link the user can tap on
+// mobile to add the proxy without scanning a QR. Format: see Shadowrocket
+// docs; we mirror what their share button produces.
+function shadowrocketImportFor(proxy, host) {
+  const port = Number(proxy.unifiedPort && proxy.unifiedPort > 0 ? proxy.unifiedPort : proxy.port)
+  const tlsPort = Number(proxy.tlsPort) || (port + 443)
+  // Use the trojan:// uri (Shadowrocket parses it natively and adds it as
+  // a server entry). Same payload as our existing connectUrls.trojan.
+  return `trojan://${encodeURIComponent(proxy.password)}@${host}:${tlsPort}?security=tls&sni=${host}&allowInsecure=1&type=tcp#${encodeURIComponent('PB-' + proxy.id)}`
+}
+
 function publicProxy(proxy) {
   const proxyStats = publicStats(proxy.id)
   const rotate = Boolean(proxy.rotate) && proxy.type === 'IPv6'
@@ -10999,7 +11212,12 @@ function publicProxy(proxy) {
     socks5:      `socks5://${proxy.username}:${proxy.password}@${host}:${proxy.port}`,
     socks5h:     `socks5h://${proxy.username}:${proxy.password}@${host}:${proxy.port}`,
     httpsProxy:  `https://${proxy.username}:${proxy.password}@${host}:${proxy.tlsPort}`,
-    trojan:      `trojan://${encodeURIComponent(proxy.password)}@${host}:${proxy.tlsPort}?security=tls&sni=${host}&peer=${host}&allowInsecure=1&type=tcp#${encodeURIComponent('ProxyBox-' + proxy.id)}`
+    trojan:      `trojan://${encodeURIComponent(proxy.password)}@${host}:${proxy.tlsPort}?security=tls&sni=${host}&peer=${host}&allowInsecure=1&type=tcp#${encodeURIComponent('ProxyBox-' + proxy.id)}`,
+    // App-import formats — same creds, different wire format. The UI shows
+    // these as "copy" / "import" buttons in the expanded connect view so
+    // customers can paste into Clash / Shadowrocket / Surge directly.
+    clashYaml:    proxyToClashYaml(proxy, host).join('\n'),
+    shadowrocket: shadowrocketImportFor(proxy, host)
   }
   if (unifiedEnabled) {
     connectUrls.unifiedHttp = `http://${proxy.username}:${proxy.password}@${host}:${unifiedPort}`
