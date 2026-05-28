@@ -35,6 +35,29 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 
+// ──────────────────────────── error reporter ────────────────────────────────
+// Fire-and-forget POST to the panel's /api/agent/error so deterministic
+// agent-side failures (bind/listen/cert/panic) show up in the centralized
+// /admin/errors view. Panel does dedup by (source='agent', code), so the
+// agent doesn't need its own rate limiter — repeated identical errors just
+// bump count on the panel side. Initialized once at startup; if uninit'd
+// (e.g. config not loaded yet) calls silently no-op.
+#[derive(Clone)]
+struct Reporter { http: reqwest::Client, base: String, token: String }
+static REPORTER: std::sync::OnceLock<Reporter> = std::sync::OnceLock::new();
+fn report_err(level: &'static str, code: &'static str, msg: impl Into<String>, ctx: serde_json::Value, proxy_id: Option<String>) {
+    if let Some(r) = REPORTER.get() {
+        let (http, base, token) = (r.http.clone(), r.base.clone(), r.token.clone());
+        let body = serde_json::json!({"level":level,"code":code,"message":msg.into(),"context":ctx,"proxyId":proxy_id});
+        tokio::spawn(async move {
+            let _ = http.post(format!("{}/api/agent/error", base))
+                .bearer_auth(&token).json(&body)
+                .timeout(Duration::from_secs(8))
+                .send().await;
+        });
+    }
+}
+
 // ──────────────────────────── config & state ────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -1533,12 +1556,22 @@ async fn serve_unified_plain(
         let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
         let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
         if let Err(e) = sock.bind(addr) {
-            if i == 0 { eprintln!("[unified] bind {addr}: {e}"); return; }
+            let em = e.to_string();
+            if i == 0 {
+                eprintln!("[unified] bind {addr}: {em}");
+                report_err("error", "unified:bind-fail", format!("unified bind {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), None);
+                return;
+            }
             break;
         }
         let lst = match sock.listen(4096) {
             Ok(l) => l,
-            Err(e) => { eprintln!("[unified] listen {addr}: {e}"); return; }
+            Err(e) => {
+                let em = e.to_string();
+                eprintln!("[unified] listen {addr}: {em}");
+                report_err("error", "unified:listen-fail", format!("unified listen {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), None);
+                return;
+            }
         };
         listeners.push(lst);
     }
@@ -1675,11 +1708,21 @@ async fn serve_unified_tls(
         let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
         let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
         if let Err(e) = sock.bind(addr) {
-            if i == 0 { eprintln!("[unified-tls] bind {addr}: {e}"); return; }
+            let em = e.to_string();
+            if i == 0 {
+                eprintln!("[unified-tls] bind {addr}: {em}");
+                report_err("error", "unified-tls:bind-fail", format!("unified-tls bind {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), None);
+                return;
+            }
             break;
         }
         let lst = match sock.listen(4096) {
-            Ok(l) => l, Err(e) => { eprintln!("[unified-tls] listen {addr}: {e}"); return; }
+            Ok(l) => l, Err(e) => {
+                let em = e.to_string();
+                eprintln!("[unified-tls] listen {addr}: {em}");
+                report_err("error", "unified-tls:listen-fail", format!("unified-tls listen {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), None);
+                return;
+            }
         };
         listeners.push(lst);
     }
@@ -1725,7 +1768,12 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
     for i in 0..workers {
         let sock = match if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() } {
             Ok(s) => s,
-            Err(e) => { eprintln!("[proxy:{}] socket: {e}", cfg.id); return; }
+            Err(e) => {
+                let em = e.to_string();
+                eprintln!("[proxy:{}] socket: {em}", cfg.id);
+                report_err("error", "listener:socket", format!("socket() failed for {addr}: {em}"), serde_json::json!({"addr": addr.to_string(), "worker": i}), Some(cfg.id.clone()));
+                return;
+            }
         };
         let _ = sock.set_reuseaddr(true);
         // SO_REUSEPORT is Linux/BSD-only; Windows socket2 doesn't expose it.
@@ -1735,12 +1783,22 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
         let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
         let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
         if let Err(e) = sock.bind(addr) {
-            if i == 0 { eprintln!("[proxy:{}] bind {addr}: {e}", cfg.id); return; }
+            let em = e.to_string();
+            if i == 0 {
+                eprintln!("[proxy:{}] bind {addr}: {em}", cfg.id);
+                report_err("error", "listener:bind-fail", format!("bind {addr}: {em}"), serde_json::json!({"addr": addr.to_string(), "kind": cfg.kind}), Some(cfg.id.clone()));
+                return;
+            }
             break;
         }
         let lst = match sock.listen(1024) {
             Ok(l) => l,
-            Err(e) => { eprintln!("[proxy:{}] listen {addr}: {e}", cfg.id); return; }
+            Err(e) => {
+                let em = e.to_string();
+                eprintln!("[proxy:{}] listen {addr}: {em}", cfg.id);
+                report_err("error", "listener:listen-fail", format!("listen {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), Some(cfg.id.clone()));
+                return;
+            }
         };
         listeners.push(lst);
     }
@@ -1965,15 +2023,30 @@ async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyL
     }
     let sock = match if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() } {
         Ok(s) => s,
-        Err(e) => { eprintln!("[tls:{}] socket: {e}", cfg.id); return; }
+        Err(e) => {
+            let em = e.to_string();
+            eprintln!("[tls:{}] socket: {em}", cfg.id);
+            report_err("error", "tls:socket", format!("tls socket() failed for {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), Some(cfg.id.clone()));
+            return;
+        }
     };
     let _ = sock.set_reuseaddr(true);
     let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
     let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
-    if let Err(e) = sock.bind(addr) { eprintln!("[tls:{}] bind {addr}: {e}", cfg.id); return; }
+    if let Err(e) = sock.bind(addr) {
+        let em = e.to_string();
+        eprintln!("[tls:{}] bind {addr}: {em}", cfg.id);
+        report_err("error", "tls:bind-fail", format!("tls bind {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), Some(cfg.id.clone()));
+        return;
+    }
     let listener = match sock.listen(1024) {
         Ok(l) => l,
-        Err(e) => { eprintln!("[tls:{}] listen {addr}: {e}", cfg.id); return; }
+        Err(e) => {
+            let em = e.to_string();
+            eprintln!("[tls:{}] listen {addr}: {em}", cfg.id);
+            report_err("error", "tls:listen-fail", format!("tls listen {addr}: {em}"), serde_json::json!({"addr": addr.to_string()}), Some(cfg.id.clone()));
+            return;
+        }
     };
     eprintln!("[tls:{}] {addr} -> {} (TLS-wrap: HTTPS-proxy + Trojan)", cfg.id, cfg.bind_ip);
     let cfg_arc = Arc::new(cfg);
@@ -2709,6 +2782,10 @@ impl Agent {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("[agent] pull: {e}");
+                // Best-effort: if the network is OK enough to reach the panel
+                // for /error but not /proxies for some reason, surface it.
+                // If the panel itself is unreachable, this is a no-op.
+                report_err("error", "agent:pull-fail", e.clone(), serde_json::json!({}), None);
                 // Disowned by control plane → tear everything down so we
                 // don't keep serving traffic for proxies the server no longer
                 // tracks (deleted / expired / revoked).
@@ -2936,6 +3013,19 @@ async fn async_main() {
 
     if let Err(e) = agent.enroll_if_needed().await { eprintln!("[agent] fatal: {e}"); std::process::exit(1); }
     if let Err(e) = agent.register().await { eprintln!("[agent] register: {e}"); }
+    // Now that enrollment is complete, the cfg holds the agent token +
+    // control URL — bootstrap the fire-and-forget error reporter so
+    // bind/listen/cert failures land in the panel's /admin/errors view.
+    {
+        let c = agent.cfg.lock().await;
+        if !c.token.is_empty() && !c.control_url.is_empty() {
+            let _ = REPORTER.set(Reporter {
+                http: agent.http.clone(),
+                base: c.control_url.clone(),
+                token: c.token.clone(),
+            });
+        }
+    }
     let url = agent.cfg.lock().await.control_url.clone();
     eprintln!("[agent] registered with {url} (v{AGENT_VERSION})");
 
