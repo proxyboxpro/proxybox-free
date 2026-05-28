@@ -922,6 +922,7 @@ export default {
   'page.proxiesIpv6':  'Proxy IPv6',
   'page.proxies-ipv4': 'Proxy IPv4',
   'page.proxies-ipv6': 'Proxy IPv6',
+  'page.monitor':      'Monitor realtime',
   'page.nodes':        'Máy chủ',
   'page.nodesCompare': 'So sánh node',
   'page.hubs':         'Hub plans',

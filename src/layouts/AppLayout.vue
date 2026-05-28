@@ -37,6 +37,7 @@ const navGroups = [
     { name: 'admin-connections',   labelKey: 'page.connections',  icon: Activity },
     { name: 'admin-bandwidth',     labelKey: 'page.bandwidth',    icon: BarChart3 },
     { name: 'admin-health',        labelKey: 'page.health',       icon: Heart },
+    { name: 'admin-monitor',       labelKey: 'page.monitor',      icon: Activity },
     { name: 'admin-nodes',         labelKey: 'page.nodes',        icon: Server },
     { name: 'admin-nodes-compare', labelKey: 'page.nodesCompare', icon: Server },
     { name: 'admin-hubs',          labelKey: 'page.hubs',         icon: Cloud },
