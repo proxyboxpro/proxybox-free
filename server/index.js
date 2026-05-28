@@ -745,11 +745,10 @@ setInterval(() => { sweepNodes() }, 30 * 1000).unref()
 // up the errors table. Dedup at logError() still kicks in for repeats.
 const agentErrorRate = new Map()
 
-// Agent watchdog: every 60s, scan all nodes — if status='online' but
-// lastSeenAt > 5min ago, log a watchdog error (dedup'd by node) + flip
-// status to 'offline' so dashboards reflect reality. Restoration logged
-// when the node comes back. Runs entirely panel-side: relies on the
-// existing heartbeat path to refresh lastSeenAt.
+// Agent watchdog: every 60s, scan all nodes for (a) silent-agent timeouts,
+// (b) resource thresholds (RAM/load). Each guard dedupes via logError's
+// (source, code, node_id) key so a sustained problem coalesces into 1 row
+// with an incrementing count rather than firing 1440 alerts/day.
 setInterval(() => {
   if (!Array.isArray(config.nodes)) return
   const now = Date.now()
@@ -761,6 +760,21 @@ setInterval(() => {
       logError({ source: 'watchdog', level: 'error', code: 'agent:silent', message: `Agent ${n.name || n.id} silent for ${Math.round(age / 60000)}min`, nodeId: n.id, context: { lastSeenAt: n.lastSeenAt, ageMs: age } })
       n.status = 'offline'
       pushAlert(`node:${n.id}:silent`, `Node ${n.name || n.id} hasn't heartbeated in ${Math.round(age / 60000)}min — agent likely down.`, 'error')
+    }
+    // Resource thresholds — node only reports load1/ramPct via heartbeat,
+    // so we eval against latest snapshot. Only fire for ONLINE nodes (an
+    // offline node already has its own watchdog alert and stale metrics).
+    if (n.status === 'online' && n.metrics) {
+      const ramPct = Number(n.metrics.ramPct) || 0
+      if (ramPct >= 90) {
+        logError({ source: 'watchdog', level: 'warn', code: 'node:ram-high', message: `RAM ${ramPct}% on ${n.name || n.id}`, nodeId: n.id, context: { ramPct, ramUsed: n.metrics.ramUsed, ramTotal: n.metrics.ramTotal } })
+      }
+      // load >2x vcpu count is the classic "needs attention" line; we don't
+      // know vcpu, but load1 >100 on any reasonable VM is definitely bad.
+      const load1 = Number(n.metrics.load1) || 0
+      if (load1 >= 100) {
+        logError({ source: 'watchdog', level: 'warn', code: 'node:load-high', message: `load1=${load1.toFixed(0)} on ${n.name || n.id}`, nodeId: n.id, context: { load1, load5: n.metrics.load5, cpuPct: n.metrics.cpuPct } })
+      }
     }
   }
 }, 60_000).unref()
@@ -788,9 +802,12 @@ function validatePortCollisions() {
     const b = usedPlain.get(Number(p.tlsPort)); if (b && b !== p.id) collisions.push({ id: p.id, tlsPort: p.tlsPort, conflictWith: b, kind: 'tls-vs-plain' });
   }
   if (collisions.length > 0) {
-    console.warn(`[validator] WARNING: ${collisions.length} proxy port↔tlsPort collisions detected — ${new Set(collisions.map(c => c.id)).size} unique proxies affected`)
+    const uniq = new Set(collisions.map(c => c.id)).size
+    console.warn(`[validator] WARNING: ${collisions.length} proxy port↔tlsPort collisions detected — ${uniq} unique proxies affected`)
     console.warn(`[validator] First 3:`, collisions.slice(0, 3))
     console.warn(`[validator] Run POST /api/admin/maintenance/relocate-tls-ports to auto-fix (admin auth required)`)
+    // Surface in /admin/errors so admins don't have to grep journalctl on boot.
+    logError({ source: 'validator', level: 'error', code: 'port-collision', message: `${collisions.length} port collisions across ${uniq} proxies — auto-fix at POST /api/admin/maintenance/relocate-tls-ports`, context: { count: collisions.length, uniqueProxies: uniq, sample: collisions.slice(0, 3) } })
   } else {
     console.log(`[validator] ${config.proxies.length} proxies: 0 port collisions`)
   }
@@ -801,7 +818,10 @@ if (pki) {
     { key: pki.srvKeyPem, cert: pki.srvCertPem, ca: pki.caCertPem, requestCert: true, rejectUnauthorized: false },
     handleMtls
   )
-  mtlsServer.on('error', (error) => console.error(`[mtls] listener error: ${error.message}`))
+  mtlsServer.on('error', (error) => {
+    console.error(`[mtls] listener error: ${error.message}`)
+    logError({ source: 'mtls', level: 'error', code: 'listener-error', message: error.message })
+  })
   mtlsServer.listen(mtlsPort(), mtlsHost(), () => {
     console.log(`[mtls] agent listener on https://${mtlsHost()}:${mtlsPort()} (client-cert auth)`)
   })
@@ -4884,6 +4904,51 @@ async function runHealthSweep() {
     console.log(`[auto-heal] sweep: rotated=${fixed} replaced=${replaced} suspectNodes=${[...suspectNodes].join(',') || '-'} budgetLeft=${budget}`)
   }
   saveConfig().catch(() => {})
+
+  // ── TLS-side companion probe ───────────────────────────────────────────
+  // The main check only probes the PLAIN proxy port. The TLS port (Trojan +
+  // HTTPS-proxy wrap) was invisible to health monitoring until 1.4.17 — that
+  // blind spot is exactly why the bind-race bug fixed in 1.4.16 hid for so
+  // long. This step does a lightweight TLS handshake against each proxy's
+  // tlsPort (only for proxies whose plain check passed and that aren't on
+  // a suspect node) and logs `proxy:tls-down` for any failure. It does NOT
+  // affect heal decisions — purely an observability instrument.
+  const tlsCandidates = results.filter(({ proxy, r }) =>
+    r.ok && Number(proxy.tlsPort) > 0 && !suspectNodes.has(proxy.nodeId || 'local')
+  )
+  if (tlsCandidates.length) {
+    // Don't block the sweep on TLS probes — fire-and-forget background task.
+    ;(async () => {
+      let tlsDown = 0
+      const probes = tlsCandidates.map(({ proxy }) => tlsHandshakeProbe(proxy).then((tr) => ({ proxy, tr })))
+      const tlsResults = await Promise.all(probes)
+      for (const { proxy, tr } of tlsResults) {
+        if (!tr.ok) {
+          tlsDown += 1
+          logError({ source: 'sweep', level: 'warn', code: 'proxy:tls-down', message: `TLS handshake fail on tlsPort ${proxy.tlsPort}: ${tr.error}`, proxyId: proxy.id, nodeId: proxy.nodeId, context: { tlsPort: proxy.tlsPort, host: customerFacingHost(proxy) || proxy.listenHost, error: tr.error, latencyMs: tr.latencyMs } })
+        }
+      }
+      if (tlsDown) console.log(`[tls-probe] ${tlsDown}/${tlsCandidates.length} proxies failed TLS handshake this sweep`)
+    })().catch(() => { /* noop — purely observability */ })
+  }
+}
+
+// Quick TLS handshake against a proxy's tlsPort. Doesn't validate the cert
+// (it's a self-signed Trojan cert by design) — just verifies the listener
+// is bound + the agent can complete a TLS handshake. 4s timeout per probe.
+async function tlsHandshakeProbe(proxy) {
+  const host = customerFacingHost(proxy) || proxy.listenHost
+  const port = Number(proxy.tlsPort)
+  if (!host || !port) return { ok: true, skipped: true }
+  return new Promise((res) => {
+    const t0 = Date.now()
+    let settled = false
+    const fin = (o) => { if (settled) return; settled = true; try { s.destroy() } catch {}; res({ ...o, latencyMs: Date.now() - t0 }) }
+    const s = tls.connect({ host, port, rejectUnauthorized: false, timeout: 4000, servername: host })
+    s.on('secureConnect', () => fin({ ok: true }))
+    s.on('error', (e) => fin({ ok: false, error: e.message }))
+    s.on('timeout', () => fin({ ok: false, error: 'timeout' }))
+  })
 }
 
 // Provision a fresh replacement for a persistently-dead pool proxy, attach it to

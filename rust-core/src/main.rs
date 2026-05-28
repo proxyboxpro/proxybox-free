@@ -626,10 +626,19 @@ fn ensure_v6_on_iface(ip: IpAddr) {
     {
         Ok(o) if o.status.success() => { eprintln!("[net] added {target} on {name}"); }
         Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            if !stderr.contains("File exists") { eprintln!("[net] add {target}: {}", stderr.trim()); }
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            if !stderr.contains("File exists") {
+                eprintln!("[net] add {target}: {}", stderr.trim());
+                // File-exists is benign (already attached) — anything else means
+                // the v6 won't be reachable for outbound and traffic from this
+                // bindIp will silently dead-letter. Surface so admin sees.
+                report_err("error", "v6:attach-fail", format!("ip addr add {target} dev {name}: {}", stderr.trim()), serde_json::json!({"target": target, "iface": name}), None);
+            }
         }
-        Err(e) => eprintln!("[net] add {target}: spawn failed: {e}"),
+        Err(e) => {
+            eprintln!("[net] add {target}: spawn failed: {e}");
+            report_err("error", "v6:attach-spawn", format!("spawn ip addr add: {e}"), serde_json::json!({"target": target, "iface": name}), None);
+        }
     }
 }
 
@@ -1818,7 +1827,15 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
                             let p = (*cfg_w).clone();
                             tokio::spawn(handle_client(p, locks_w.clone(), allow_private, stream, stats_w.clone()));
                         }
-                        Err(e) => { eprintln!("[proxy:{}] accept: {e}", cfg_w.id); break; }
+                        Err(e) => {
+                            let em = e.to_string();
+                            eprintln!("[proxy:{}] accept: {em}", cfg_w.id);
+                            // accept() error breaks this worker — surfacing it
+                            // matters because losing all REUSEPORT workers kills
+                            // the proxy silently. Dedup at panel handles spam.
+                            report_err("error", "accept-fail", format!("accept on {}: {em}", cfg_w.port), serde_json::json!({"port": cfg_w.port}), Some(cfg_w.id.clone()));
+                            break;
+                        }
                     },
                     // watch::Receiver::changed() reliably resolves once the value
                     // moves off its last-seen mark (initial false → send(true)) —
@@ -3033,6 +3050,20 @@ async fn async_main() {
             });
         }
     }
+    // Panic hook: any task that panics gets logged to /admin/errors. Tokio
+    // already isolates panics (one panicked task doesn't kill the runtime)
+    // but the panic itself was previously only on stderr. Now it surfaces
+    // in the central error log alongside everything else. We chain to the
+    // default hook so stderr backtraces still print as before.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<panic without message>".to_string());
+        let loc = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
+        report_err("error", "panic", format!("panicked at {loc}: {msg}"), serde_json::json!({"location": loc}), None);
+        default_hook(info);
+    }));
     let url = agent.cfg.lock().await.control_url.clone();
     eprintln!("[agent] registered with {url} (v{AGENT_VERSION})");
 
