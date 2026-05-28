@@ -4,6 +4,9 @@ import { Activity, RefreshCw, Globe, Cpu, Ban, Users, Radio } from 'lucide-vue-n
 import { useRouter } from 'vue-router'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber, formatRate } from '../../utils/format'
+import { useI18n } from '../../i18n'
+
+const { t } = useI18n()
 
 function ccToFlag(cc) {
   if (!cc || cc.length !== 2) return ''
@@ -75,11 +78,11 @@ function kindToApp(kind, port) {
 }
 
 async function blockHost(host) {
-  if (!confirm(`Chặn ${host} cho toàn bộ proxy?`)) return
+  if (!confirm(t('admin.conn.confirmBlock', { host }))) return
   try {
     await apiFetch('/api/admin/deny-hosts', { method: 'POST', body: { host } })
-    alert(`Đã chặn ${host}`)
-  } catch (e) { alert('Lỗi: ' + e.message) }
+    alert(t('admin.conn.blocked', { host }))
+  } catch (e) { alert(t('admin.conn.blockErr', { msg: e.message })) }
 }
 function goDrillDown(proxyId) { router.push({ name: 'admin-connection-detail', params: { proxyId } }) }
 
@@ -189,17 +192,17 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
     <div class="toolbar">
       <span class="eyebrow">
         <Activity :size="14" style="vertical-align:-2px" />
-        Kết nối live · {{ filtered.length }}/{{ rows.length }} proxy
+        {{ t('admin.conn.eyebrow') }} · {{ t('admin.conn.proxyCount', { filtered: filtered.length, total: rows.length }) }}
       </span>
-      <span class="sse-badge" :class="{ on: sseConnected }" :title="sseConnected ? 'SSE đang nhận event live' : 'SSE chưa kết nối — fallback polling'">
+      <span class="sse-badge" :class="{ on: sseConnected }" :title="sseConnected ? t('admin.conn.sseLive') : t('admin.conn.ssePoll')">
         <Radio :size="11" /> {{ sseConnected ? 'LIVE' : 'POLL' }}<span v-if="liveDelta" style="margin-left:4px">+{{ liveDelta }}</span>
       </span>
       <div class="spacer"></div>
       <label class="filter-field" style="margin-right:8px">
-        <input v-model="autoRefresh" type="checkbox" /> auto-poll (30s)
+        <input v-model="autoRefresh" type="checkbox" /> {{ t('admin.conn.autoPoll') }}
       </label>
       <button class="ghost-button" type="button" :disabled="loading" @click="refresh(); liveDelta = 0">
-        <RefreshCw :size="12" /> refresh
+        <RefreshCw :size="12" /> {{ t('admin.conn.refresh') }}
       </button>
     </div>
 
@@ -208,14 +211,14 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
     <!-- View tabs -->
     <div class="ac-tabs">
       <button type="button" :class="{ active: tab === 'sessions' }" @click="tab = 'sessions'; refresh()">
-        <Activity :size="14" /> Sessions
+        <Activity :size="14" /> {{ t('admin.conn.tabSessions') }}
         <span v-if="tab === 'sessions' && sessionsTotal" class="tab-count">{{ sessionsTotal.toLocaleString() }}</span>
       </button>
       <button type="button" :class="{ active: tab === 'proxies' }" @click="tab = 'proxies'; refresh()">
-        <Cpu :size="14" /> Theo proxy
+        <Cpu :size="14" /> {{ t('admin.conn.tabProxies') }}
       </button>
       <button type="button" :class="{ active: tab === 'sources' }" @click="tab = 'sources'; refresh()">
-        <Users :size="14" /> Theo client IP
+        <Users :size="14" /> {{ t('admin.conn.tabSources') }}
       </button>
     </div>
 
@@ -223,27 +226,27 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
     <div v-if="tab === 'proxies'" class="metric-cards">
       <article>
         <Activity :size="20" />
-        <span>Kết nối đang mở</span>
+        <span>{{ t('admin.conn.kpiOpen') }}</span>
         <strong>{{ formatNumber(summary.live) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ formatNumber(summary.conns) }} total all-time</small>
+        <small style="color:var(--muted);font-size:11.5px">{{ t('admin.conn.kpiOpenSub', { n: formatNumber(summary.conns) }) }}</small>
       </article>
       <article>
         <Cpu :size="20" />
-        <span>Tốc độ in/out</span>
+        <span>{{ t('admin.conn.kpiSpeed') }}</span>
         <strong style="font-size:18px">{{ formatRate(summary.bpsIn + summary.bpsOut) }}</strong>
         <small style="color:var(--muted);font-size:11.5px">↑ {{ formatRate(summary.bpsOut) }} · ↓ {{ formatRate(summary.bpsIn) }}</small>
       </article>
       <article>
         <Globe :size="20" />
-        <span>Băng thông all-time</span>
+        <span>{{ t('admin.conn.kpiBwAll') }}</span>
         <strong style="font-size:18px">{{ formatBytes(summary.up + summary.down) }}</strong>
         <small style="color:var(--muted);font-size:11.5px">↑ {{ formatBytes(summary.up) }} · ↓ {{ formatBytes(summary.down) }}</small>
       </article>
       <article>
         <Cpu :size="20" />
-        <span>Node hoạt động</span>
+        <span>{{ t('admin.conn.kpiNodes') }}</span>
         <strong>{{ nodes.length }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ filtered.length }} proxy đang theo dõi</small>
+        <small style="color:var(--muted);font-size:11.5px">{{ t('admin.conn.kpiNodesSub', { n: filtered.length }) }}</small>
       </article>
     </div>
 
@@ -252,15 +255,15 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
       <div class="ord-filters">
         <div class="filter-row">
           <label class="filter-field">
-            <span>Node</span>
+            <span>{{ t('admin.conn.filterNode') }}</span>
             <select v-model="nodeFilter">
-              <option value="">Tất cả ({{ nodes.length }})</option>
+              <option value="">{{ t('admin.conn.filterAll', { n: nodes.length }) }}</option>
               <option v-for="n in nodes" :key="n.id" :value="n.id">{{ n.name }}</option>
             </select>
           </label>
           <label class="filter-field" style="flex:1; min-width:240px">
-            <span>Tìm</span>
-            <input v-model="search" type="search" placeholder="proxy id, email, IP, zone…" />
+            <span>{{ t('admin.conn.filterSearch') }}</span>
+            <input v-model="search" type="search" :placeholder="t('admin.conn.searchPh')" />
           </label>
         </div>
       </div>
@@ -270,8 +273,8 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
     <section v-if="tab === 'sessions'" class="surface ac-sessions">
       <div class="ac-toolbar">
         <div class="ac-toolbar-left">
-          <span class="ac-section-title"><Activity :size="14" /> Sessions</span>
-          <span class="ac-count-chip">{{ sessions.length }} hiển thị · {{ sessionsTotal.toLocaleString() }} tổng</span>
+          <span class="ac-section-title"><Activity :size="14" /> {{ t('admin.conn.tabSessions') }}</span>
+          <span class="ac-count-chip">{{ t('admin.conn.sessionsDisplay', { shown: sessions.length, total: sessionsTotal.toLocaleString() }) }}</span>
         </div>
         <div class="ac-toolbar-right">
           <div class="ac-range-pills">
@@ -285,36 +288,36 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
       <div class="ac-filter-bar">
         <div class="ac-filter-search">
           <Activity :size="14" />
-          <input v-model="sessionFilters.host" type="search" placeholder="Lọc theo host (vd: google.com)" @input="refresh" />
+          <input v-model="sessionFilters.host" type="search" :placeholder="t('admin.conn.filterHostPh')" @input="refresh" />
         </div>
         <div class="ac-filter-search ac-filter-narrow">
           <Users :size="14" />
-          <input v-model="sessionFilters.src" type="search" placeholder="Client IP (vd: 103.x.x.x)" @input="refresh" />
+          <input v-model="sessionFilters.src" type="search" :placeholder="t('admin.conn.filterSrcPh')" @input="refresh" />
         </div>
         <select v-model="sessionFilters.kind" class="ac-select" @change="refresh">
-          <option value="">Tất cả protocol</option>
+          <option value="">{{ t('admin.conn.allProtocol') }}</option>
           <option value="http">HTTP</option>
-          <option value="connect">HTTPS (CONNECT)</option>
+          <option value="connect">{{ t('admin.conn.protoHttps') }}</option>
           <option value="socks5">SOCKS5</option>
         </select>
       </div>
 
       <p v-if="!sessions.length && !loading" class="ac-empty">
         <Activity :size="22" style="opacity:0.4" />
-        <span>Không có session nào trong khung giờ này.</span>
+        <span>{{ t('admin.conn.sessionsEmpty') }}</span>
       </p>
 
       <div v-if="sessions.length" class="ac-table">
         <div class="ac-table-head">
-          <span>Source</span>
-          <span>Owner</span>
-          <span>Destination</span>
-          <span>Protocol</span>
-          <span class="right">Src Port</span>
-          <span class="right">Dst Port</span>
-          <span class="right">Bytes</span>
-          <span class="right">Duration</span>
-          <span class="right">Time</span>
+          <span>{{ t('admin.conn.colSource') }}</span>
+          <span>{{ t('admin.conn.colOwner') }}</span>
+          <span>{{ t('admin.conn.colDest') }}</span>
+          <span>{{ t('admin.conn.colProto') }}</span>
+          <span class="right">{{ t('admin.conn.colSrcPort') }}</span>
+          <span class="right">{{ t('admin.conn.colDstPort') }}</span>
+          <span class="right">{{ t('admin.conn.colBytes') }}</span>
+          <span class="right">{{ t('admin.conn.colDuration') }}</span>
+          <span class="right">{{ t('admin.conn.colTime') }}</span>
         </div>
         <div v-for="s in sessions" :key="s.id" class="ac-table-row">
           <span>
@@ -341,9 +344,9 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
       </div>
 
       <div v-if="sessionsTotal > 0" class="ac-pager">
-        <span class="ac-pager-info">Trang <strong>{{ sessionsPage + 1 }}</strong> / {{ Math.max(1, Math.ceil(sessionsTotal / sessionsPageSize)) }}</span>
+        <span class="ac-pager-info">{{ t('admin.conn.pageInfo') }} <strong>{{ sessionsPage + 1 }}</strong> {{ t('admin.conn.pageSep') }} {{ Math.max(1, Math.ceil(sessionsTotal / sessionsPageSize)) }}</span>
         <div class="ac-pager-spacer"></div>
-        <span class="ac-pager-info" style="margin-right:6px">Mỗi trang</span>
+        <span class="ac-pager-info" style="margin-right:6px">{{ t('admin.conn.perPage') }}</span>
         <select v-model.number="sessionsPageSize" class="ac-select ac-select-sm" @change="sessionsPage = 0; refresh()">
           <option :value="25">25</option>
           <option :value="50">50</option>
@@ -361,27 +364,27 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
     <!-- By client IP view -->
     <section v-if="tab === 'sources'" class="surface">
       <div class="section-head" style="display:flex; align-items:center; gap:10px">
-        <h2 style="margin:0"><Users :size="14" style="vertical-align:-2px" /> Client IP đã sử dụng proxy</h2>
+        <h2 style="margin:0"><Users :size="14" style="vertical-align:-2px" /> {{ t('admin.conn.srcTitle') }}</h2>
         <div class="spacer"></div>
         <label class="filter-field" style="width:auto">
-          <span>Khung giờ</span>
+          <span>{{ t('admin.conn.srcWindow') }}</span>
           <select v-model.number="sourcesHours" @change="refresh">
-            <option :value="1">1h</option>
-            <option :value="24">24h</option>
-            <option :value="168">7 ngày</option>
-            <option :value="720">30 ngày</option>
+            <option :value="1">{{ t('admin.conn.srcWin1h') }}</option>
+            <option :value="24">{{ t('admin.conn.srcWin24h') }}</option>
+            <option :value="168">{{ t('admin.conn.srcWin7d') }}</option>
+            <option :value="720">{{ t('admin.conn.srcWin30d') }}</option>
           </select>
         </label>
       </div>
-      <p v-if="!sources.length && !loading" class="empty-text">Chưa có client IP nào được ghi nhận trong khung giờ này.</p>
+      <p v-if="!sources.length && !loading" class="empty-text">{{ t('admin.conn.srcEmpty') }}</p>
       <div v-if="sources.length" class="data-table">
         <div class="table-head" style="grid-template-columns: 1.5fr 0.7fr 0.7fr 0.7fr 1fr 1fr">
-          <span>Client IP</span>
-          <span style="text-align:right">Lượt</span>
-          <span style="text-align:right">Proxy</span>
-          <span style="text-align:right">Owner</span>
-          <span style="text-align:right">Băng thông</span>
-          <span style="text-align:right">Lần cuối</span>
+          <span>{{ t('admin.conn.colClientIp') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colHits') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colProxyCount') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colOwnerCount') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colBandwidth') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colLast') }}</span>
         </div>
         <div v-for="s in sources" :key="s.src" class="table-row" style="grid-template-columns: 1.5fr 0.7fr 0.7fr 0.7fr 1fr 1fr">
           <span class="cell-mono" style="font-size:12px">
@@ -396,28 +399,28 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
         </div>
       </div>
       <p style="font-size:12px; color:var(--muted); margin-top:10px">
-        Owner > 1 (cột màu đỏ) = client IP đó dùng proxy thuộc nhiều khách khác nhau → có thể shared/abuse.
+        {{ t('admin.conn.srcFooter') }}
       </p>
     </section>
 
     <!-- Per-proxy connection table -->
     <section v-if="tab === 'proxies'" class="surface">
       <div class="section-head">
-        <h2>Proxy đang chạy ({{ filtered.length }})</h2>
-        <span style="color:var(--muted);font-size:12px">Click để xem destination + lịch sử kết nối</span>
+        <h2>{{ t('admin.conn.proxiesTitle', { n: filtered.length }) }}</h2>
+        <span style="color:var(--muted);font-size:12px">{{ t('admin.conn.proxiesNote') }}</span>
       </div>
       <p v-if="!filtered.length && !loading" class="empty-text">
-        Không có proxy nào của đơn live. Kiểm tra trang Đơn hàng.
+        {{ t('admin.conn.proxiesEmpty') }}
       </p>
       <div v-if="filtered.length" class="data-table conn-table">
         <div class="table-head">
           <span></span>
-          <span>Owner / Proxy</span>
-          <span>Node · Zone</span>
-          <span>Bind IP : Port</span>
-          <span style="text-align:right">Live · Total</span>
-          <span style="text-align:right">↑ / ↓ all-time</span>
-          <span style="text-align:right">Tốc độ</span>
+          <span>{{ t('admin.conn.colOwner') }} / Proxy</span>
+          <span>{{ t('admin.conn.filterNode') }} · Zone</span>
+          <span>{{ t('admin.conn.colBindIp') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colLiveTotal') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colBwAll') }}</span>
+          <span style="text-align:right">{{ t('admin.conn.colSpeed') }}</span>
         </div>
         <template v-for="r in filtered" :key="r.proxyId">
           <div class="table-row" :class="{ open: expanded.has(r.proxyId) }" @click="toggle(r.proxyId)">
@@ -432,7 +435,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
             </span>
             <span class="cell-mono">
               {{ r.ip || r.bindIp }}:{{ r.port }}
-              <small v-if="r.ip && r.bindIp && r.ip !== r.bindIp" style="display:block; color:var(--muted); font-size:10.5px">egress {{ r.bindIp }}</small>
+              <small v-if="r.ip && r.bindIp && r.ip !== r.bindIp" style="display:block; color:var(--muted); font-size:10.5px">{{ t('admin.bw.egressPrefix') }}{{ r.bindIp }}</small>
             </span>
             <span style="text-align:right">
               <strong :style="{ color: r.active ? 'var(--green)' : 'var(--muted)' }">{{ r.active }}</strong>
@@ -450,40 +453,40 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
           <div v-if="expanded.has(r.proxyId)" class="conn-detail" @click.stop>
             <div style="display:flex; gap:8px; margin-bottom:10px">
               <button class="ghost-button" type="button" @click="goDrillDown(r.proxyId)">
-                Xem trang chi tiết →
+                {{ t('admin.conn.openDetail') }}
               </button>
             </div>
             <div class="conn-detail-grid">
               <div>
-                <h4>Top destination ({{ r.topTargets.length }})</h4>
-                <p v-if="!r.topTargets.length" class="empty-text" style="padding:8px 0">Chưa có request nào tới proxy này.</p>
+                <h4>{{ t('admin.conn.topDestSubTitle', { n: r.topTargets.length }) }}</h4>
+                <p v-if="!r.topTargets.length" class="empty-text" style="padding:8px 0">{{ t('admin.conn.topDestEmpty') }}</p>
                 <div v-else class="data-table inner">
                   <div class="table-head inner-head" style="grid-template-columns: 1fr 60px 1fr 28px">
-                    <span>Host</span>
-                    <span style="text-align:right">Lượt</span>
-                    <span style="text-align:right">Băng thông</span>
+                    <span>{{ t('admin.connDetail.colHost') }}</span>
+                    <span style="text-align:right">{{ t('admin.connDetail.colHits') }}</span>
+                    <span style="text-align:right">{{ t('admin.conn.colBandwidth') }}</span>
                     <span></span>
                   </div>
-                  <div v-for="t in r.topTargets" :key="t.host" class="table-row inner-row" style="grid-template-columns: 1fr 60px 1fr 28px">
+                  <div v-for="dest in r.topTargets" :key="dest.host" class="table-row inner-row" style="grid-template-columns: 1fr 60px 1fr 28px">
                     <span class="cell-mono" style="font-size:12px">
-                      <span v-if="t.geo?.cc" :title="t.geo.country" style="margin-right:4px">{{ ccToFlag(t.geo.cc) }}</span>
-                      {{ t.host }}
+                      <span v-if="dest.geo?.cc" :title="dest.geo.country" style="margin-right:4px">{{ ccToFlag(dest.geo.cc) }}</span>
+                      {{ dest.host }}
                     </span>
-                    <span style="text-align:right">{{ formatNumber(t.count) }}</span>
-                    <span class="cell-mono" style="text-align:right; font-size:12px">{{ formatBytes(t.bytesUp + t.bytesDown) }}</span>
-                    <button class="icon-button" type="button" title="Chặn host này" @click="blockHost(t.host)"><Ban :size="12" /></button>
+                    <span style="text-align:right">{{ formatNumber(dest.count) }}</span>
+                    <span class="cell-mono" style="text-align:right; font-size:12px">{{ formatBytes(dest.bytesUp + dest.bytesDown) }}</span>
+                    <button class="icon-button" type="button" :title="t('admin.connDetail.blockTitle')" @click="blockHost(dest.host)"><Ban :size="12" /></button>
                   </div>
                 </div>
               </div>
               <div>
-                <h4>Kết nối gần nhất ({{ r.recentConns.length }})</h4>
-                <p v-if="!r.recentConns.length" class="empty-text" style="padding:8px 0">Chưa có kết nối.</p>
+                <h4>{{ t('admin.conn.recentTitle', { n: r.recentConns.length }) }}</h4>
+                <p v-if="!r.recentConns.length" class="empty-text" style="padding:8px 0">{{ t('admin.conn.recentEmpty') }}</p>
                 <div v-else class="data-table inner">
                   <div class="table-head inner-head">
-                    <span>Khi</span>
-                    <span>Client</span>
-                    <span>Đích</span>
-                    <span style="text-align:right">Bytes</span>
+                    <span>{{ t('admin.connDetail.colWhen') }}</span>
+                    <span>{{ t('admin.connDetail.colClient') }}</span>
+                    <span>{{ t('admin.connDetail.colTarget') }}</span>
+                    <span style="text-align:right">{{ t('admin.connDetail.colBytes') }}</span>
                   </div>
                   <div v-for="(c, i) in r.recentConns" :key="i" class="table-row inner-row">
                     <span style="font-size:11.5px; color:var(--muted)">{{ fmtAgo(c.ts) }}</span>

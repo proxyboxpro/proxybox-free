@@ -49,7 +49,7 @@ async function submit() {
   finally { submitting.value = false }
 }
 async function onRemove(id) {
-  if (!confirm(`Xoá node ${id}? Mọi proxy thuộc node sẽ bị đánh dấu expired.`)) return
+  if (!confirm(t('nodes.add.confirmDelete', { id }))) return
   try { await removeNode(id) } catch (e) { errorText.value = e.message }
 }
 async function onInstall(id) {
@@ -67,7 +67,7 @@ async function onToggle(n) {
     const action = n.disabled ? 'enable' : 'disable'
     const r = await apiFetch(`/api/nodes/${n.id}/${action}`, { method: 'POST' })
     n.disabled = r.disabled
-    flash.value = `${n.name} ${action}d`
+    flash.value = r.disabled ? t('nodes.add.flashDisabled', { name: n.name }) : t('nodes.add.flashEnabled', { name: n.name })
   } catch (e) { errorText.value = e.message }
   finally { busy.value = '' }
 }
@@ -75,7 +75,7 @@ async function onCheckAll(n) {
   busy.value = n.id; flash.value = ''
   try {
     const r = await apiFetch(`/api/nodes/${n.id}/check-all`, { method: 'POST' })
-    flash.value = `${n.name}: ${r.passed}/${r.total} live, ${r.failed} failed`
+    flash.value = t('nodes.add.checkAllResult', { name: n.name, passed: r.passed, total: r.total, failed: r.failed })
   } catch (e) { errorText.value = e.message }
   finally { busy.value = '' }
 }
@@ -99,7 +99,7 @@ async function regenFleetToken() {
 }
 async function revokeFleetToken() {
   if (!fleet.value) return
-  if (!confirm('Revoke fleet token? Các máy chưa cài sẽ không claim được nữa (máy đã cài vẫn chạy bình thường).')) return
+  if (!confirm(t('nodes.fleet.confirmRevoke'))) return
   fleetBusy.value = true
   try { await apiFetch('/api/nodes/fleet-token', { method: 'DELETE' }); fleet.value = null }
   catch (e) { fleetErr.value = e.message }
@@ -149,45 +149,45 @@ onMounted(async () => {
         <div class="fleet-grid">
           <div class="fleet-cmd fleet-cmd-v4">
             <div class="fleet-cmd-head">
-              <strong>🌐 Linux · IPv4 node</strong>
+              <strong>🌐 {{ t('nodes.fleet.linuxV4') }}</strong>
               <span class="fleet-tag tag-v4">v4</span>
               <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.installLinuxV4 || fleet.installLinux, 'linux-v4')">
-                <Copy :size="12" /> {{ fleetCopied === 'linux-v4' ? '✓ copied' : 'Copy' }}
+                <Copy :size="12" /> {{ fleetCopied === 'linux-v4' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
               </button>
             </div>
             <code class="fleet-snippet cell-mono">{{ fleet.installLinuxV4 || fleet.installLinux }}</code>
-            <p class="fleet-hint">Server có IPv4 public — proxy egress qua chính IPv4 đó.</p>
+            <p class="fleet-hint">{{ t('nodes.fleet.linuxV4Note') }}</p>
           </div>
           <div class="fleet-cmd fleet-cmd-v6">
             <div class="fleet-cmd-head">
-              <strong>🌍 Linux · IPv6 node</strong>
+              <strong>🌍 {{ t('nodes.fleet.linuxV6') }}</strong>
               <span class="fleet-tag tag-v6">v6</span>
               <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.installLinuxV6 || fleet.installLinux, 'linux-v6')">
-                <Copy :size="12" /> {{ fleetCopied === 'linux-v6' ? '✓ copied' : 'Copy' }}
+                <Copy :size="12" /> {{ fleetCopied === 'linux-v6' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
               </button>
             </div>
             <code class="fleet-snippet cell-mono">{{ fleet.installLinuxV6 || fleet.installLinux }}</code>
-            <p class="fleet-hint">Server có IPv6 /48 (hoặc /64) — egress qua IPv6, customer connect qua IPv4 của server.</p>
+            <p class="fleet-hint">{{ t('nodes.fleet.linuxV6Note') }}</p>
           </div>
           <div class="fleet-cmd">
             <div class="fleet-cmd-head">
               <strong>Windows (PowerShell, Administrator)</strong>
               <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.installWindows, 'win')">
-                <Copy :size="12" /> {{ fleetCopied === 'win' ? '✓ copied' : 'Copy' }}
+                <Copy :size="12" /> {{ fleetCopied === 'win' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
               </button>
             </div>
             <code class="fleet-snippet cell-mono">{{ fleet.installWindows }}</code>
           </div>
           <div class="fleet-cmd fleet-cmd-uninstall">
             <div class="fleet-cmd-head">
-              <strong>🗑 Gỡ cài đặt (Linux)</strong>
-              <span class="fleet-tag tag-danger">danger</span>
+              <strong>🗑 {{ t('nodes.fleet.uninstall') }}</strong>
+              <span class="fleet-tag tag-danger">{{ t('nodes.fleet.tagDanger') }}</span>
               <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.uninstall, 'uninst')">
-                <Copy :size="12" /> {{ fleetCopied === 'uninst' ? '✓ copied' : 'Copy' }}
+                <Copy :size="12" /> {{ fleetCopied === 'uninst' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
               </button>
             </div>
             <code class="fleet-snippet cell-mono">{{ fleet.uninstall }}</code>
-            <p class="fleet-hint">Stop service + xoá binary + config + sysctl rules. Idempotent.</p>
+            <p class="fleet-hint">{{ t('nodes.fleet.uninstallNote') }}</p>
           </div>
           <div class="fleet-cmd">
             <div class="fleet-cmd-head">
@@ -215,17 +215,17 @@ onMounted(async () => {
         <label class="input-field"><span>{{ t('nodes.sshUser') }}</span><input v-model="form.sshUser" placeholder="root" /></label>
         <label class="input-field"><span>{{ t('nodes.sshPassword') }}</span><input v-model="form.sshPassword" type="password" placeholder="••••••" /></label>
         <label class="input-field" style="grid-column:1/-1">
-          <span>{{ t('nodes.family') }} <strong style="color:#b91c1c">(bắt buộc)</strong></span>
+          <span>{{ t('nodes.family') }} <strong style="color:#b91c1c">{{ t('nodes.add.required') }}</strong></span>
           <div class="segment-tabs">
             <button :class="{ active: form.family === 'ipv4' }" type="button" @click="form.family = 'ipv4'">IPv4 only</button>
             <button :class="{ active: form.family === 'ipv6' }" type="button" @click="form.family = 'ipv6'">IPv6 only</button>
           </div>
         </label>
-        <label class="input-field"><span>{{ t('nodes.tag') }}</span><input v-model="form.tag" placeholder="prod / test / vn-edge" maxlength="32" /></label>
+        <label class="input-field"><span>{{ t('nodes.tag') }}</span><input v-model="form.tag" :placeholder="t('nodes.add.tagPh')" maxlength="32" /></label>
         <label class="input-field">
-          <span>Zone (geographic)</span>
+          <span>{{ t('nodes.add.zoneLabel') }}</span>
           <select v-model="form.zone">
-            <option value="">— auto —</option>
+            <option value="">{{ t('nodes.add.zoneAuto') }}</option>
             <option v-for="z in zones" :key="z.id" :value="z.id">{{ z.flag }} {{ z.name }}</option>
           </select>
         </label>
@@ -262,18 +262,18 @@ onMounted(async () => {
         </div>
       </div>
       <p v-if="others.length === 0" class="empty-text">
-        {{ ownerFilter === 'byon' ? 'Chưa có node BYON nào (do user tự cài).'
-         : ownerFilter === 'fleet' ? 'Chưa có node fleet (admin pool) nào.'
-         : 'Chưa có agent nào. Thêm node bằng nút "Add" phía trên.' }}
+        {{ ownerFilter === 'byon' ? t('nodes.add.emptyByon')
+         : ownerFilter === 'fleet' ? t('nodes.add.emptyFleet')
+         : t('nodes.add.emptyAll') }}
       </p>
       <div v-else class="data-table">
         <div class="table-row" style="grid-template-columns: 1.6fr 1.4fr 1fr 1fr 2.6fr; font-weight:600; background:var(--surface-2)">
-          <span>Node</span><span>Endpoint</span><span>Family · Zone</span><span>Status</span><span>Actions</span>
+          <span>{{ t('nodes.list.colNode') }}</span><span>{{ t('nodes.list.colEndpoint') }}</span><span>{{ t('nodes.list.colFamilyZone') }}</span><span>{{ t('nodes.list.colStatus') }}</span><span>{{ t('nodes.list.colActions') }}</span>
         </div>
         <div v-for="n in others" :key="n.id" class="table-row" style="grid-template-columns: 1.6fr 1.4fr 1fr 1fr 2.6fr">
           <RouterLink :to="detailLink(n.id)" class="proxy-name" style="color:inherit">
             <Server :size="14" /> {{ n.name }}
-            <span v-if="n.isByon" class="tag tag-byon" :title="'BYON: customer-owned · ' + n.ownerEmail" style="margin-left:6px">BYON · {{ n.ownerEmail || n.ownerId }}</span>
+            <span v-if="n.isByon" class="tag tag-byon" :title="t('nodes.list.byonTitle', { email: n.ownerEmail })" style="margin-left:6px">BYON · {{ n.ownerEmail || n.ownerId }}</span>
             <span v-else-if="n.tag" class="tag" style="margin-left:6px">{{ n.tag }}</span>
             <span v-if="n.version" class="tag" style="margin-left:4px">v{{ n.version }}</span>
           </RouterLink>
@@ -283,15 +283,15 @@ onMounted(async () => {
             <span v-if="n.zone && n.zone !== 'auto'" class="tag" style="margin-left:4px">{{ n.zone }}</span>
           </span>
           <span>
-            <span v-if="n.disabled" class="status-pill failed">disabled</span>
+            <span v-if="n.disabled" class="status-pill failed">{{ t('nodes.list.disabled') }}</span>
             <span v-else :class="['status-pill', n.status === 'online' ? 'active' : (n.status === 'install-failed' ? 'failed' : 'pending')]">{{ n.status }}</span>
-            <span v-if="n.outdated" class="status-pill pending" :title="`Agent v${n.version} → cần cập nhật lên v${n.latestAgentVersion}`" style="margin-left:4px; font-size:10px">outdated</span>
+            <span v-if="n.outdated" class="status-pill pending" :title="t('nodes.list.outdatedTitle', { cur: n.version, latest: n.latestAgentVersion })" style="margin-left:4px; font-size:10px">{{ t('nodes.list.outdated') }}</span>
           </span>
           <span class="action-row">
-            <button class="ghost-button" type="button" :disabled="syncing === n.id" style="padding:2px 8px" @click="onSync(n.id)"><RefreshCw :size="13" /> Sync</button>
-            <button class="ghost-button" type="button" :disabled="busy === n.id" style="padding:2px 8px" @click="onCheckAll(n)"><ShieldCheck :size="13" /> Check live</button>
-            <button class="ghost-button" type="button" :disabled="busy === n.id" style="padding:2px 8px" @click="onToggle(n)"><Power :size="13" /> {{ n.disabled ? 'Enable' : 'Disable' }}</button>
-            <button v-if="n.hasCreds && n.status !== 'online'" class="primary-action small" type="button" :disabled="installing === n.id" style="padding:2px 8px" @click="onInstall(n.id)">{{ installing === n.id ? '...' : 'Install' }}</button>
+            <button class="ghost-button" type="button" :disabled="syncing === n.id" style="padding:2px 8px" @click="onSync(n.id)"><RefreshCw :size="13" /> {{ t('nodes.list.sync') }}</button>
+            <button class="ghost-button" type="button" :disabled="busy === n.id" style="padding:2px 8px" @click="onCheckAll(n)"><ShieldCheck :size="13" /> {{ t('nodes.list.checkLive') }}</button>
+            <button class="ghost-button" type="button" :disabled="busy === n.id" style="padding:2px 8px" @click="onToggle(n)"><Power :size="13" /> {{ n.disabled ? t('nodes.list.enable') : t('nodes.list.disable') }}</button>
+            <button v-if="n.hasCreds && n.status !== 'online'" class="primary-action small" type="button" :disabled="installing === n.id" style="padding:2px 8px" @click="onInstall(n.id)">{{ installing === n.id ? '...' : t('nodes.list.install') }}</button>
             <button class="ghost-button" type="button" style="padding:2px 8px" @click="onRemove(n.id)"><Trash2 :size="13" /></button>
           </span>
           <div v-if="installOut[n.id]" style="grid-column:1/-1; padding-top:4px">

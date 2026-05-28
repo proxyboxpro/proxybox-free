@@ -7,7 +7,9 @@ import {
   Users, X
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
+import { useI18n } from '../../i18n'
 
+const { t } = useI18n()
 const router = useRouter()
 const list = ref([])
 const users = ref([])
@@ -54,15 +56,15 @@ async function toggleExpand(o) {
 
 async function cancelOrder(o, ev) {
   ev?.stopPropagation()
-  if (!confirm(`Huỷ + refund đơn ${o.id}? Refund tính theo giờ còn lại.`)) return
+  if (!confirm(t('admin.orders.confirmCancel', { id: o.id }))) return
   try {
     const r = await apiFetch(`/api/admin/orders/${o.id}/cancel-refund`, { method: 'POST' })
-    flash.value = `Đã refund ${Number(r.refund).toLocaleString()} VND.`
+    flash.value = t('admin.orders.flashRefund', { amount: Number(r.refund).toLocaleString() })
     await refresh()
   } catch (e) { err.value = e.message }
 }
 function openDetail(o) { router.push({ name: 'admin-order-detail', params: { orderId: o.id } }) }
-function copy(text, ev) { ev?.stopPropagation(); navigator.clipboard?.writeText(text); flash.value = `Đã copy ${text.slice(0, 30)}…`; setTimeout(() => flash.value = '', 1500) }
+function copy(text, ev) { ev?.stopPropagation(); navigator.clipboard?.writeText(text); flash.value = t('admin.orders.flashCopy', { text: text.slice(0, 30) }); setTimeout(() => flash.value = '', 1500) }
 
 const userById = computed(() => Object.fromEntries(users.value.map((u) => [u.id, u.email || u.id])))
 const nodeById = computed(() => Object.fromEntries(nodes.value.map((n) => [n.id, n])))
@@ -108,7 +110,7 @@ function fmtTs(ts) {
 function timeLeft(ms) {
   if (!ms) return '—'
   const diff = ms - Date.now()
-  if (diff <= 0) return 'expired'
+  if (diff <= 0) return t('admin.orders.expired')
   const h = Math.floor(diff / 3600_000)
   const d = Math.floor(h / 24)
   return d > 0 ? `${d}d ${h % 24}h` : `${h}h`
@@ -124,13 +126,13 @@ onMounted(refresh)
     <!-- ── Header ── -->
     <header class="ord-head">
       <div>
-        <p class="eyebrow"><ShoppingCart :size="12" /> Quản lý đơn hàng</p>
-        <h1>Đơn hàng proxy</h1>
-        <p class="sub">Tất cả đơn hàng + member proxy trên mọi node. Click row để xem chi tiết.</p>
+        <p class="eyebrow"><ShoppingCart :size="12" /> {{ t('admin.orders.eyebrow') }}</p>
+        <h1>{{ t('admin.orders.title') }}</h1>
+        <p class="sub">{{ t('admin.orders.subtitle') }}</p>
       </div>
       <div class="head-actions">
         <button class="ghost-button" type="button" :disabled="loading" @click="refresh">
-          <RefreshCw :size="13" :class="{ spin: loading }" /> Làm mới
+          <RefreshCw :size="13" :class="{ spin: loading }" /> {{ t('admin.orders.refresh') }}
         </button>
       </div>
     </header>
@@ -141,24 +143,24 @@ onMounted(refresh)
     <!-- ── KPI strip ── -->
     <div class="ord-kpis">
       <article class="kpi" :class="{ active: !filters.type && !filters.status }">
-        <span class="lbl"><ShoppingCart :size="12" /> Tổng đơn</span>
+        <span class="lbl"><ShoppingCart :size="12" /> {{ t('admin.orders.kpiTotal') }}</span>
         <strong>{{ kpi.total }}</strong>
-        <span class="foot">{{ kpi.active }} đang chạy · {{ kpi.cancelled }} huỷ</span>
+        <span class="foot">{{ t('admin.orders.kpiTotalSub', { active: kpi.active, cancelled: kpi.cancelled }) }}</span>
       </article>
       <article class="kpi">
-        <span class="lbl"><Network :size="12" /> Tổng proxy</span>
+        <span class="lbl"><Network :size="12" /> {{ t('admin.orders.kpiProxies') }}</span>
         <strong>{{ kpi.totalProxies }}</strong>
-        <span class="foot">{{ kpi.totalIpv4 }} IPv4 · {{ kpi.totalIpv6 }} IPv6</span>
+        <span class="foot">{{ t('admin.orders.kpiProxiesSub', { v4: kpi.totalIpv4, v6: kpi.totalIpv6 }) }}</span>
       </article>
       <article class="kpi">
-        <span class="lbl"><DollarSign :size="12" /> Doanh thu</span>
+        <span class="lbl"><DollarSign :size="12" /> {{ t('admin.orders.kpiRevenue') }}</span>
         <strong>{{ kpi.revenue.toLocaleString() }}<small>VND</small></strong>
-        <span class="foot">trong filter hiện tại</span>
+        <span class="foot">{{ t('admin.orders.kpiRevenueSub') }}</span>
       </article>
       <article class="kpi">
-        <span class="lbl"><Server :size="12" /> Top node</span>
+        <span class="lbl"><Server :size="12" /> {{ t('admin.orders.kpiTopNode') }}</span>
         <strong class="small-num">{{ kpi.topNode }}</strong>
-        <span class="foot">{{ kpi.topNodeCount }} đơn</span>
+        <span class="foot">{{ t('admin.orders.kpiTopNodeSub', { n: kpi.topNodeCount }) }}</span>
       </article>
     </div>
 
@@ -166,55 +168,55 @@ onMounted(refresh)
     <section class="ord-filters">
       <div class="row">
         <div class="segment-tabs">
-          <button :class="{ active: filters.type === '' }" type="button" @click="setType('')">Tất cả</button>
+          <button :class="{ active: filters.type === '' }" type="button" @click="setType('')">{{ t('admin.orders.tabAll') }}</button>
           <button :class="{ active: filters.type === 'IPv4' }" type="button" @click="setType('IPv4')">IPv4</button>
           <button :class="{ active: filters.type === 'IPv6' }" type="button" @click="setType('IPv6')">IPv6</button>
         </div>
         <div class="chips">
-          <button :class="{ active: filters.status === 'active' }" type="button" @click="setStatus('active')">Đang chạy</button>
-          <button :class="{ active: filters.status === 'expired' }" type="button" @click="setStatus('expired')">Hết hạn</button>
-          <button :class="{ active: filters.status === 'deleted' }" type="button" @click="setStatus('deleted')">Đã xoá</button>
-          <button :class="{ active: filters.status === 'cancelled' }" type="button" @click="setStatus('cancelled')">Đã huỷ</button>
-          <button :class="{ active: filters.status === 'refunded' }" type="button" @click="setStatus('refunded')">Refund</button>
-          <button :class="{ active: filters.status === '' }" type="button" @click="setStatus('')">Tất cả</button>
+          <button :class="{ active: filters.status === 'active' }" type="button" @click="setStatus('active')">{{ t('admin.orders.statusActive') }}</button>
+          <button :class="{ active: filters.status === 'expired' }" type="button" @click="setStatus('expired')">{{ t('admin.orders.statusExpired') }}</button>
+          <button :class="{ active: filters.status === 'deleted' }" type="button" @click="setStatus('deleted')">{{ t('admin.orders.statusDeleted') }}</button>
+          <button :class="{ active: filters.status === 'cancelled' }" type="button" @click="setStatus('cancelled')">{{ t('admin.orders.statusCancelled') }}</button>
+          <button :class="{ active: filters.status === 'refunded' }" type="button" @click="setStatus('refunded')">{{ t('admin.orders.statusRefunded') }}</button>
+          <button :class="{ active: filters.status === '' }" type="button" @click="setStatus('')">{{ t('admin.orders.statusAll') }}</button>
         </div>
         <div class="search-box">
           <Search :size="14" />
-          <input v-model="filters.q" type="search" placeholder="Mã đơn, email, node, zone..." />
+          <input v-model="filters.q" type="search" :placeholder="t('admin.orders.searchPh')" />
         </div>
       </div>
       <div class="row row-2">
         <label class="filter-field">
-          <span><Server :size="11" /> Node</span>
+          <span><Server :size="11" /> {{ t('admin.orders.filterNode') }}</span>
           <select v-model="filters.nodeId" @change="refresh">
-            <option value="">Mọi node</option>
-            <option value="local">local (control plane)</option>
+            <option value="">{{ t('admin.orders.filterAllNodes') }}</option>
+            <option value="local">{{ t('admin.orders.localCp') }}</option>
             <option v-for="n in nodes" :key="n.id" :value="n.id">{{ n.name }} ({{ n.id }})</option>
           </select>
         </label>
         <label class="filter-field">
-          <span><Globe :size="11" /> Zone</span>
+          <span><Globe :size="11" /> {{ t('admin.orders.filterZone') }}</span>
           <select v-model="filters.zone" @change="refresh">
-            <option value="">Mọi zone</option>
+            <option value="">{{ t('admin.orders.filterAllZones') }}</option>
             <option v-for="z in zones" :key="z.id" :value="z.id">{{ z.flag || z.id }} {{ z.name }}</option>
           </select>
         </label>
         <label class="filter-field">
-          <span><Users :size="11" /> Khách</span>
+          <span><Users :size="11" /> {{ t('admin.orders.filterOwner') }}</span>
           <select v-model="filters.ownerId" @change="refresh">
-            <option value="">Mọi khách</option>
+            <option value="">{{ t('admin.orders.filterAllOwners') }}</option>
             <option v-for="u in users" :key="u.id" :value="u.id">{{ u.email }}</option>
           </select>
         </label>
         <label class="filter-field">
-          <span><Calendar :size="11" /> Từ</span>
+          <span><Calendar :size="11" /> {{ t('admin.orders.filterFrom') }}</span>
           <input v-model="filters.from" type="date" @change="refresh" />
         </label>
         <label class="filter-field">
-          <span><Calendar :size="11" /> Đến</span>
+          <span><Calendar :size="11" /> {{ t('admin.orders.filterTo') }}</span>
           <input v-model="filters.to" type="date" @change="refresh" />
         </label>
-        <button v-if="hasActiveFilters" class="clear-btn" type="button" @click="clearFilters"><X :size="12" /> Clear</button>
+        <button v-if="hasActiveFilters" class="clear-btn" type="button" @click="clearFilters"><X :size="12" /> {{ t('admin.orders.clear') }}</button>
       </div>
     </section>
 
@@ -222,15 +224,15 @@ onMounted(refresh)
     <section v-if="filtered.length" class="ord-table">
       <header>
         <span></span>
-        <span>ID</span>
-        <span>Khách</span>
-        <span>Sản phẩm</span>
-        <span>Type</span>
-        <span>Zone</span>
-        <span>Node</span>
-        <span>Doanh thu</span>
-        <span>Tạo lúc</span>
-        <span>Status</span>
+        <span>{{ t('admin.orders.colId') }}</span>
+        <span>{{ t('admin.orders.colOwner') }}</span>
+        <span>{{ t('admin.orders.colItem') }}</span>
+        <span>{{ t('admin.orders.colType') }}</span>
+        <span>{{ t('admin.orders.colZone') }}</span>
+        <span>{{ t('admin.orders.colNodeC') }}</span>
+        <span>{{ t('admin.orders.colRevenue') }}</span>
+        <span>{{ t('admin.orders.colCreatedAt') }}</span>
+        <span>{{ t('admin.orders.colStatus') }}</span>
         <span></span>
       </header>
       <template v-for="o in filtered" :key="o.id">
@@ -241,11 +243,11 @@ onMounted(refresh)
           </button>
           <span class="cell-mono mono-id">{{ o.id }}</span>
           <span class="email-cell">
-            <span>{{ userById[o.ownerId] || (o.ownerId ? 'unknown' : '—') }}</span>
+            <span>{{ userById[o.ownerId] || (o.ownerId ? t('admin.orders.unknown') : '—') }}</span>
           </span>
           <span class="item-cell">
             {{ o.item }}
-            <small>{{ o.memberCount }} proxy</small>
+            <small>{{ t('admin.orders.proxiesSuffix', { n: o.memberCount }) }}</small>
           </span>
           <span>
             <span v-if="o.typesLabel === 'ipv6'" class="badge type-v6">IPv6</span>
@@ -261,18 +263,18 @@ onMounted(refresh)
           <span class="cell-mono amount-cell">{{ Number(o.amount || o.totalCost || 0).toLocaleString() }}</span>
           <span class="cell-mono time-cell">
             {{ fmtTs(o.createdAt || o.date) }}
-            <small v-if="o.expiringMs">· còn {{ timeLeft(o.expiringMs) }}</small>
+            <small v-if="o.expiringMs">{{ t('admin.orders.timeLeft', { left: timeLeft(o.expiringMs) }) }}</small>
           </span>
           <span>
             <span :class="['status-pill', o.effectiveStatus === 'active' ? 'active' : (o.effectiveStatus === 'expired' ? 'pending' : 'failed')]">
-              {{ ({ active: 'Đang chạy', expired: 'Hết hạn', deleted: 'Đã xoá', cancelled: 'Đã huỷ', refunded: 'Refund' })[o.effectiveStatus] || o.effectiveStatus }}
+              {{ ({ active: t('admin.orders.statusActive'), expired: t('admin.orders.statusExpired'), deleted: t('admin.orders.statusDeleted'), cancelled: t('admin.orders.statusCancelled'), refunded: t('admin.orders.statusRefunded') })[o.effectiveStatus] || o.effectiveStatus }}
             </span>
           </span>
           <span class="actions-cell" @click.stop>
-            <button class="ghost-button mini" type="button" @click="openDetail(o)" title="Xem chi tiết">
+            <button class="ghost-button mini" type="button" @click="openDetail(o)" :title="t('admin.orders.actDetail')">
               <MoreHorizontal :size="12" />
             </button>
-            <button v-if="o.status === 'paid' && o.ownerId" class="ghost-button mini danger" type="button" @click="cancelOrder(o, $event)" title="Huỷ + refund">
+            <button v-if="o.status === 'paid' && o.ownerId" class="ghost-button mini danger" type="button" @click="cancelOrder(o, $event)" :title="t('admin.orders.actCancel')">
               <X :size="12" />
             </button>
           </span>
@@ -280,11 +282,11 @@ onMounted(refresh)
 
         <!-- Expanded member proxies -->
         <div v-if="expanded.has(o.id)" :key="o.id + '-exp'" class="ord-members">
-          <div v-if="!expandedMembers.get(o.id)" class="loading-row">Loading members...</div>
-          <div v-else-if="!expandedMembers.get(o.id).length" class="loading-row">Không có proxy nào trong đơn này.</div>
+          <div v-if="!expandedMembers.get(o.id)" class="loading-row">{{ t('admin.orders.loadingMembers') }}</div>
+          <div v-else-if="!expandedMembers.get(o.id).length" class="loading-row">{{ t('admin.orders.noMembers') }}</div>
           <table v-else>
             <thead>
-              <tr><th>Proxy</th><th>Endpoint</th><th>Credentials</th><th>Status</th><th>Hết hạn</th><th></th></tr>
+              <tr><th>{{ t('admin.orders.colProxy') }}</th><th>{{ t('admin.orders.colEndpoint') }}</th><th>{{ t('admin.orders.colCreds') }}</th><th>{{ t('admin.orders.colStatus') }}</th><th>{{ t('admin.orders.colExpires') }}</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="p in expandedMembers.get(o.id)" :key="p.id">
@@ -304,7 +306,7 @@ onMounted(refresh)
         </div>
       </template>
     </section>
-    <p v-else class="empty">{{ loading ? 'Đang tải...' : 'Không có đơn nào khớp filter.' }}</p>
+    <p v-else class="empty">{{ loading ? t('admin.orders.loading') : t('admin.orders.empty') }}</p>
   </section>
 </template>
 

@@ -1,20 +1,22 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiFetch, token } from '../../api'
+import { useI18n } from '../../i18n'
 
+const { t } = useI18n()
 const codes = ref([])
 const form = ref({ code: '', amount: 50000, productGroup: 'all', validUntil: '', usageLimit: 0, note: '' })
 const batch = ref({ count: 10, prefix: 'PROMO', amount: 50000, productGroup: 'ipv6', validUntil: '', usageLimit: 1 })
 const stats = ref(null)
 const err = ref(''); const flash = ref(''); const busy = ref(false)
 
-const groups = [
-  { id: 'all',  label: 'Tất cả' },
-  { id: 'ipv4', label: 'IPv4' },
-  { id: 'ipv6', label: 'IPv6' },
-  { id: 'hub',  label: 'Hub' }
-]
-function groupLabel(g) { return (groups.find((x) => x.id === g) || groups[0]).label }
+const groups = computed(() => [
+  { id: 'all',  label: t('admin.cc.groupAll') },
+  { id: 'ipv4', label: t('admin.cc.groupIpv4') },
+  { id: 'ipv6', label: t('admin.cc.groupIpv6') },
+  { id: 'hub',  label: t('admin.cc.groupHub') }
+])
+function groupLabel(g) { return (groups.value.find((x) => x.id === g) || groups.value[0]).label }
 function fmt(n) { return Number(n || 0).toLocaleString('vi-VN') }
 function usedCount(c) { return Array.isArray(c.redeemedBy) ? c.redeemedBy.length : (c.usageCount || 0) }
 
@@ -29,7 +31,7 @@ async function addCode() {
   try {
     const c = await apiFetch('/api/admin/credit-codes', { method: 'POST', body: form.value })
     codes.value.unshift(c)
-    flash.value = `Đã tạo mã ${c.code} (+${fmt(c.amount)} ${c.currency}).`
+    flash.value = t('admin.cc.created', { code: c.code, amount: fmt(c.amount), currency: c.currency })
     form.value = { code: '', amount: 50000, productGroup: 'all', validUntil: '', usageLimit: 0, note: '' }
   } catch (e) { err.value = e.message }
   finally { busy.value = false }
@@ -39,7 +41,7 @@ async function addBatch() {
   busy.value = true; err.value = ''; flash.value = ''
   try {
     const r = await apiFetch('/api/admin/credit-codes/batch', { method: 'POST', body: batch.value })
-    flash.value = `Đã tạo ${r.created} mã. Bấm "Xuất CSV" để tải danh sách phát cho khách.`
+    flash.value = t('admin.cc.batchCreated', { n: r.created })
     await refresh()
   } catch (e) { err.value = e.message }
   finally { busy.value = false }
@@ -64,7 +66,7 @@ async function toggleCode(c) {
   catch (e) { err.value = e.message }
 }
 async function deleteCode(code) {
-  if (!confirm(`Xoá mã ${code}?`)) return
+  if (!confirm(t('admin.cc.confirmDel', { code }))) return
   try { await apiFetch(`/api/admin/credit-codes/${code}`, { method: 'DELETE' }); codes.value = codes.value.filter((c) => c.code !== code) }
   catch (e) { err.value = e.message }
 }
@@ -74,34 +76,32 @@ onMounted(refresh)
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <span class="eyebrow">Mã Free Credit ({{ codes.length }})</span>
+      <span class="eyebrow">{{ t('admin.cc.eyebrow') }} ({{ codes.length }})</span>
       <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="exportCsv">Xuất CSV</button>
-      <button class="ghost-button" type="button" @click="refresh">Refresh</button>
+      <button class="ghost-button" type="button" @click="exportCsv">{{ t('admin.cc.exportCsv') }}</button>
+      <button class="ghost-button" type="button" @click="refresh">{{ t('admin.common.refresh') }}</button>
     </div>
-    <p style="color:var(--muted); font-size:12.5px; margin:-4px 0 0; max-width:760px">
-      Khách nhập mã ở trang <strong>Nạp tiền</strong> để nhận free credit. Credit <strong>chỉ dùng mua đúng nhóm sản phẩm</strong>
-      của mã (tự trừ khi mua, trước ví) và <strong>hết hạn vào ngày Hết hạn</strong>. Mỗi khách dùng 1 lần / mã.
+    <p style="color:var(--muted); font-size:12.5px; margin:-4px 0 0; max-width:760px" v-html="t('admin.cc.intro')">
     </p>
     <p v-if="err" class="error-text">{{ err }}</p>
     <p v-if="flash" style="color:var(--green)">{{ flash }}</p>
 
     <div v-if="stats" class="surface" style="border-color:var(--green)">
-      <div class="section-head"><h2>Thống kê mã {{ stats.code }}</h2><button class="ghost-button" type="button" style="margin-left:auto" @click="stats = null">Đóng</button></div>
+      <div class="section-head"><h2>{{ t('admin.cc.statsTitle', { code: stats.code }) }}</h2><button class="ghost-button" type="button" style="margin-left:auto" @click="stats = null">{{ t('admin.common.close') }}</button></div>
       <div class="metric-grid" style="grid-template-columns: repeat(5, 1fr); gap:10px">
-        <div><span class="desc-sub">Lượt redeem</span><strong>{{ stats.redeemed }}/{{ stats.usageLimit || '∞' }}</strong></div>
-        <div><span class="desc-sub">Đã phát</span><strong class="cell-mono">{{ fmt(stats.granted) }}</strong></div>
-        <div><span class="desc-sub">Đã tiêu</span><strong class="cell-mono" style="color:var(--green)">{{ fmt(stats.spent) }}</strong></div>
-        <div><span class="desc-sub">Còn lại</span><strong class="cell-mono">{{ fmt(stats.remaining) }}</strong></div>
-        <div><span class="desc-sub">Nhóm</span><strong>{{ groupLabel(stats.group) }}</strong></div>
+        <div><span class="desc-sub">{{ t('admin.cc.statsRedeemed') }}</span><strong>{{ stats.redeemed }}/{{ stats.usageLimit || '∞' }}</strong></div>
+        <div><span class="desc-sub">{{ t('admin.cc.statsGranted') }}</span><strong class="cell-mono">{{ fmt(stats.granted) }}</strong></div>
+        <div><span class="desc-sub">{{ t('admin.cc.statsSpent') }}</span><strong class="cell-mono" style="color:var(--green)">{{ fmt(stats.spent) }}</strong></div>
+        <div><span class="desc-sub">{{ t('admin.cc.statsRemaining') }}</span><strong class="cell-mono">{{ fmt(stats.remaining) }}</strong></div>
+        <div><span class="desc-sub">{{ t('admin.cc.statsGroup') }}</span><strong>{{ groupLabel(stats.group) }}</strong></div>
       </div>
     </div>
 
     <section class="surface">
-      <div class="section-head"><h2>Danh sách</h2></div>
+      <div class="section-head"><h2>{{ t('admin.cc.listTitle') }}</h2></div>
       <div v-if="codes.length" class="data-table">
         <div class="table-head" style="grid-template-columns: 1.4fr 1.1fr 0.8fr 1fr 0.8fr 0.7fr auto auto auto">
-          <span>Code</span><span>Số tiền</span><span>Nhóm</span><span>Hết hạn</span><span>Đã dùng</span><span>Trạng thái</span><span></span><span></span><span></span>
+          <span>{{ t('admin.cc.colCode') }}</span><span>{{ t('admin.cc.colAmount') }}</span><span>{{ t('admin.cc.colGroup') }}</span><span>{{ t('admin.cc.colExpiry') }}</span><span>{{ t('admin.cc.colUsed') }}</span><span>{{ t('admin.cc.colStatus') }}</span><span></span><span></span><span></span>
         </div>
         <div v-for="c in codes" :key="c.code" class="table-row" style="grid-template-columns: 1.4fr 1.1fr 0.8fr 1fr 0.8fr 0.7fr auto auto auto">
           <span class="cell-mono">{{ c.code }}</span>
@@ -109,44 +109,44 @@ onMounted(refresh)
           <span><span class="tag-soft">{{ groupLabel(c.productGroup) }}</span></span>
           <span>{{ c.validUntil || '∞' }}</span>
           <span>{{ usedCount(c) }}/{{ c.usageLimit || '∞' }}</span>
-          <span class="tag-soft" :style="{ color: c.enabled === false ? '#f87171' : 'var(--green)' }">{{ c.enabled === false ? 'tắt' : 'bật' }}</span>
-          <button class="ghost-button" type="button" @click="viewStats(c.code)">stats</button>
-          <button class="ghost-button" type="button" @click="toggleCode(c)">{{ c.enabled === false ? 'bật' : 'tắt' }}</button>
-          <button class="ghost-button" type="button" @click="deleteCode(c.code)">xoá</button>
+          <span class="tag-soft" :style="{ color: c.enabled === false ? '#f87171' : 'var(--green)' }">{{ c.enabled === false ? t('admin.cc.statusOff') : t('admin.cc.statusOn') }}</span>
+          <button class="ghost-button" type="button" @click="viewStats(c.code)">{{ t('admin.cc.btnStats') }}</button>
+          <button class="ghost-button" type="button" @click="toggleCode(c)">{{ c.enabled === false ? t('admin.cc.statusOn') : t('admin.cc.statusOff') }}</button>
+          <button class="ghost-button" type="button" @click="deleteCode(c.code)">{{ t('admin.cc.btnDel') }}</button>
         </div>
       </div>
-      <p v-else class="empty-text">Chưa có mã nào.</p>
+      <p v-else class="empty-text">{{ t('admin.cc.empty') }}</p>
     </section>
 
     <section class="surface">
-      <div class="section-head"><h2>Tạo mã mới</h2></div>
+      <div class="section-head"><h2>{{ t('admin.cc.createTitle') }}</h2></div>
       <div class="form-grid">
-        <label class="input-field"><span>Code</span><input v-model="form.code" placeholder="WELCOME50" /></label>
-        <label class="input-field"><span>Số tiền credit</span><input v-model.number="form.amount" type="number" min="1000" step="1000" /></label>
-        <label class="input-field"><span>Nhóm sản phẩm</span>
+        <label class="input-field"><span>{{ t('admin.cc.fieldCode') }}</span><input v-model="form.code" placeholder="WELCOME50" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldAmount') }}</span><input v-model.number="form.amount" type="number" min="1000" step="1000" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldGroup') }}</span>
           <select v-model="form.productGroup"><option v-for="g in groups" :key="g.id" :value="g.id">{{ g.label }}</option></select>
         </label>
-        <label class="input-field"><span>Hết hạn credit (trống = vô hạn)</span><input v-model="form.validUntil" type="date" /></label>
-        <label class="input-field"><span>Giới hạn lượt (0 = ∞)</span><input v-model.number="form.usageLimit" type="number" min="0" /></label>
-        <label class="input-field"><span>Ghi chú</span><input v-model="form.note" placeholder="Campaign…" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldExpiry') }}</span><input v-model="form.validUntil" type="date" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldUsageLimit') }}</span><input v-model.number="form.usageLimit" type="number" min="0" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldNote') }}</span><input v-model="form.note" :placeholder="t('admin.cc.notePh')" /></label>
       </div>
-      <button class="primary-action small" type="button" :disabled="busy" @click="addCode">+ Tạo mã</button>
+      <button class="primary-action small" type="button" :disabled="busy" @click="addCode">{{ t('admin.cc.btnCreate') }}</button>
     </section>
 
     <section class="surface">
-      <div class="section-head"><h2>Tạo hàng loạt (campaign)</h2></div>
-      <p style="color:var(--muted); font-size:12px; margin:-6px 0 10px">Sinh nhiều mã unique (mỗi khách 1 lần) để phát theo chiến dịch. Tải về bằng "Xuất CSV".</p>
+      <div class="section-head"><h2>{{ t('admin.cc.batchTitle') }}</h2></div>
+      <p style="color:var(--muted); font-size:12px; margin:-6px 0 10px">{{ t('admin.cc.batchHint') }}</p>
       <div class="form-grid">
-        <label class="input-field"><span>Số lượng mã (1–500)</span><input v-model.number="batch.count" type="number" min="1" max="500" /></label>
-        <label class="input-field"><span>Tiền tố</span><input v-model="batch.prefix" placeholder="PROMO" /></label>
-        <label class="input-field"><span>Số tiền credit / mã</span><input v-model.number="batch.amount" type="number" min="1000" step="1000" /></label>
-        <label class="input-field"><span>Nhóm sản phẩm</span>
+        <label class="input-field"><span>{{ t('admin.cc.fieldBatchCount') }}</span><input v-model.number="batch.count" type="number" min="1" max="500" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldPrefix') }}</span><input v-model="batch.prefix" placeholder="PROMO" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldBatchAmount') }}</span><input v-model.number="batch.amount" type="number" min="1000" step="1000" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldGroup') }}</span>
           <select v-model="batch.productGroup"><option v-for="g in groups" :key="g.id" :value="g.id">{{ g.label }}</option></select>
         </label>
-        <label class="input-field"><span>Hết hạn credit</span><input v-model="batch.validUntil" type="date" /></label>
-        <label class="input-field"><span>Lượt / mã</span><input v-model.number="batch.usageLimit" type="number" min="1" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldBatchExpiry') }}</span><input v-model="batch.validUntil" type="date" /></label>
+        <label class="input-field"><span>{{ t('admin.cc.fieldBatchUsage') }}</span><input v-model.number="batch.usageLimit" type="number" min="1" /></label>
       </div>
-      <button class="primary-action small" type="button" :disabled="busy" @click="addBatch">+ Sinh {{ batch.count }} mã</button>
+      <button class="primary-action small" type="button" :disabled="busy" @click="addBatch">{{ t('admin.cc.btnBatch', { n: batch.count }) }}</button>
     </section>
   </section>
 </template>

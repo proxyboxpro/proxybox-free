@@ -2,7 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Activity, Download, Globe, RefreshCw, Server, Users } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
+import { useI18n } from '../../i18n'
 
+const { t } = useI18n()
 const stats = ref(null)
 const err = ref('')
 const loading = ref(false)
@@ -24,18 +26,18 @@ onMounted(() => {
 onBeforeUnmount(() => { if (pollHandle) clearInterval(pollHandle) })
 
 // Friendly labels for the kind enum surfaced by the API.
-const KIND_LABEL = {
-  'install-panel':     'Panel installer (install-panel.sh)',
-  'agent-script-linux':'Agent install script · Linux',
-  'agent-script-win':  'Agent install script · Windows',
-  'agent-script-v4':   'Agent install script · IPv4 preset',
-  'agent-script-v6':   'Agent install script · IPv6 preset',
-  'agent-binary-linux':'Agent binary · Linux (Rust)',
-  'agent-binary-win':  'Agent binary · Windows (Rust .exe)',
-  'agent-code':        'Agent code · Node.js fallback (agent.js)',
-  'agent-other':       'Agent · other'
+const KIND_LABEL_KEYS = {
+  'install-panel':     'admin.dl.kindInstallPanel',
+  'agent-script-linux':'admin.dl.kindAgentScriptLinux',
+  'agent-script-win':  'admin.dl.kindAgentScriptWin',
+  'agent-script-v4':   'admin.dl.kindAgentScriptV4',
+  'agent-script-v6':   'admin.dl.kindAgentScriptV6',
+  'agent-binary-linux':'admin.dl.kindAgentBinaryLinux',
+  'agent-binary-win':  'admin.dl.kindAgentBinaryWin',
+  'agent-code':        'admin.dl.kindAgentCode',
+  'agent-other':       'admin.dl.kindAgentOther'
 }
-function kindLabel(k) { return KIND_LABEL[k] || k }
+function kindLabel(k) { return KIND_LABEL_KEYS[k] ? t(KIND_LABEL_KEYS[k]) : k }
 function kindColor(k) {
   if (k === 'install-panel') return '#22d3ee'
   if (k.startsWith('agent-binary')) return '#a78bfa'
@@ -84,11 +86,11 @@ function shortUa(ua) {
   <section class="page-stack">
     <header class="page-head">
       <div>
-        <h1><Download :size="20" style="vertical-align:-3px; color:var(--green)" /> OSS Downloads</h1>
-        <p class="sub">Đếm số lượt khách hàng tải mã nguồn / agent từ panel này. Cập nhật mỗi 60s.</p>
+        <h1><Download :size="20" style="vertical-align:-3px; color:var(--green)" /> {{ t('admin.dl.title') }}</h1>
+        <p class="sub">{{ t('admin.dl.subtitle') }}</p>
       </div>
       <button class="ghost-button" type="button" :disabled="loading" @click="refresh">
-        <RefreshCw :size="13" :class="{ spin: loading }" /> Refresh
+        <RefreshCw :size="13" :class="{ spin: loading }" /> {{ t('admin.dl.refresh') }}
       </button>
     </header>
 
@@ -99,33 +101,33 @@ function shortUa(ua) {
       <div class="kpi-grid">
         <article class="kpi">
           <span class="ico" style="background:rgba(34,197,94,0.14); color:var(--green)"><Download :size="18" /></span>
-          <div><span class="lbl">Tổng tải</span><strong>{{ stats.totals.lifetime.toLocaleString() }}</strong></div>
+          <div><span class="lbl">{{ t('admin.dl.kpiTotal') }}</span><strong>{{ stats.totals.lifetime.toLocaleString() }}</strong></div>
         </article>
         <article class="kpi">
           <span class="ico" style="background:rgba(34,211,238,0.14); color:#22d3ee"><Activity :size="18" /></span>
-          <div><span class="lbl">24h qua</span><strong>{{ stats.totals.last24h.toLocaleString() }}</strong><small>{{ stats.totals.uniqIp24h }} unique IP</small></div>
+          <div><span class="lbl">{{ t('admin.dl.kpi24h') }}</span><strong>{{ stats.totals.last24h.toLocaleString() }}</strong><small>{{ t('admin.dl.uniqIpSub', { n: stats.totals.uniqIp24h }) }}</small></div>
         </article>
         <article class="kpi">
           <span class="ico" style="background:rgba(139,92,246,0.14); color:#a78bfa"><Activity :size="18" /></span>
-          <div><span class="lbl">7 ngày qua</span><strong>{{ stats.totals.last7d.toLocaleString() }}</strong><small>{{ stats.totals.uniqIp7d }} unique IP</small></div>
+          <div><span class="lbl">{{ t('admin.dl.kpi7d') }}</span><strong>{{ stats.totals.last7d.toLocaleString() }}</strong><small>{{ t('admin.dl.uniqIpSub', { n: stats.totals.uniqIp7d }) }}</small></div>
         </article>
         <article class="kpi">
           <span class="ico" style="background:rgba(245,158,11,0.14); color:#f59e0b"><Globe :size="18" /></span>
-          <div><span class="lbl">30 ngày qua</span><strong>{{ stats.totals.last30d.toLocaleString() }}</strong></div>
+          <div><span class="lbl">{{ t('admin.dl.kpi30d') }}</span><strong>{{ stats.totals.last30d.toLocaleString() }}</strong></div>
         </article>
         <article class="kpi">
           <span class="ico" style="background:rgba(96,165,250,0.14); color:#60a5fa"><Users :size="18" /></span>
-          <div><span class="lbl">Unique IP tổng</span><strong>{{ stats.totals.uniqIpAll.toLocaleString() }}</strong></div>
+          <div><span class="lbl">{{ t('admin.dl.kpiUniqIp') }}</span><strong>{{ stats.totals.uniqIpAll.toLocaleString() }}</strong></div>
         </article>
       </div>
 
       <!-- 30-day bar chart (lightweight CSS bars, no chart lib needed) -->
       <section class="surface chart-card">
         <div class="section-head">
-          <h2><Activity :size="14" style="vertical-align:-2px" /> Tải theo ngày (30 ngày gần nhất)</h2>
+          <h2><Activity :size="14" style="vertical-align:-2px" /> {{ t('admin.dl.chart30d') }}</h2>
         </div>
         <div class="bar-chart">
-          <div v-for="d in dailySeries" :key="d.day" class="bar-col" :title="`${d.day}: ${d.count} lượt`">
+          <div v-for="d in dailySeries" :key="d.day" class="bar-col" :title="`${d.day}: ${d.count}`">
             <span class="bar" :style="{ height: (d.count / maxDaily * 100) + '%' }" :data-count="d.count"></span>
             <small>{{ d.day.slice(5) }}</small>
           </div>
@@ -134,11 +136,11 @@ function shortUa(ua) {
 
       <!-- Breakdown by kind -->
       <section class="surface">
-        <div class="section-head"><h2><Server :size="14" style="vertical-align:-2px" /> Tải theo loại</h2></div>
-        <div v-if="!stats.byKind.length" class="empty-text">Chưa có lượt tải nào.</div>
+        <div class="section-head"><h2><Server :size="14" style="vertical-align:-2px" /> {{ t('admin.dl.byKind') }}</h2></div>
+        <div v-if="!stats.byKind.length" class="empty-text">{{ t('admin.dl.byKindEmpty') }}</div>
         <table v-else class="kind-table">
           <thead>
-            <tr><th>Loại</th><th style="text-align:right">Tổng tải</th><th style="text-align:right">Unique IP</th><th>Phân bổ</th></tr>
+            <tr><th>{{ t('admin.dl.colKind') }}</th><th style="text-align:right">{{ t('admin.dl.colCount') }}</th><th style="text-align:right">{{ t('admin.dl.colUniqIp') }}</th><th>{{ t('admin.dl.colShare') }}</th></tr>
           </thead>
           <tbody>
             <tr v-for="row in stats.byKind" :key="row.kind">
@@ -160,13 +162,13 @@ function shortUa(ua) {
       <!-- Recent 100 hits -->
       <section class="surface">
         <div class="section-head">
-          <h2><Activity :size="14" style="vertical-align:-2px" /> Tải gần đây ({{ stats.recent.length }})</h2>
-          <small style="color:var(--muted); margin-left:8px">IP đã mask octet cuối để screenshot an toàn</small>
+          <h2><Activity :size="14" style="vertical-align:-2px" /> {{ t('admin.dl.recent', { n: stats.recent.length }) }}</h2>
+          <small style="color:var(--muted); margin-left:8px">{{ t('admin.dl.recentNote') }}</small>
         </div>
-        <div v-if="!stats.recent.length" class="empty-text">Chưa có lượt tải.</div>
+        <div v-if="!stats.recent.length" class="empty-text">{{ t('admin.dl.recentEmpty') }}</div>
         <div v-else class="recent-table">
           <div class="r-head">
-            <span>Thời gian</span><span>Loại</span><span>IP (masked)</span><span>Client</span><span>Referer</span>
+            <span>{{ t('admin.dl.colWhen') }}</span><span>{{ t('admin.dl.colKind') }}</span><span>{{ t('admin.dl.colIp') }}</span><span>{{ t('admin.dl.colClient') }}</span><span>{{ t('admin.dl.colReferer') }}</span>
           </div>
           <div v-for="(r, i) in stats.recent" :key="i" class="r-row">
             <span class="cell-mono">{{ fmtTs(r.ts) }}</span>
@@ -179,7 +181,7 @@ function shortUa(ua) {
       </section>
     </template>
 
-    <p v-else-if="!err" class="empty-text" style="padding:40px">Đang tải…</p>
+    <p v-else-if="!err" class="empty-text" style="padding:40px">{{ t('admin.dl.loading') }}</p>
   </section>
 </template>
 

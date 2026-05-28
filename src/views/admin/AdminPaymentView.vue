@@ -1,7 +1,9 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../../api'
+import { useI18n } from '../../i18n'
 
+const { t } = useI18n()
 const billing = ref(null)
 const smtp = ref(null)
 const testTo = ref('')
@@ -12,16 +14,16 @@ async function refresh() {
   catch (e) { err.value = e.message }
 }
 async function saveBilling() {
-  try { await apiFetch('/api/admin/billing/config', { method: 'PATCH', body: billing.value }); flash.value = 'Billing config saved.'; await refresh() }
+  try { await apiFetch('/api/admin/billing/config', { method: 'PATCH', body: billing.value }); flash.value = t('admin.pay.savedBilling'); await refresh() }
   catch (e) { err.value = e.message }
 }
 async function saveSmtp() {
-  try { await apiFetch('/api/admin/smtp', { method: 'PATCH', body: smtp.value }); flash.value = 'SMTP saved.'; await refresh() }
+  try { await apiFetch('/api/admin/smtp', { method: 'PATCH', body: smtp.value }); flash.value = t('admin.pay.savedSmtp'); await refresh() }
   catch (e) { err.value = e.message }
 }
 async function sendTest() {
   if (!testTo.value) return
-  try { const r = await apiFetch('/api/admin/smtp/test', { method: 'POST', body: { to: testTo.value } }); flash.value = r.ok ? 'Test email sent.' : 'Test failed — see /api/nodes/local/logs' }
+  try { const r = await apiFetch('/api/admin/smtp/test', { method: 'POST', body: { to: testTo.value } }); flash.value = r.ok ? t('admin.pay.testEmailSent') : t('admin.pay.testFailed') }
   catch (e) { err.value = e.message }
 }
 onMounted(refresh)
@@ -29,63 +31,63 @@ onMounted(refresh)
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <span class="eyebrow">Payment & email</span>
+      <span class="eyebrow">{{ t('admin.pay.eyebrow') }}</span>
       <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh">Refresh</button>
+      <button class="ghost-button" type="button" @click="refresh">{{ t('admin.common.refresh') }}</button>
     </div>
     <p v-if="err" class="error-text">{{ err }}</p>
     <p v-if="flash" style="color:#15803d">{{ flash }}</p>
 
     <section v-if="billing" class="surface">
-      <div class="section-head"><h2>Billing &amp; Stripe</h2></div>
-      <p style="font-size:13px; color:var(--muted)">Stripe Checkout integration. Khi enable production phải set <code>testMode=false</code>, đặt thật <code>stripeSecretKey</code> + <code>stripeWebhookSecret</code> (lấy từ Stripe Dashboard), và 2 URL redirect.</p>
+      <div class="section-head"><h2>{{ t('admin.pay.stripeTitle') }}</h2></div>
+      <p style="font-size:13px; color:var(--muted)" v-html="t('admin.pay.stripeHelp')"></p>
       <div class="form-grid">
-        <label class="check-line" style="grid-column:1/-1"><input v-model="billing.testMode" type="checkbox" /><span>Test mode (cho phép topup không cần Stripe — dev/staging only)</span></label>
-        <label class="input-field"><span>Currency</span><input v-model="billing.currency" maxlength="8" /></label>
-        <label class="input-field"><span>Trial credits (new user signup)</span><input v-model.number="billing.trialCredits" type="number" min="0" /></label>
-        <label class="input-field"><span>Affiliate kickback (per signup via referral)</span><input v-model.number="billing.affiliateKickback" type="number" min="0" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Stripe secret key (sk_live_… or sk_test_…)</span><input v-model="billing.stripeSecretKey" placeholder="sk_test_..." /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Stripe webhook secret (whsec_…)</span><input v-model="billing.stripeWebhookSecret" placeholder="whsec_..." /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Success URL (after payment)</span><input v-model="billing.successUrl" placeholder="https://your-domain/vi/customer/billing?paid=1" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Cancel URL</span><input v-model="billing.cancelUrl" placeholder="https://your-domain/vi/customer/billing?paid=0" /></label>
+        <label class="check-line" style="grid-column:1/-1"><input v-model="billing.testMode" type="checkbox" /><span>{{ t('admin.pay.testMode') }}</span></label>
+        <label class="input-field"><span>{{ t('admin.pay.currency') }}</span><input v-model="billing.currency" maxlength="8" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.trialCredits') }}</span><input v-model.number="billing.trialCredits" type="number" min="0" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.affiliateKickback') }}</span><input v-model.number="billing.affiliateKickback" type="number" min="0" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.stripeSecretKey') }}</span><input v-model="billing.stripeSecretKey" placeholder="sk_test_..." /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.stripeWebhookSecret') }}</span><input v-model="billing.stripeWebhookSecret" placeholder="whsec_..." /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.successUrl') }}</span><input v-model="billing.successUrl" placeholder="https://your-domain/vi/customer/billing?paid=1" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.cancelUrl') }}</span><input v-model="billing.cancelUrl" placeholder="https://your-domain/vi/customer/billing?paid=0" /></label>
       </div>
-      <button class="primary-action small" type="button" @click="saveBilling">Save billing</button>
+      <button class="primary-action small" type="button" @click="saveBilling">{{ t('admin.pay.saveBilling') }}</button>
     </section>
 
     <section v-if="billing" class="surface">
-      <div class="section-head"><h2>PayPal</h2></div>
-      <p style="font-size:13px; color:var(--muted)">PayPal Checkout — customer top-up wallet bằng PayPal (redirect flow). Lấy <code>Client ID</code> + <code>Secret</code> tại <a href="https://developer.paypal.com/dashboard/applications" target="_blank" rel="noopener">developer.paypal.com</a>. Sandbox dùng để test, Live cho production.</p>
+      <div class="section-head"><h2>{{ t('admin.pay.paypalTitle') }}</h2></div>
+      <p style="font-size:13px; color:var(--muted)" v-html="t('admin.pay.paypalHelp')"></p>
       <div class="form-grid">
-        <label class="check-line" style="grid-column:1/-1"><input v-model="billing.paypalEnabled" type="checkbox" /><span>Enable PayPal payment cho customer</span></label>
-        <label class="input-field"><span>Mode</span>
+        <label class="check-line" style="grid-column:1/-1"><input v-model="billing.paypalEnabled" type="checkbox" /><span>{{ t('admin.pay.paypalEnable') }}</span></label>
+        <label class="input-field"><span>{{ t('admin.pay.mode') }}</span>
           <select v-model="billing.paypalMode">
-            <option value="sandbox">Sandbox (test)</option>
-            <option value="live">Live (production)</option>
+            <option value="sandbox">{{ t('admin.pay.modeSandbox') }}</option>
+            <option value="live">{{ t('admin.pay.modeLive') }}</option>
           </select>
         </label>
-        <label class="input-field"><span>PayPal currency (default cho topup)</span><input v-model="billing.paypalCurrency" placeholder="USD" maxlength="8" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Client ID</span><input v-model="billing.paypalClientId" placeholder="A21AAH..." /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Secret</span><input v-model="billing.paypalSecret" type="password" placeholder="EL2..." /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Return URL (after PayPal approve)</span><input v-model="billing.paypalReturnUrl" placeholder="https://your-domain/customer/billing?paypal=ok" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>Cancel URL</span><input v-model="billing.paypalCancelUrl" placeholder="https://your-domain/customer/billing?paypal=cancel" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.paypalCurrency') }}</span><input v-model="billing.paypalCurrency" placeholder="USD" maxlength="8" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.paypalClientId') }}</span><input v-model="billing.paypalClientId" placeholder="A21AAH..." /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.paypalSecret') }}</span><input v-model="billing.paypalSecret" type="password" placeholder="EL2..." /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.paypalReturnUrl') }}</span><input v-model="billing.paypalReturnUrl" placeholder="https://your-domain/customer/billing?paypal=ok" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.cancelUrl') }}</span><input v-model="billing.paypalCancelUrl" placeholder="https://your-domain/customer/billing?paypal=cancel" /></label>
       </div>
-      <button class="primary-action small" type="button" @click="saveBilling">Save PayPal</button>
+      <button class="primary-action small" type="button" @click="saveBilling">{{ t('admin.pay.savePaypal') }}</button>
     </section>
 
     <section v-if="smtp" class="surface">
-      <div class="section-head"><h2>SMTP (email transactional)</h2></div>
-      <p style="font-size:13px; color:var(--muted)">SendGrid / Resend / Mailgun / Postmark — bất kỳ provider nào hỗ trợ SMTP+STARTTLS. Port 465 = implicit TLS, 587 = STARTTLS.</p>
+      <div class="section-head"><h2>{{ t('admin.pay.smtpTitle') }}</h2></div>
+      <p style="font-size:13px; color:var(--muted)">{{ t('admin.pay.smtpHelp') }}</p>
       <div class="form-grid">
-        <label class="input-field"><span>Host</span><input v-model="smtp.host" placeholder="smtp.sendgrid.net" /></label>
-        <label class="input-field"><span>Port</span><input v-model.number="smtp.port" type="number" /></label>
-        <label class="input-field"><span>User</span><input v-model="smtp.user" placeholder="apikey" /></label>
-        <label class="input-field"><span>Pass / API key</span><input v-model="smtp.pass" type="password" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>From address</span><input v-model="smtp.from" placeholder="ProxyBox &lt;no-reply@your-domain&gt;" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.smtpHost') }}</span><input v-model="smtp.host" placeholder="smtp.sendgrid.net" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.smtpPort') }}</span><input v-model.number="smtp.port" type="number" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.smtpUser') }}</span><input v-model="smtp.user" placeholder="apikey" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.smtpPass') }}</span><input v-model="smtp.pass" type="password" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.smtpFrom') }}</span><input v-model="smtp.from" placeholder="ProxyBox &lt;no-reply@your-domain&gt;" /></label>
       </div>
       <div class="action-row" style="margin-top:8px">
-        <button class="primary-action small" type="button" @click="saveSmtp">Save SMTP</button>
-        <input v-model="testTo" placeholder="recipient@email" class="search-input" style="margin-left:8px" />
-        <button class="ghost-button" type="button" @click="sendTest">Send test email</button>
+        <button class="primary-action small" type="button" @click="saveSmtp">{{ t('admin.pay.saveSmtp') }}</button>
+        <input v-model="testTo" :placeholder="t('admin.pay.testEmailPh')" class="search-input" style="margin-left:8px" />
+        <button class="ghost-button" type="button" @click="sendTest">{{ t('admin.pay.sendTest') }}</button>
       </div>
     </section>
   </section>

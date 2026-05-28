@@ -3,6 +3,9 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Activity, Cpu, HardDrive, Network, Pause, Play, RefreshCw } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatBytes } from '../../utils/format'
+import { useI18n } from '../../i18n'
+
+const { t } = useI18n()
 
 const REFRESH_MS = 3000
 const HISTORY = 60
@@ -97,8 +100,8 @@ const onlineCount = computed(() => nodes.value.filter((n) => n.status === 'onlin
 function ago() {
   if (!lastFetchMs.value) return '—'
   const s = Math.floor((Date.now() - lastFetchMs.value) / 1000)
-  if (s < 2) return 'now'
-  return s + 's ago'
+  if (s < 2) return t('admin.mon.now')
+  return s + t('admin.mon.agoSuffix')
 }
 
 const tick = ref(0)
@@ -110,27 +113,27 @@ const agoLive = computed(() => { /* eslint-disable-next-line no-unused-expressio
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <h1 style="margin:0; font-size:18px"><Activity :size="16" style="vertical-align:-3px" /> Realtime monitor</h1>
-      <span style="color:var(--muted); font-size:12px">Cập nhật mỗi {{ REFRESH_MS / 1000 }}s · last: {{ agoLive }}</span>
+      <h1 style="margin:0; font-size:18px"><Activity :size="16" style="vertical-align:-3px" /> {{ t('admin.mon.title') }}</h1>
+      <span style="color:var(--muted); font-size:12px">{{ t('admin.mon.refreshNote', { s: REFRESH_MS / 1000, ago: agoLive }) }}</span>
       <div class="spacer"></div>
       <button class="ghost-button" type="button" @click="togglePause">
         <Pause v-if="!paused" :size="13" /><Play v-else :size="13" />
-        {{ paused ? 'Resume' : 'Pause' }}
+        {{ paused ? t('admin.mon.resume') : t('admin.mon.pause') }}
       </button>
-      <button class="ghost-button" type="button" :disabled="paused" @click="refresh"><RefreshCw :size="13" /> Refresh now</button>
+      <button class="ghost-button" type="button" :disabled="paused" @click="refresh"><RefreshCw :size="13" /> {{ t('admin.mon.refreshNow') }}</button>
     </div>
 
     <p v-if="fetchError" class="error-text">{{ fetchError }}</p>
 
     <!-- ── Fleet overview ── -->
     <section class="surface">
-      <div class="section-head"><h2>Tổng quan fleet ({{ nodes.length }} node)</h2></div>
+      <div class="section-head"><h2>{{ t('admin.mon.fleetTitle', { n: nodes.length }) }}</h2></div>
       <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">Node online</div><div class="metric-value">{{ onlineCount }} / {{ nodes.length }}</div></div>
-        <div class="metric-card"><div class="metric-label">CPU trung bình</div><div class="metric-value">{{ totalCpuAvg }}%</div></div>
-        <div class="metric-card"><div class="metric-label">RAM (tổng)</div><div class="metric-value">{{ formatBytes(totalRamUsed) }}</div><div class="metric-foot">/ {{ formatBytes(totalRamMax) }}</div></div>
-        <div class="metric-card"><div class="metric-label">Network ↓ tổng</div><div class="metric-value">{{ formatBytes(totalRxBps) }}/s</div></div>
-        <div class="metric-card"><div class="metric-label">Network ↑ tổng</div><div class="metric-value">{{ formatBytes(totalTxBps) }}/s</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.nodesOnline') }}</div><div class="metric-value">{{ onlineCount }} / {{ nodes.length }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.cpuAvg') }}</div><div class="metric-value">{{ totalCpuAvg }}%</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.ramTotal') }}</div><div class="metric-value">{{ formatBytes(totalRamUsed) }}</div><div class="metric-foot">/ {{ formatBytes(totalRamMax) }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.netDown') }}</div><div class="metric-value">{{ formatBytes(totalRxBps) }}/s</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.netUp') }}</div><div class="metric-value">{{ formatBytes(totalTxBps) }}/s</div></div>
       </div>
     </section>
 
@@ -142,12 +145,12 @@ const agoLive = computed(() => { /* eslint-disable-next-line no-unused-expressio
           <small style="color:var(--muted); font-size:11px; margin-left:4px">{{ n.host }}</small>
         </h2>
         <span :class="['status-pill', n.status === 'online' ? 'active' : (n.status === 'install-failed' ? 'failed' : 'pending')]">{{ n.status }}</span>
-        <span v-if="n.isLocal" class="status-pill pending" style="font-size:10px">control plane</span>
+        <span v-if="n.isLocal" class="status-pill pending" style="font-size:10px">{{ t('admin.mon.controlPlane') }}</span>
         <span v-if="n.version" class="cell-mono" style="color:var(--muted); font-size:11px">v{{ n.version }}</span>
         <div class="spacer"></div>
         <small style="color:var(--muted); font-size:11px">{{ n.proxies }} proxy</small>
       </div>
-      <div v-if="!n.metrics" class="empty-text" style="padding:12px 0">Chưa có metrics.</div>
+      <div v-if="!n.metrics" class="empty-text" style="padding:12px 0">{{ t('admin.mon.noMetrics') }}</div>
       <div v-else class="monitor-row">
         <!-- CPU -->
         <div class="monitor-cell">

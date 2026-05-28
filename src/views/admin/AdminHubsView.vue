@@ -2,7 +2,9 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Activity, AlertTriangle, Box, Check, ChevronDown, Cloud, Cpu, History, KeyRound, Plus, Power, PowerOff, RefreshCw, RotateCcw, Server, ShieldCheck, Stethoscope, Terminal, Trash2, UploadCloud, Zap } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
+import { useI18n } from '../../i18n'
 
+const { t } = useI18n()
 const tab = ref('config')
 const flash = ref('')
 const err = ref('')
@@ -30,10 +32,10 @@ async function saveVz() {
   try {
     if (editingVz.value === 'new') {
       const r = await apiFetch('/api/admin/virtualizors', { method: 'POST', body: vzDraft.value })
-      flash.value = `Đã thêm Virtualizor instance ${r.id}.`
+      flash.value = t('admin.hubs.vzAdded', { id: r.id })
     } else {
       await apiFetch(`/api/admin/virtualizors/${editingVz.value}`, { method: 'PATCH', body: vzDraft.value })
-      flash.value = 'Cập nhật instance thành công.'
+      flash.value = t('admin.hubs.vzUpdated')
     }
     setTimeout(() => flash.value = '', 3500)
     cancelVzEdit()
@@ -41,7 +43,7 @@ async function saveVz() {
   } catch (e) { err.value = e.message }
 }
 async function deleteVz(id) {
-  if (!confirm('Xóa Virtualizor instance này? Hub plans gắn vào instance này sẽ không provision được nữa.')) return
+  if (!confirm(t('admin.hubs.vzConfirmDel'))) return
   try { await apiFetch(`/api/admin/virtualizors/${id}`, { method: 'DELETE' }); await loadInstances() }
   catch (e) { err.value = e.message }
 }
@@ -174,10 +176,10 @@ async function savePlan() {
   try {
     if (editingPlan.value === 'new') {
       await apiFetch('/api/admin/hub-plans', { method: 'POST', body: draftPlan })
-      flash.value = 'Tạo plan mới thành công.'
+      flash.value = t('admin.hubs.planCreated')
     } else {
       await apiFetch(`/api/admin/hub-plans/${editingPlan.value}`, { method: 'PATCH', body: draftPlan })
-      flash.value = 'Cập nhật plan thành công.'
+      flash.value = t('admin.hubs.planUpdated')
     }
     setTimeout(() => flash.value = '', 3000)
     cancelEdit()
@@ -185,7 +187,7 @@ async function savePlan() {
   } catch (e) { err.value = e.message }
 }
 async function deletePlan(id) {
-  if (!confirm('Xóa plan này? Các hub đã provision không bị xóa nhưng plan không còn cho khách buy.')) return
+  if (!confirm(t('admin.hubs.planConfirmDel'))) return
   try { await apiFetch(`/api/admin/hub-plans/${id}`, { method: 'DELETE' }); await loadHubPlans() }
   catch (e) { err.value = e.message }
 }
@@ -223,10 +225,10 @@ async function runAction(h, action, opts = {}) {
 }
 
 async function installPackage(h) {
-  const pkg = prompt(`Cài package nào trên ${h.name}?\nWhitelist: ${PACKAGE_WHITELIST.join(', ')}`, 'htop')
+  const pkg = prompt(t('admin.hubs.actInstallPkgPrompt', { name: h.name, wl: PACKAGE_WHITELIST.join(', ') }), 'htop')
   if (!pkg) return
   if (!PACKAGE_WHITELIST.includes(pkg.trim())) {
-    err.value = `package "${pkg}" không thuộc whitelist (${PACKAGE_WHITELIST.join(', ')})`
+    err.value = t('admin.hubs.actInstallPkgNotWl', { pkg, wl: PACKAGE_WHITELIST.join(', ') })
     return
   }
   await runAction(h, 'install-package', { body: { package: pkg.trim() } })
@@ -262,7 +264,7 @@ onMounted(async () => {
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <span class="eyebrow">Hub provisioning</span>
+      <span class="eyebrow">{{ t('admin.hubs.eyebrow') }}</span>
       <div class="spacer"></div>
       <button class="ghost-button" type="button" @click="loadHubs"><RefreshCw :size="13" /></button>
     </div>
@@ -271,49 +273,45 @@ onMounted(async () => {
     <p v-if="flash" style="color:var(--green); font-size:13px">{{ flash }}</p>
 
     <div class="settings-tabs">
-      <button :class="{ active: tab === 'config' }" @click="tab = 'config'"><span class="t-name">Virtualizor</span><small class="t-desc">Panel creds</small></button>
-      <button :class="{ active: tab === 'plans' }" @click="tab = 'plans'"><span class="t-name">Hub plans</span><small class="t-desc">Catalog bán cho khách</small></button>
-      <button :class="{ active: tab === 'hubs' }" @click="tab = 'hubs'"><span class="t-name">Active VMs</span><small class="t-desc">Đang chạy ({{ provisionedHubs.length }})</small></button>
-      <button :class="{ active: tab === 'vzdata' }" @click="tab = 'vzdata'"><span class="t-name">Virtualizor data</span><small class="t-desc">Servers / IP pools / templates</small></button>
+      <button :class="{ active: tab === 'config' }" @click="tab = 'config'"><span class="t-name">{{ t('admin.hubs.tabVz') }}</span><small class="t-desc">{{ t('admin.hubs.tabVzDesc') }}</small></button>
+      <button :class="{ active: tab === 'plans' }" @click="tab = 'plans'"><span class="t-name">{{ t('admin.hubs.tabPlans') }}</span><small class="t-desc">{{ t('admin.hubs.tabPlansDesc') }}</small></button>
+      <button :class="{ active: tab === 'hubs' }" @click="tab = 'hubs'"><span class="t-name">{{ t('admin.hubs.tabVms') }}</span><small class="t-desc">{{ t('admin.hubs.tabVmsDesc', { n: provisionedHubs.length }) }}</small></button>
+      <button :class="{ active: tab === 'vzdata' }" @click="tab = 'vzdata'"><span class="t-name">{{ t('admin.hubs.tabData') }}</span><small class="t-desc">{{ t('admin.hubs.tabDataDesc') }}</small></button>
     </div>
 
     <!-- ── Virtualizor instances (multi-zone) ─────────────────────────────── -->
     <section v-if="tab === 'config'" class="surface" style="padding:16px">
       <div class="section-head">
-        <h2><KeyRound :size="14" style="vertical-align:-2px" /> Virtualizor instances ({{ vzInstances.length }})</h2>
+        <h2><KeyRound :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.vzTitle', { n: vzInstances.length }) }}</h2>
         <button class="primary-action" type="button" style="margin-left:auto" @click="startVzEdit(null)">
-          <Plus :size="13" /> Thêm instance
+          <Plus :size="13" /> {{ t('admin.hubs.vzAdd') }}
         </button>
       </div>
-      <p class="hint">
-        Mỗi instance = 1 panel Virtualizor riêng = 1 zone (vd <code>vn-hcm</code>, <code>us-east</code>, <code>sg</code>).
-        Credentials mã hóa AES-256-GCM. Nếu Virtualizor có bật API IP Access List, thêm <strong>IP của panel này</strong> (lệnh <code>curl ifconfig.me</code> trên server) vào <strong>Configuration → API → IP Access List</strong> của Virtualizor.
-      </p>
+      <p class="hint" v-html="t('admin.hubs.vzHint')"></p>
 
       <div v-if="editingVz" class="surface" style="padding:14px; background:rgba(34,197,94,0.04); border-color:rgba(34,197,94,0.25); margin:10px 0">
-        <h3 style="margin:0 0 10px; font-size:14px">{{ editingVz === 'new' ? 'Thêm Virtualizor instance' : `Sửa ${editingVz}` }}</h3>
+        <h3 style="margin:0 0 10px; font-size:14px">{{ editingVz === 'new' ? t('admin.hubs.vzEditNew') : t('admin.hubs.vzEditExisting', { id: editingVz }) }}</h3>
         <div class="form-grid form-2col">
-          <label class="field"><span>Label</span><input v-model="vzDraft.label" type="text" placeholder="VN-HCM panel" /></label>
-          <label class="field"><span>Zone slug</span><input v-model="vzDraft.zone" type="text" placeholder="vn-hcm, us-east, sg..." /></label>
-          <label class="field" style="grid-column:span 2"><span>Panel URL</span><input v-model="vzDraft.panelUrl" type="url" placeholder="https://10.10.10.2:4085" /></label>
-          <label class="field"><span>API Key</span><input v-model="vzDraft.apiKey" type="text" :placeholder="editingVz === 'new' ? '32-char key' : '(giữ giá trị cũ)'" /></label>
-          <label class="field"><span>API Password</span><input v-model="vzDraft.apiPass" type="password" :placeholder="editingVz === 'new' ? '32-char password' : '(giữ giá trị cũ)'" /></label>
-          <label class="field-checkbox"><input v-model="vzDraft.insecureTls" type="checkbox" /><span>Accept self-signed TLS</span></label>
-          <label class="field-checkbox"><input v-model="vzDraft.enabled" type="checkbox" /><span>Enabled</span></label>
+          <label class="field"><span>{{ t('admin.hubs.vzLabel') }}</span><input v-model="vzDraft.label" type="text" :placeholder="t('admin.hubs.vzLabelPh')" /></label>
+          <label class="field"><span>{{ t('admin.hubs.vzZone') }}</span><input v-model="vzDraft.zone" type="text" :placeholder="t('admin.hubs.vzZonePh')" /></label>
+          <label class="field" style="grid-column:span 2"><span>{{ t('admin.hubs.vzPanelUrl') }}</span><input v-model="vzDraft.panelUrl" type="url" placeholder="https://10.10.10.2:4085" /></label>
+          <label class="field"><span>{{ t('admin.hubs.vzApiKey') }}</span><input v-model="vzDraft.apiKey" type="text" :placeholder="editingVz === 'new' ? t('admin.hubs.vzApiKeyPhNew') : t('admin.hubs.vzApiKeyPhKeep')" /></label>
+          <label class="field"><span>{{ t('admin.hubs.vzApiPass') }}</span><input v-model="vzDraft.apiPass" type="password" :placeholder="editingVz === 'new' ? t('admin.hubs.vzApiPassPhNew') : t('admin.hubs.vzApiKeyPhKeep')" /></label>
+          <label class="field-checkbox"><input v-model="vzDraft.insecureTls" type="checkbox" /><span>{{ t('admin.hubs.vzInsecureTls') }}</span></label>
+          <label class="field-checkbox"><input v-model="vzDraft.enabled" type="checkbox" /><span>{{ t('admin.hubs.vzEnabled') }}</span></label>
         </div>
         <div style="display:flex; gap:8px; margin-top:12px">
-          <button class="primary-action" type="button" @click="saveVz">{{ editingVz === 'new' ? 'Thêm' : 'Lưu' }}</button>
-          <button class="ghost-button" type="button" @click="cancelVzEdit">Hủy</button>
+          <button class="primary-action" type="button" @click="saveVz">{{ editingVz === 'new' ? t('admin.hubs.vzBtnAdd') : t('admin.hubs.vzBtnSave') }}</button>
+          <button class="ghost-button" type="button" @click="cancelVzEdit">{{ t('admin.hubs.vzBtnCancel') }}</button>
         </div>
       </div>
 
-      <div v-if="!vzInstances.length && !editingVz" class="empty-text" style="text-align:left; padding:18px 0">
-        Chưa có instance nào. Bấm <strong>Thêm instance</strong> để cấu hình Virtualizor panel đầu tiên.
+      <div v-if="!vzInstances.length && !editingVz" class="empty-text" style="text-align:left; padding:18px 0" v-html="t('admin.hubs.vzEmpty')">
       </div>
 
       <div v-else class="data-table">
         <div class="table-head" style="grid-template-columns: 1fr 1fr 1.4fr 0.8fr 0.8fr 200px">
-          <span>Instance</span><span>Zone</span><span>Panel URL</span><span>Last test</span><span>Status</span><span></span>
+          <span>{{ t('admin.hubs.vzColInst') }}</span><span>{{ t('admin.hubs.vzColZone') }}</span><span>{{ t('admin.hubs.vzColPanelUrl') }}</span><span>{{ t('admin.hubs.vzColLastTest') }}</span><span>{{ t('admin.hubs.colStatus') }}</span><span></span>
         </div>
         <div v-for="v in vzInstances" :key="v.id" class="table-row" style="grid-template-columns: 1fr 1fr 1.4fr 0.8fr 0.8fr 200px">
           <div>
@@ -332,81 +330,81 @@ onMounted(async () => {
           <span :class="['status-pill', v.enabled ? 'active' : 'expired']">{{ v.enabled ? 'on' : 'off' }}</span>
           <span style="display:inline-flex; gap:4px">
             <button class="ghost-button" type="button" :disabled="vzTesting === v.id" @click="testVz(v.id)">
-              <ShieldCheck :size="11" /> {{ vzTesting === v.id ? 'Testing…' : 'Test' }}
+              <ShieldCheck :size="11" /> {{ vzTesting === v.id ? t('admin.hubs.vzTesting') : t('admin.hubs.vzBtnTest') }}
             </button>
-            <button class="ghost-button" type="button" @click="startVzEdit(v)">Edit</button>
+            <button class="ghost-button" type="button" @click="startVzEdit(v)">{{ t('admin.hubs.vzBtnEdit') }}</button>
             <button class="ghost-button" type="button" @click="deleteVz(v.id)"><Trash2 :size="11" /></button>
           </span>
         </div>
       </div>
 
       <div v-if="vzTestResult" :class="['test-result', vzTestResult.ok ? 'ok' : 'err']" style="margin-top:12px">
-        <template v-if="vzTestResult.ok"><Check :size="14" /> Kết nối OK.</template>
-        <template v-else><AlertTriangle :size="14" /> {{ vzTestResult.error || 'unknown error' }}</template>
+        <template v-if="vzTestResult.ok"><Check :size="14" /> {{ t('admin.hubs.vzTestOk') }}</template>
+        <template v-else><AlertTriangle :size="14" /> {{ vzTestResult.error || t('admin.hubs.vzTestErr') }}</template>
       </div>
     </section>
 
     <!-- ── Plans tab ─────────────────────────────────────────────────────── -->
     <section v-if="tab === 'plans'" class="surface" style="padding:16px">
       <div class="section-head">
-        <h2><Cloud :size="14" style="vertical-align:-2px" /> Hub plans ({{ hubPlans.length }})</h2>
+        <h2><Cloud :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.plansTitle', { n: hubPlans.length }) }}</h2>
         <button class="primary-action" type="button" style="margin-left:auto" @click="startEdit(null)">
-          <Plus :size="13" /> New plan
+          <Plus :size="13" /> {{ t('admin.hubs.planNew') }}
         </button>
       </div>
 
       <div v-if="editingPlan" class="surface" style="padding:14px; background:rgba(34,197,94,0.04); border-color:rgba(34,197,94,0.25); margin:10px 0">
-        <h3 style="margin:0 0 10px; font-size:14px">{{ editingPlan === 'new' ? 'Plan mới' : `Sửa ${editingPlan}` }}</h3>
+        <h3 style="margin:0 0 10px; font-size:14px">{{ editingPlan === 'new' ? t('admin.hubs.planEditNew') : t('admin.hubs.planEditExisting', { id: editingPlan }) }}</h3>
         <div class="form-grid form-2col">
-          <label class="field"><span>Tên</span><input v-model="draftPlan.name" type="text" /></label>
-          <label class="field"><span>Region</span><input v-model="draftPlan.region" type="text" placeholder="VN, US, SG..." /></label>
-          <label class="field" style="grid-column:span 2"><span>Mô tả (customer-facing)</span><input v-model="draftPlan.description" type="text" /></label>
-          <label class="field"><span>Loại proxy (hiển thị cho user)</span>
+          <label class="field"><span>{{ t('admin.hubs.planName') }}</span><input v-model="draftPlan.name" type="text" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planRegion') }}</span><input v-model="draftPlan.region" type="text" :placeholder="t('admin.hubs.planRegionPh')" /></label>
+          <label class="field" style="grid-column:span 2"><span>{{ t('admin.hubs.planDesc') }}</span><input v-model="draftPlan.description" type="text" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planFamily') }}</span>
             <select v-model="draftPlan.family">
-              <option value="ipv4">Proxy Hub IPv4</option>
-              <option value="ipv6">Proxy Hub IPv6</option>
+              <option value="ipv4">{{ t('admin.hubs.planFamilyV4') }}</option>
+              <option value="ipv6">{{ t('admin.hubs.planFamilyV6') }}</option>
             </select>
           </label>
-          <label class="field"><span>Giá / giờ ({{ draftPlan.currency }})</span><input v-model.number="draftPlan.hourlyPrice" type="number" min="0" /></label>
-          <label class="field"><span>Min hours</span><input v-model.number="draftPlan.minHours" type="number" min="1" /></label>
-          <label class="field"><span>Max hours</span><input v-model.number="draftPlan.maxHours" type="number" min="1" /></label>
-          <label class="field"><span>Max quantity (0 = unlimited)</span><input v-model.number="draftPlan.maxQuantity" type="number" min="0" /></label>
-          <label class="field-checkbox" style="grid-column:span 2"><input v-model="draftPlan.enabled" type="checkbox" /><span>Enabled (customer thấy được)</span></label>
+          <label class="field"><span>{{ t('admin.hubs.planHourly', { currency: draftPlan.currency }) }}</span><input v-model.number="draftPlan.hourlyPrice" type="number" min="0" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planMinHours') }}</span><input v-model.number="draftPlan.minHours" type="number" min="1" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planMaxHours') }}</span><input v-model.number="draftPlan.maxHours" type="number" min="1" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planMaxQty') }}</span><input v-model.number="draftPlan.maxQuantity" type="number" min="0" /></label>
+          <label class="field-checkbox" style="grid-column:span 2"><input v-model="draftPlan.enabled" type="checkbox" /><span>{{ t('admin.hubs.planEnabled') }}</span></label>
         </div>
 
-        <h4 class="section-h4">Specs (customer-facing)</h4>
+        <h4 class="section-h4">{{ t('admin.hubs.planSpecs') }}</h4>
         <div class="form-grid form-3col">
-          <label class="field"><span>vCPU</span><input v-model.number="draftPlan.specs.cpu" type="number" min="1" /></label>
-          <label class="field"><span>RAM (GB)</span><input v-model.number="draftPlan.specs.ramGB" type="number" min="0" step="0.5" /></label>
-          <label class="field"><span>Disk (GB)</span><input v-model.number="draftPlan.specs.diskGB" type="number" min="0" /></label>
-          <label class="field"><span>Bandwidth/month (GB)</span><input v-model.number="draftPlan.specs.bandwidthGB" type="number" min="0" /></label>
-          <label class="field"><span>IPv4 count</span><input v-model.number="draftPlan.specs.ipv4Count" type="number" min="0" /></label>
-          <label class="field"><span>IPv6 range</span><input v-model="draftPlan.specs.ipv6Range" type="text" placeholder="/64, /48..." /></label>
+          <label class="field"><span>{{ t('admin.hubs.planVcpu') }}</span><input v-model.number="draftPlan.specs.cpu" type="number" min="1" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planRam') }}</span><input v-model.number="draftPlan.specs.ramGB" type="number" min="0" step="0.5" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planDisk') }}</span><input v-model.number="draftPlan.specs.diskGB" type="number" min="0" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planBw') }}</span><input v-model.number="draftPlan.specs.bandwidthGB" type="number" min="0" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planIpv4Count') }}</span><input v-model.number="draftPlan.specs.ipv4Count" type="number" min="0" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planIpv6Range') }}</span><input v-model="draftPlan.specs.ipv6Range" type="text" :placeholder="t('admin.hubs.planIpv6RangePh')" /></label>
         </div>
 
         <h4 class="section-h4">
-          Virtualizor mapping
-          <small style="color:var(--muted); font-weight:400">(admin-only, không expose cho customer)</small>
+          {{ t('admin.hubs.planVzMap') }}
+          <small style="color:var(--muted); font-weight:400">{{ t('admin.hubs.planVzMapNote') }}</small>
           <button
             v-if="draftPlan.vz.instanceId"
             type="button" class="ghost-button"
             style="margin-left:auto; padding:3px 10px; font-size:11.5px"
             :disabled="vzCatalogLoading"
             @click="vzCatalogCache[draftPlan.vz.instanceId] = { fetched: false }; loadVzCatalog(draftPlan.vz.instanceId)"
-            title="Reload data từ Virtualizor"
+            :title="t('admin.hubs.planVzReload')"
           >
-            <RefreshCw :size="11" /> {{ vzCatalogLoading ? 'Đang tải…' : 'Reload' }}
+            <RefreshCw :size="11" /> {{ vzCatalogLoading ? t('admin.hubs.planVzReloading') : t('admin.hubs.planVzReloadBtn') }}
           </button>
         </h4>
         <div class="form-grid form-3col">
           <label class="field" style="grid-column: span 3">
-            <span>Virtualizor instance</span>
+            <span>{{ t('admin.hubs.planVzInst') }}</span>
             <select v-model="draftPlan.vz.instanceId">
-              <option value="">(Pick instance — bắt buộc)</option>
+              <option value="">{{ t('admin.hubs.planVzInstPh') }}</option>
               <option v-for="v in vzInstances" :key="v.id" :value="v.id">{{ v.label }} — {{ v.zone }} ({{ v.panelUrl }})</option>
             </select>
           </label>
-          <label class="field"><span>Virtualization</span>
+          <label class="field"><span>{{ t('admin.hubs.planVzVirt') }}</span>
             <select v-model="draftPlan.vz.virt">
               <option value="kvm">KVM</option><option value="openvz">OpenVZ</option><option value="lxc">LXC</option><option value="proxmox-k">Proxmox KVM</option>
             </select>
@@ -415,39 +413,39 @@ onMounted(async () => {
           <!-- Server: dropdown live-fetched từ /api/admin/virtualizors/:id/servers,
                fallback raw input nếu instance chưa pick hoặc fetch fail. -->
           <label class="field">
-            <span>Server</span>
+            <span>{{ t('admin.hubs.planVzServer') }}</span>
             <select
               v-if="draftPlan.vz.instanceId && vzServerOptions(draftPlan.vz.instanceId).length"
               v-model="draftPlan.vz.serverId"
               @change="draftPlan.vz.serverId = Number(draftPlan.vz.serverId)"
             >
-              <option :value="null">(chọn server)</option>
+              <option :value="null">{{ t('admin.hubs.planVzServerPh') }}</option>
               <option v-for="s in vzServerOptions(draftPlan.vz.instanceId)" :key="s.id" :value="Number(s.id)">{{ s.label }}</option>
             </select>
             <input v-else v-model.number="draftPlan.vz.serverId" type="number" placeholder="0" />
           </label>
 
           <label class="field">
-            <span>Plan</span>
+            <span>{{ t('admin.hubs.planVzPlan') }}</span>
             <select
               v-if="draftPlan.vz.instanceId && vzPlanOptions(draftPlan.vz.instanceId).length"
               v-model="draftPlan.vz.planId"
               @change="draftPlan.vz.planId = Number(draftPlan.vz.planId)"
             >
-              <option :value="null">(chọn plan)</option>
+              <option :value="null">{{ t('admin.hubs.planVzPlanPh') }}</option>
               <option v-for="p in vzPlanOptions(draftPlan.vz.instanceId)" :key="p.id" :value="Number(p.id)">{{ p.label }}</option>
             </select>
             <input v-else v-model.number="draftPlan.vz.planId" type="number" placeholder="1" />
           </label>
 
           <label class="field">
-            <span>OS template</span>
+            <span>{{ t('admin.hubs.planVzOs') }}</span>
             <select
               v-if="draftPlan.vz.instanceId && vzOsOptions(draftPlan.vz.instanceId).length"
               v-model="draftPlan.vz.osId"
               @change="draftPlan.vz.osId = Number(draftPlan.vz.osId)"
             >
-              <option :value="null">(chọn OS)</option>
+              <option :value="null">{{ t('admin.hubs.planVzOsPh') }}</option>
               <option v-for="o in vzOsOptions(draftPlan.vz.instanceId)" :key="o.id" :value="Number(o.id)">{{ o.label }}</option>
             </select>
             <input v-else v-model.number="draftPlan.vz.osId" type="number" placeholder="1197" />
@@ -457,12 +455,12 @@ onMounted(async () => {
                subnet sold to customer. For ipv6-family hubs this is the
                connect-host IP (proxy listens here, egress goes via IPv6). -->
           <label class="field">
-            <span>IPv4 Pool {{ draftPlan.family === 'ipv6' ? '(host IP)' : '(subnet bán cho khách)' }}</span>
+            <span>{{ t('admin.hubs.planVzIpPool') }} {{ draftPlan.family === 'ipv6' ? t('admin.hubs.planVzIpPoolHost') : t('admin.hubs.planVzIpPoolSell') }}</span>
             <select
               v-if="draftPlan.vz.instanceId && vzIpPoolOptions(draftPlan.vz.instanceId, 'v4').length"
               v-model="draftPlan.vz.ipPool"
             >
-              <option value="">(chọn pool IPv4)</option>
+              <option value="">{{ t('admin.hubs.planVzIpPoolPh') }}</option>
               <option v-for="p in vzIpPoolOptions(draftPlan.vz.instanceId, 'v4')" :key="p.id" :value="String(p.id)">{{ p.label }}</option>
             </select>
             <input v-else v-model="draftPlan.vz.ipPool" type="text" placeholder="7" />
@@ -471,40 +469,40 @@ onMounted(async () => {
           <!-- IPv6 pool — only relevant when selling IPv6 hubs. Hidden for
                pure ipv4-family plans (no IPv6 subnet attached to VPS). -->
           <label v-if="draftPlan.family === 'ipv6'" class="field">
-            <span>IPv6 Pool (subnet /48 bán cho khách)</span>
+            <span>{{ t('admin.hubs.planVzIp6Pool') }}</span>
             <select
               v-if="draftPlan.vz.instanceId && vzIpPoolOptions(draftPlan.vz.instanceId, 'v6').length"
               v-model="draftPlan.vz.ip6Pool"
             >
-              <option value="">(chọn pool IPv6)</option>
+              <option value="">{{ t('admin.hubs.planVzIp6PoolPh') }}</option>
               <option v-for="p in vzIpPoolOptions(draftPlan.vz.instanceId, 'v6')" :key="p.id" :value="String(p.id)">{{ p.label }}</option>
             </select>
             <input v-else v-model="draftPlan.vz.ip6Pool" type="text" placeholder="5" />
           </label>
 
-          <label class="field"><span>Disk Template (optional)</span><input v-model.number="draftPlan.vz.diskTemplate" type="number" /></label>
+          <label class="field"><span>{{ t('admin.hubs.planVzDiskTpl') }}</span><input v-model.number="draftPlan.vz.diskTemplate" type="number" /></label>
         </div>
-        <p v-if="vzCatalogLoading" class="hint" style="margin-top:6px">Đang fetch data từ Virtualizor…</p>
+        <p v-if="vzCatalogLoading" class="hint" style="margin-top:6px">{{ t('admin.hubs.planVzLoading') }}</p>
         <p v-else-if="draftPlan.vz.instanceId && !vzCatalogCache[draftPlan.vz.instanceId]?.fetched" class="hint" style="margin-top:6px; color:#f59e0b">
-          Chưa load được data từ instance này — kiểm tra Virtualizor instance hoạt động chưa, hoặc bấm Reload.
+          {{ t('admin.hubs.planVzNotLoaded') }}
         </p>
         <p v-else-if="draftPlan.vz.instanceId" class="hint" style="margin-top:6px">
-          Dropdown lấy trực tiếp từ Virtualizor panel — không phải gõ ID bằng tay.
+          {{ t('admin.hubs.planVzAutoLoaded') }}
         </p>
 
         <div style="display:flex; gap:8px; margin-top:12px">
-          <button class="primary-action" type="button" @click="savePlan">{{ editingPlan === 'new' ? 'Tạo plan' : 'Lưu' }}</button>
-          <button class="ghost-button" type="button" @click="cancelEdit">Hủy</button>
+          <button class="primary-action" type="button" @click="savePlan">{{ editingPlan === 'new' ? t('admin.hubs.planBtnCreate') : t('admin.hubs.planBtnSave') }}</button>
+          <button class="ghost-button" type="button" @click="cancelEdit">{{ t('admin.hubs.vzBtnCancel') }}</button>
         </div>
       </div>
 
       <div v-if="!hubPlans.length && !editingPlan" class="empty-text" style="text-align:left; padding:18px 0">
-        Chưa có plan nào. Cấu hình Virtualizor xong → tạo plan đầu tiên ở đây.
+        {{ t('admin.hubs.plansEmpty') }}
       </div>
 
       <div v-else class="data-table">
         <div class="table-head" style="grid-template-columns: 1.5fr 1fr 1fr 80px 100px 120px">
-          <span>Plan</span><span>Region/Family</span><span>Specs</span><span>Hour</span><span>Status</span><span></span>
+          <span>{{ t('admin.hubs.colPlan') }}</span><span>{{ t('admin.hubs.colRegionFam') }}</span><span>{{ t('admin.hubs.colSpecs') }}</span><span>{{ t('admin.hubs.colHour') }}</span><span>{{ t('admin.hubs.colStatus') }}</span><span></span>
         </div>
         <div v-for="p in hubPlans" :key="p.id" class="table-row" style="grid-template-columns: 1.5fr 1fr 1fr 80px 100px 120px">
           <div>
@@ -514,9 +512,9 @@ onMounted(async () => {
           <span>{{ p.region }} · {{ p.family }}</span>
           <span class="cell-mono" style="font-size:11px">{{ p.specs.cpu }}vCPU · {{ p.specs.ramGB }}GB · {{ p.specs.diskGB }}GB</span>
           <span class="cell-mono">{{ Number(p.hourlyPrice).toLocaleString() }}</span>
-          <span :class="['status-pill', p.enabled ? 'active' : 'expired']">{{ p.enabled ? 'enabled' : 'disabled' }}</span>
+          <span :class="['status-pill', p.enabled ? 'active' : 'expired']">{{ p.enabled ? t('admin.hubs.planEnabledTag') : t('admin.hubs.planDisabledTag') }}</span>
           <span style="display:inline-flex; gap:4px">
-            <button class="ghost-button" type="button" @click="startEdit(p)">Edit</button>
+            <button class="ghost-button" type="button" @click="startEdit(p)">{{ t('admin.hubs.vzBtnEdit') }}</button>
             <button class="ghost-button" type="button" @click="deletePlan(p.id)"><Trash2 :size="11" /></button>
           </span>
         </div>
@@ -526,10 +524,10 @@ onMounted(async () => {
     <!-- ── Provisioned VMs ───────────────────────────────────────────────── -->
     <section v-if="tab === 'hubs'" class="surface" style="padding:16px">
       <div class="section-head" style="display:flex; align-items:center; gap:8px">
-        <h2 style="margin:0"><Server :size="14" style="vertical-align:-2px" /> VMs đang chạy ({{ provisionedHubs.length }})</h2>
-        <button class="ghost-button" type="button" style="margin-left:auto" @click="loadHubs"><RefreshCw :size="12" /> Refresh</button>
+        <h2 style="margin:0"><Server :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.vmsTitle', { n: provisionedHubs.length }) }}</h2>
+        <button class="ghost-button" type="button" style="margin-left:auto" @click="loadHubs"><RefreshCw :size="12" /> {{ t('admin.hubs.vmsRefresh') }}</button>
       </div>
-      <p v-if="!provisionedHubs.length" class="empty-text" style="text-align:left; padding:18px 0">Chưa có hub nào được provision.</p>
+      <p v-if="!provisionedHubs.length" class="empty-text" style="text-align:left; padding:18px 0">{{ t('admin.hubs.vmsEmpty') }}</p>
       <ul v-else class="hub-cards">
         <li v-for="h in provisionedHubs" :key="h.id" class="hub-card">
           <header>
@@ -540,44 +538,44 @@ onMounted(async () => {
             <span :class="['status-pill', h.status === 'online' ? 'active' : (h.status === 'provisioning' ? 'pending' : 'expired')]">{{ h.status }}</span>
           </header>
           <dl class="hub-meta">
-            <div><dt>Owner</dt><dd>{{ h.ownerEmail }}</dd></div>
-            <div><dt>Plan</dt><dd>{{ h.planName || h.planId }}</dd></div>
-            <div><dt>Provisioned</dt><dd class="cell-mono">{{ h.provisionedAt?.slice(0,16).replace('T',' ') }}</dd></div>
-            <div><dt>Expires</dt><dd class="cell-mono">{{ h.expiresAt?.slice(0,16).replace('T',' ') }}</dd></div>
+            <div><dt>{{ t('admin.hubs.vmOwner') }}</dt><dd>{{ h.ownerEmail }}</dd></div>
+            <div><dt>{{ t('admin.hubs.vmPlan') }}</dt><dd>{{ h.planName || h.planId }}</dd></div>
+            <div><dt>{{ t('admin.hubs.vmProvisioned') }}</dt><dd class="cell-mono">{{ h.provisionedAt?.slice(0,16).replace('T',' ') }}</dd></div>
+            <div><dt>{{ t('admin.hubs.vmExpires') }}</dt><dd class="cell-mono">{{ h.expiresAt?.slice(0,16).replace('T',' ') }}</dd></div>
           </dl>
           <div class="hub-actions">
             <button class="act ghost-button" :disabled="actionBusy === h.id + ':diagnose'" @click="runAction(h, 'diagnose')">
-              <Stethoscope :size="12" /> Chẩn đoán
+              <Stethoscope :size="12" /> {{ t('admin.hubs.actDiagnose') }}
             </button>
             <button class="act ghost-button" :disabled="actionBusy === h.id + ':tail-logs'" @click="runAction(h, 'tail-logs')">
-              <Terminal :size="12" /> Logs
+              <Terminal :size="12" /> {{ t('admin.hubs.actLogs') }}
             </button>
             <button class="act ghost-button" :disabled="actionBusy === h.id + ':refresh-network'" @click="runAction(h, 'refresh-network')">
-              <RefreshCw :size="12" /> Refresh IP
+              <RefreshCw :size="12" /> {{ t('admin.hubs.actRefreshIp') }}
             </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':restart-agent'" @click="runAction(h, 'restart-agent', `Restart agent service trên ${h.name}?`)">
-              <RotateCcw :size="12" /> Restart agent
+            <button class="act ghost-button" :disabled="actionBusy === h.id + ':restart-agent'" @click="runAction(h, 'restart-agent', t('admin.hubs.actRestartAgentConfirm', { name: h.name }))">
+              <RotateCcw :size="12" /> {{ t('admin.hubs.actRestartAgent') }}
             </button>
-            <button class="act ghost-button warn" :disabled="actionBusy === h.id + ':reboot'" @click="runAction(h, 'reboot', `Reboot VM ${h.name}? Mất ~1 phút.`)">
-              <Zap :size="12" /> Reboot VM
+            <button class="act ghost-button warn" :disabled="actionBusy === h.id + ':reboot'" @click="runAction(h, 'reboot', t('admin.hubs.actRebootConfirm', { name: h.name }))">
+              <Zap :size="12" /> {{ t('admin.hubs.actReboot') }}
             </button>
             <button class="act ghost-button" :disabled="actionBusy === h.id + ':power-on'" @click="runAction(h, 'power-on')">
-              <Power :size="12" /> Power ON
+              <Power :size="12" /> {{ t('admin.hubs.actPowerOn') }}
             </button>
-            <button class="act ghost-button danger" :disabled="actionBusy === h.id + ':power-off'" @click="runAction(h, 'power-off', `Power-OFF cứng VM ${h.name}?`)">
-              <PowerOff :size="12" /> Power OFF
+            <button class="act ghost-button danger" :disabled="actionBusy === h.id + ':power-off'" @click="runAction(h, 'power-off', t('admin.hubs.actPowerOffConfirm', { name: h.name }))">
+              <PowerOff :size="12" /> {{ t('admin.hubs.actPowerOff') }}
             </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':drain'" @click="runAction(h, 'drain', `Drain ${h.name}? Agent sẽ ngừng nhận proxy mới.`)">
-              <AlertTriangle :size="12" /> Drain
+            <button class="act ghost-button" :disabled="actionBusy === h.id + ':drain'" @click="runAction(h, 'drain', t('admin.hubs.actDrainConfirm', { name: h.name }))">
+              <AlertTriangle :size="12" /> {{ t('admin.hubs.actDrain') }}
             </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':upgrade'" @click="runAction(h, 'upgrade', `Force upgrade agent binary trên ${h.name}?`)">
-              <UploadCloud :size="12" /> Force upgrade
+            <button class="act ghost-button" :disabled="actionBusy === h.id + ':upgrade'" @click="runAction(h, 'upgrade', t('admin.hubs.actUpgradeConfirm', { name: h.name }))">
+              <UploadCloud :size="12" /> {{ t('admin.hubs.actUpgrade') }}
             </button>
             <button class="act ghost-button" :disabled="actionBusy === h.id + ':install-package'" @click="installPackage(h)">
-              <Box :size="12" /> Cài package
+              <Box :size="12" /> {{ t('admin.hubs.actInstallPkg') }}
             </button>
             <button class="act ghost-button" @click="openCmdHistory(h)">
-              <History :size="12" /> Lịch sử lệnh
+              <History :size="12" /> {{ t('admin.hubs.actCmdHistory') }}
             </button>
           </div>
         </li>
@@ -587,7 +585,7 @@ onMounted(async () => {
       <div v-if="actionResult" class="action-result">
         <header>
           <strong>{{ actionResult.node }} · {{ actionResult.action }}</strong>
-          <button class="ghost-button" @click="closeActionResult">Đóng</button>
+          <button class="ghost-button" @click="closeActionResult">{{ t('admin.hubs.actClose') }}</button>
         </header>
         <pre>{{ actionResult.output }}</pre>
       </div>
@@ -595,20 +593,20 @@ onMounted(async () => {
       <!-- Command history (queue + completed) -->
       <div v-if="cmdHistoryNode" class="action-result">
         <header>
-          <strong>{{ cmdHistoryNode }} · lịch sử lệnh</strong>
-          <button class="ghost-button" @click="closeCmdHistory">Đóng</button>
+          <strong>{{ t('admin.hubs.cmdHistTitle', { node: cmdHistoryNode }) }}</strong>
+          <button class="ghost-button" @click="closeCmdHistory">{{ t('admin.hubs.actClose') }}</button>
         </header>
         <div style="padding:10px 14px; font-size:12px">
-          <strong style="color:#fbbf24">Đang chờ ({{ cmdHistoryData.pending.length }})</strong>
+          <strong style="color:#fbbf24">{{ t('admin.hubs.cmdHistPending', { n: cmdHistoryData.pending.length }) }}</strong>
           <ul v-if="cmdHistoryData.pending.length" style="margin:6px 0 14px; padding-left:18px">
             <li v-for="c in cmdHistoryData.pending" :key="c.id">
               <code style="color:var(--text)">{{ c.action }}</code>
               <small style="color:var(--muted)"> · id={{ c.id.slice(0,8) }} · {{ c.queuedAt?.slice(11,19) }}</small>
             </li>
           </ul>
-          <p v-else style="color:var(--muted); margin:6px 0 14px">Không có lệnh đang chờ.</p>
+          <p v-else style="color:var(--muted); margin:6px 0 14px">{{ t('admin.hubs.cmdHistPendingEmpty') }}</p>
 
-          <strong>Đã chạy ({{ cmdHistoryData.history.length }})</strong>
+          <strong>{{ t('admin.hubs.cmdHistDone', { n: cmdHistoryData.history.length }) }}</strong>
           <ul v-if="cmdHistoryData.history.length" style="margin:6px 0 0; padding-left:18px">
             <li v-for="c in cmdHistoryData.history" :key="c.id" style="margin-bottom:6px">
               <code :style="{ color: c.code === 0 ? '#4ade80' : '#ef4444' }">{{ c.action }}</code>
@@ -616,27 +614,26 @@ onMounted(async () => {
               <pre v-if="c.output" style="margin:4px 0 0; padding:6px 8px; background:rgba(0,0,0,0.3); border-radius:4px; max-height:160px; overflow:auto; white-space:pre-wrap; font-size:10.5px">{{ c.output }}</pre>
             </li>
           </ul>
-          <p v-else style="color:var(--muted); margin:6px 0 0">Chưa có lệnh nào.</p>
+          <p v-else style="color:var(--muted); margin:6px 0 0">{{ t('admin.hubs.cmdHistDoneEmpty') }}</p>
         </div>
       </div>
     </section>
 
     <!-- ── Virtualizor data tab ──────────────────────────────────────────── -->
     <section v-if="tab === 'vzdata'" class="surface" style="padding:16px">
-      <div class="section-head"><h2><Cpu :size="14" style="vertical-align:-2px" /> Virtualizor data passthroughs</h2></div>
-      <p class="hint">Lookup IDs để gán vào hub plan. Chọn instance trước.</p>
-      <div v-if="!vzInstances.length" class="empty-text" style="text-align:left; padding:14px">
-        Chưa có Virtualizor instance nào — vào tab <strong>Virtualizor</strong> để thêm.
+      <div class="section-head"><h2><Cpu :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.vzDataTitle') }}</h2></div>
+      <p class="hint">{{ t('admin.hubs.vzDataHint') }}</p>
+      <div v-if="!vzInstances.length" class="empty-text" style="text-align:left; padding:14px" v-html="t('admin.hubs.vzDataEmpty')">
       </div>
       <div v-for="v in vzInstances" :key="v.id" class="inst-row">
         <header>
           <strong>{{ v.label }}</strong> <span class="cell-mono" style="color:var(--muted); font-size:11px">· {{ v.zone }} · {{ v.id }}</span>
         </header>
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin:8px 0">
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'servers')">List servers</button>
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'plans')">List plans</button>
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'ip-pools')">List IP pools</button>
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'templates')">List OS templates</button>
+          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'servers')">{{ t('admin.hubs.vzListServers') }}</button>
+          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'plans')">{{ t('admin.hubs.vzListPlans') }}</button>
+          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'ip-pools')">{{ t('admin.hubs.vzListIpPools') }}</button>
+          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'templates')">{{ t('admin.hubs.vzListOsTpl') }}</button>
         </div>
       </div>
       <pre v-if="vzServers" class="json-out">{{ JSON.stringify(vzServers, null, 2) }}</pre>

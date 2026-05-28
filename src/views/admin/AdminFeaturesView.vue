@@ -1,31 +1,35 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { apiFetch } from '../../api'
+import { useI18n } from '../../i18n'
+
+const { t } = useI18n()
 
 // 8 tabbed settings groups + legacy feature-flag toggles.
-const TABS = [
-  { id: 'features',       label: 'Features',       desc: 'Bật/tắt module' },
-  { id: 'anti-abuse',     label: 'Anti-abuse',     desc: 'Caps + rate limit' },
-  { id: 'proxy-defaults', label: 'Proxy defaults', desc: 'Default cho proxy mới' },
-  { id: 'branding',       label: 'Branding & UX',  desc: 'Brand + maintenance' },
-  { id: 'alerts',         label: 'Alerts',         desc: 'Webhook + thresholds' },
-  { id: 'billing',        label: 'Billing',        desc: 'Currency, topup, autoRenew' },
-  { id: 'health-check',   label: 'Health-check',   desc: 'Probe hosts + interval' },
-  { id: 'engine',         label: 'Engine',         desc: 'Network/perf tuning' },
-  { id: 'operations',     label: 'Operations',     desc: 'Sweep + audit retention' }
-]
+// Labels/descriptions resolved via t() in template — we store descKey here.
+const TABS = computed(() => [
+  { id: 'features',       label: t('admin.feat.tabFeatures'),  desc: t('admin.feat.tabFeaturesDesc') },
+  { id: 'anti-abuse',     label: 'Anti-abuse',                 desc: t('admin.feat.tabAntiAbuseDesc') },
+  { id: 'proxy-defaults', label: 'Proxy defaults',             desc: t('admin.feat.tabProxyDefaultsDesc') },
+  { id: 'branding',       label: 'Branding & UX',              desc: t('admin.feat.tabBrandingDesc') },
+  { id: 'alerts',         label: 'Alerts',                     desc: t('admin.feat.tabAlertsDesc') },
+  { id: 'billing',        label: 'Billing',                    desc: t('admin.feat.tabBillingDesc') },
+  { id: 'health-check',   label: 'Health-check',               desc: t('admin.feat.tabHealthDesc') },
+  { id: 'engine',         label: 'Engine',                     desc: t('admin.feat.tabEngineDesc') },
+  { id: 'operations',     label: 'Operations',                 desc: t('admin.feat.tabOpsDesc') }
+])
 
-const FEATURE_DESCRIPTIONS = {
-  registration:    'Cho phép đăng ký tài khoản mới qua /api/auth/register',
-  oauth:           'Đăng nhập qua Google / GitHub (cần config keys ở Users → Social login)',
-  totp:            '2FA TOTP cho customer (Authenticator app)',
-  billing:         'Stripe Checkout + ví / topup',
-  affiliate:       'Chương trình giới thiệu (referral code + kickback)',
-  customerWebhook: 'Customer cấu hình webhook nhận event order/proxy',
-  autoRenew:       'Auto-renew khi proxy sắp hết hạn',
-  ipWhitelist:     'IP whitelist auth (bypass user:pass cho IP đã đăng ký)',
-  stickySession:   'Sticky session qua username pattern user-session-X'
-}
+const FEATURE_DESCRIPTIONS = computed(() => ({
+  registration:    t('admin.feat.desc.registration'),
+  oauth:           t('admin.feat.desc.oauth'),
+  totp:            t('admin.feat.desc.totp'),
+  billing:         t('admin.feat.desc.billing'),
+  affiliate:       t('admin.feat.desc.affiliate'),
+  customerWebhook: t('admin.feat.desc.customerWebhook'),
+  autoRenew:       t('admin.feat.desc.autoRenew'),
+  ipWhitelist:     t('admin.feat.desc.ipWhitelist'),
+  stickySession:   t('admin.feat.desc.stickySession')
+}))
 
 // Field metadata per settings group: label / hint / kind (int/bool/str/float/select)
 const FIELD_META = {
@@ -141,7 +145,7 @@ async function refresh() {
 async function saveFeatures() {
   try {
     features.value = await apiFetch('/api/admin/features', { method: 'PATCH', body: features.value })
-    flash.value = 'Features đã lưu.'
+    flash.value = t('admin.feat.flashFeatures')
     setTimeout(() => flash.value = '', 3000)
   } catch (e) { err.value = e.message }
 }
@@ -149,7 +153,8 @@ async function saveFeatures() {
 async function saveGroup(groupId) {
   try {
     groups[groupId] = await apiFetch(`/api/admin/settings/${groupId}`, { method: 'PATCH', body: groups[groupId] })
-    flash.value = `${TABS.find(t => t.id === groupId).label} đã lưu — hot-reload, áp dụng ngay.`
+    const tab = TABS.value.find(tt => tt.id === groupId)
+    flash.value = t('admin.feat.flashGroup', { label: tab.label })
     setTimeout(() => flash.value = '', 3500)
   } catch (e) { err.value = e.message }
 }
@@ -164,9 +169,9 @@ onMounted(refresh)
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <span class="eyebrow">System settings</span>
+      <span class="eyebrow">{{ t('admin.feat.eyebrow') }}</span>
       <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh">Refresh</button>
+      <button class="ghost-button" type="button" @click="refresh">{{ t('admin.common.refresh') }}</button>
     </div>
     <p v-if="err" class="error-text">{{ err }}</p>
     <p v-if="flash" class="success-text">{{ flash }}</p>
@@ -187,28 +192,28 @@ onMounted(refresh)
 
     <!-- Features tab -->
     <section v-if="activeTab === 'features'" class="surface">
-      <div class="section-head"><h2>Feature flags</h2></div>
-      <p class="hint">Toggle runtime, không cần restart.</p>
+      <div class="section-head"><h2>{{ t('admin.feat.flagsTitle') }}</h2></div>
+      <p class="hint">{{ t('admin.feat.flagsHint') }}</p>
       <div class="data-table">
         <div class="table-head" style="grid-template-columns: 1.4fr 3fr auto">
-          <span>Flag</span><span>Mô tả</span><span></span>
+          <span>{{ t('admin.feat.colFlag') }}</span><span>{{ t('admin.feat.colDesc') }}</span><span></span>
         </div>
         <div v-for="(_, name) in features" :key="name" class="table-row" style="grid-template-columns: 1.4fr 3fr auto">
           <span class="cell-mono">{{ name }}</span>
           <span class="muted">{{ FEATURE_DESCRIPTIONS[name] || '—' }}</span>
-          <label class="check-line"><input v-model="features[name]" type="checkbox" /><span>{{ features[name] ? 'BẬT' : 'TẮT' }}</span></label>
+          <label class="check-line"><input v-model="features[name]" type="checkbox" /><span>{{ features[name] ? t('admin.feat.on') : t('admin.feat.off') }}</span></label>
         </div>
       </div>
-      <button class="primary-action" type="button" style="margin-top:14px" @click="saveFeatures">Lưu features</button>
+      <button class="primary-action" type="button" style="margin-top:14px" @click="saveFeatures">{{ t('admin.feat.saveFeatures') }}</button>
     </section>
 
     <!-- All other tabs render the same generic table from FIELD_META -->
-    <section v-for="tab in TABS.filter(t => t.id !== 'features')" v-show="activeTab === tab.id" :key="tab.id" class="surface">
+    <section v-for="tab in TABS.filter(tt => tt.id !== 'features')" v-show="activeTab === tab.id" :key="tab.id" class="surface">
       <div class="section-head"><h2>{{ tab.label }}</h2></div>
-      <p class="hint">{{ tab.desc }} · Hot-reload (engine tab có vài field cần restart agent).</p>
+      <p class="hint">{{ t('admin.feat.tabFooter', { desc: tab.desc }) }}</p>
       <div v-if="groups[tab.id]" class="data-table">
         <div class="table-head" style="grid-template-columns: 1.4fr 2.6fr 160px">
-          <span>Field</span><span>Mô tả</span><span style="text-align:right">Giá trị</span>
+          <span>{{ t('admin.feat.colField') }}</span><span>{{ t('admin.feat.colDesc') }}</span><span style="text-align:right">{{ t('admin.feat.colValue') }}</span>
         </div>
         <div
           v-for="[key, label, kind, hint] in FIELD_META[tab.id]"
@@ -219,7 +224,7 @@ onMounted(refresh)
           <span>{{ label }}</span>
           <span class="muted">{{ hint }}</span>
           <template v-if="kind === 'bool'">
-            <label class="check-line" style="justify-content:flex-end"><input v-model="groups[tab.id][key]" type="checkbox" /><span>{{ groups[tab.id][key] ? 'BẬT' : 'TẮT' }}</span></label>
+            <label class="check-line" style="justify-content:flex-end"><input v-model="groups[tab.id][key]" type="checkbox" /><span>{{ groups[tab.id][key] ? t('admin.feat.on') : t('admin.feat.off') }}</span></label>
           </template>
           <template v-else-if="kind === 'int' || kind === 'float'">
             <input v-model.number="groups[tab.id][key]" :type="'number'" :step="kind === 'float' ? '0.01' : '1'" min="0" class="cell-mono input-mono" />
@@ -234,7 +239,7 @@ onMounted(refresh)
           </template>
         </div>
       </div>
-      <button class="primary-action" type="button" style="margin-top:14px" @click="saveGroup(tab.id)">Lưu {{ tab.label }}</button>
+      <button class="primary-action" type="button" style="margin-top:14px" @click="saveGroup(tab.id)">{{ t('admin.feat.saveGroup', { label: tab.label }) }}</button>
     </section>
   </section>
 </template>

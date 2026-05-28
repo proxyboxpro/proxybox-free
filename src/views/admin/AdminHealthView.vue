@@ -3,6 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Activity, AlertTriangle, CheckCircle, Heart, RefreshCw, Wrench, Zap } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatNumber } from '../../utils/format'
+import { useI18n } from '../../i18n'
+
+const { t } = useI18n()
 
 const data = ref(null)
 const err = ref('')
@@ -62,25 +65,22 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     <div class="toolbar">
       <span class="eyebrow">
         <Heart :size="14" style="vertical-align:-2px" />
-        Auto-heal · {{ formatNumber(counters.total) }} proxy theo dõi
+        Auto-heal · {{ formatNumber(counters.total) }} {{ t('admin.health.eyebrowSuffix') }}
       </span>
       <div class="spacer"></div>
       <label class="filter-field" style="width:auto; margin-right:8px">
-        <input v-model="autoRefresh" type="checkbox" /> tự động (30s)
+        <input v-model="autoRefresh" type="checkbox" /> {{ t('admin.health.autoRefresh') }}
       </label>
       <button class="ghost-button" type="button" :disabled="loading" @click="refresh">
-        <RefreshCw :size="12" :class="{ spin: loading }" /> làm mới
+        <RefreshCw :size="12" :class="{ spin: loading }" /> {{ t('admin.health.refresh') }}
       </button>
       <button class="ghost-button" type="button" :disabled="sweeping" style="margin-left:6px; border-color: var(--green); color: var(--green)" @click="runSweep">
-        <Zap :size="12" /> {{ sweeping ? 'Đang quét…' : 'Chạy quét ngay' }}
+        <Zap :size="12" /> {{ sweeping ? t('admin.health.sweeping') : t('admin.health.sweepNow') }}
       </button>
     </div>
 
     <p class="hint-text">
-      Auto-heal quét tất cả proxy mỗi 5 phút, đo bằng request thật qua chính proxy đó. Sai 3 lần liên tiếp → tự xoay
-      IP egress (v6 mint mới từ /48 của node). Sai 6 lần → tự thay bằng proxy mới (cùng order, cùng zone, giữ nguyên hạn).
-      Có 3 lớp chặn lạm dụng: cooldown {{ fmtMs(settings.autoFixCooldownMs) }}, tối đa {{ settings.maxAutoFixPerSweep }} fix/lần quét,
-      và nếu &gt;{{ settings.nodeSuspectPct }}% proxy của 1 node cùng fail trong 1 lần quét → coi như node lỗi và NGỪNG auto-fix (tránh đốt pool IP).
+      {{ t('admin.health.intro', { cooldown: fmtMs(settings.autoFixCooldownMs), maxFix: settings.maxAutoFixPerSweep, suspectPct: settings.nodeSuspectPct }) }}
     </p>
 
     <p v-if="err" class="error-text">{{ err }}</p>
@@ -89,45 +89,45 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     <div class="metric-cards">
       <article>
         <CheckCircle :size="20" />
-        <span>Hoạt động</span>
+        <span>{{ t('admin.health.kpiActive') }}</span>
         <strong style="color: var(--green)">{{ formatNumber(counters.active) }}</strong>
-        <small style="color:var(--muted); font-size:11.5px">/ {{ formatNumber(counters.total) }} tổng</small>
+        <small style="color:var(--muted); font-size:11.5px">{{ t('admin.health.kpiActiveSub', { total: formatNumber(counters.total) }) }}</small>
       </article>
       <article>
         <AlertTriangle :size="20" />
-        <span>Đang lỗi</span>
+        <span>{{ t('admin.health.kpiFailing') }}</span>
         <strong :style="{ color: counters.failing > 0 ? 'var(--yellow)' : 'var(--muted)' }">{{ formatNumber(counters.failing) }}</strong>
-        <small style="color:var(--muted); font-size:11.5px">checkFailCount &gt; 0</small>
+        <small style="color:var(--muted); font-size:11.5px">{{ t('admin.health.kpiFailingSub') }}</small>
       </article>
       <article>
         <Wrench :size="20" />
-        <span>Fix gần đây</span>
+        <span>{{ t('admin.health.kpiFixes') }}</span>
         <strong style="color: var(--blue)">{{ recentFixes.length }}</strong>
-        <small style="color:var(--muted); font-size:11.5px">100 sự kiện gần nhất</small>
+        <small style="color:var(--muted); font-size:11.5px">{{ t('admin.health.kpiFixesSub') }}</small>
       </article>
       <article>
         <Activity :size="20" />
-        <span>Đã thay (replaced)</span>
+        <span>{{ t('admin.health.kpiReplaced') }}</span>
         <strong>{{ formatNumber(counters.replaced || 0) }}</strong>
-        <small style="color:var(--muted); font-size:11.5px">expired: {{ counters.expired || 0 }}</small>
+        <small style="color:var(--muted); font-size:11.5px">{{ t('admin.health.kpiReplacedSub', { n: counters.expired || 0 }) }}</small>
       </article>
     </div>
 
     <!-- Per-node fail rate -->
     <section class="surface">
       <div class="section-head">
-        <h2>Tỉ lệ lỗi theo node</h2>
-        <span style="color:var(--muted); font-size:12px">Node bị đánh dấu suspect khi &gt;{{ settings.nodeSuspectPct }}% proxy fail cùng lúc → tạm ngừng auto-fix node đó</span>
+        <h2>{{ t('admin.health.perNodeTitle') }}</h2>
+        <span style="color:var(--muted); font-size:12px">{{ t('admin.health.perNodeNote', { pct: settings.nodeSuspectPct }) }}</span>
       </div>
-      <p v-if="!perNode.length" class="empty-text">Chưa có dữ liệu.</p>
+      <p v-if="!perNode.length" class="empty-text">{{ t('admin.health.empty') }}</p>
       <div v-if="perNode.length" class="data-table">
         <div class="table-head" style="grid-template-columns: 1.4fr 1fr 0.6fr 0.6fr 0.8fr 0.7fr">
-          <span>Node</span>
-          <span>Host</span>
-          <span style="text-align:right">Tổng</span>
-          <span style="text-align:right">Lỗi</span>
-          <span style="text-align:right">% lỗi</span>
-          <span style="text-align:right">Trạng thái</span>
+          <span>{{ t('admin.health.colNode') }}</span>
+          <span>{{ t('admin.health.colHost') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colTotal') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colFail') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colFailPct') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colStatus') }}</span>
         </div>
         <div v-for="n in perNode" :key="n.nodeId" class="table-row" :class="{ 'is-suspect': n.suspect }" style="grid-template-columns: 1.4fr 1fr 0.6fr 0.6fr 0.8fr 0.7fr">
           <span>{{ n.nodeName }}</span>
@@ -147,15 +147,15 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     <!-- Recent auto-fix audit -->
     <section class="surface">
       <div class="section-head">
-        <h2>Hành động auto-fix gần đây ({{ recentFixes.length }})</h2>
-        <span style="color:var(--muted); font-size:12px">rotate = đổi IP egress · replace = thay proxy</span>
+        <h2>{{ t('admin.health.recentTitle', { n: recentFixes.length }) }}</h2>
+        <span style="color:var(--muted); font-size:12px">{{ t('admin.health.recentNote') }}</span>
       </div>
-      <p v-if="!recentFixes.length" class="empty-text">Chưa có sự kiện. Auto-heal sẽ ghi nhận tại đây khi xảy ra.</p>
+      <p v-if="!recentFixes.length" class="empty-text">{{ t('admin.health.recentEmpty') }}</p>
       <div v-if="recentFixes.length" class="data-table">
         <div class="table-head" style="grid-template-columns: 0.7fr 0.8fr 1.4fr">
-          <span>Thời gian</span>
-          <span>Hành động</span>
-          <span>Chi tiết</span>
+          <span>{{ t('admin.health.colTime') }}</span>
+          <span>{{ t('admin.health.colAction') }}</span>
+          <span>{{ t('admin.health.colDetail') }}</span>
         </div>
         <div v-for="(f, i) in recentFixes" :key="i" class="table-row" style="grid-template-columns: 0.7fr 0.8fr 1.4fr">
           <span class="cell-mono" style="font-size:11.5px; color:var(--muted)">{{ f.ts }}</span>
@@ -175,21 +175,21 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     <!-- Top current failers -->
     <section class="surface">
       <div class="section-head">
-        <h2>Proxy đang lỗi ({{ data?.failerCount || 0 }})</h2>
-        <span style="color:var(--muted); font-size:12px">Hiển thị 200 đầu tiên, sắp xếp theo số lần fail liên tiếp</span>
+        <h2>{{ t('admin.health.failersTitle', { n: data?.failerCount || 0 }) }}</h2>
+        <span style="color:var(--muted); font-size:12px">{{ t('admin.health.failersNote') }}</span>
       </div>
-      <p v-if="!failers.length" class="empty-text">Tất cả proxy đang khoẻ.</p>
+      <p v-if="!failers.length" class="empty-text">{{ t('admin.health.failersEmpty') }}</p>
       <div v-if="failers.length" class="data-table">
         <div class="table-head" style="grid-template-columns: 1fr 0.7fr 1.2fr 1fr 0.6fr 0.6fr 0.7fr 0.7fr 0.7fr">
-          <span>Proxy</span>
-          <span>Loại</span>
-          <span>Owner</span>
-          <span>Node</span>
-          <span style="text-align:right">Fail liên tiếp</span>
-          <span style="text-align:right">Tổng fail</span>
-          <span style="text-align:right">Đã auto-fix</span>
-          <span style="text-align:right">Check gần nhất</span>
-          <span style="text-align:right">Trạng thái</span>
+          <span>{{ t('admin.health.colProxy') }}</span>
+          <span>{{ t('admin.health.colType') }}</span>
+          <span>{{ t('admin.health.colOwner') }}</span>
+          <span>{{ t('admin.health.colNode') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colFailStreak') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colTotalFail') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colAutoFixed') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colLastCheck') }}</span>
+          <span style="text-align:right">{{ t('admin.health.colStatus') }}</span>
         </div>
         <div v-for="f in failers" :key="f.proxyId" class="table-row" style="grid-template-columns: 1fr 0.7fr 1.2fr 1fr 0.6fr 0.6fr 0.7fr 0.7fr 0.7fr">
           <span>

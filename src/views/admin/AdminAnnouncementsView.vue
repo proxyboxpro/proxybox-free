@@ -102,18 +102,18 @@ onMounted(refresh)
         <label class="input-field">
           <span>{{ t('admin.ann.severity') }}</span>
           <select v-model="form.severity">
-            <option value="info">Info (xanh)</option>
-            <option value="success">Success (xanh lá)</option>
-            <option value="warning">Warning (vàng)</option>
-            <option value="error">Error (đỏ)</option>
+            <option value="info">{{ t('admin.ann.sevInfoOpt') }}</option>
+            <option value="success">{{ t('admin.ann.sevSuccessOpt') }}</option>
+            <option value="warning">{{ t('admin.ann.sevWarningOpt') }}</option>
+            <option value="error">{{ t('admin.ann.sevErrorOpt') }}</option>
           </select>
         </label>
         <label class="input-field">
           <span>{{ t('admin.ann.visibility') }}</span>
           <select v-model="form.visibility">
-            <option value="public">Public — mọi visitor</option>
-            <option value="customer">Customer only</option>
-            <option value="admin">Admin only</option>
+            <option value="public">{{ t('admin.ann.visPublicOpt') }}</option>
+            <option value="customer">{{ t('admin.ann.visCustomerOpt') }}</option>
+            <option value="admin">{{ t('admin.ann.visAdminOpt') }}</option>
           </select>
         </label>
         <label class="input-field">

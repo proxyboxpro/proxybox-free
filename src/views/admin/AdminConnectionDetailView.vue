@@ -5,6 +5,9 @@ import VueApexCharts from 'vue3-apexcharts'
 import { Activity, ArrowLeft, Ban, RefreshCw, Search } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber, formatRate } from '../../utils/format'
+import { useI18n } from '../../i18n'
+
+const { t } = useI18n()
 
 function ccToFlag(cc) {
   if (!cc || cc.length !== 2) return ''
@@ -61,11 +64,11 @@ async function loadEvents() {
 }
 async function refresh() { await Promise.all([loadSummary(), loadHistory(), loadTopHosts(), loadEvents()]) }
 async function blockHost(host) {
-  if (!confirm(`Chặn ${host} global cho mọi proxy?`)) return
+  if (!confirm(t('admin.connDetail.confirmBlock', { host }))) return
   try {
     await apiFetch('/api/admin/deny-hosts', { method: 'POST', body: { host } })
-    alert(`Đã chặn ${host}`)
-  } catch (e) { alert('Lỗi: ' + e.message) }
+    alert(t('admin.connDetail.blocked', { host }))
+  } catch (e) { alert(t('admin.connDetail.blockErr', { msg: e.message })) }
 }
 
 watch(range, refresh)
@@ -95,7 +98,7 @@ const bwOptions = computed(() => ({
   <section class="page-stack">
     <div class="toolbar">
       <button class="ghost-button" type="button" @click="router.push({ name: 'admin-connections' })"><ArrowLeft :size="13" /></button>
-      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> Proxy <span class="cell-mono">{{ proxyId }}</span></span>
+      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> {{ t('admin.connDetail.proxyLabel') }} <span class="cell-mono">{{ proxyId }}</span></span>
       <div class="spacer"></div>
       <div class="segment-tabs">
         <button type="button" :class="{ active: range === '1h' }" @click="range = '1h'">1h</button>
@@ -111,30 +114,30 @@ const bwOptions = computed(() => ({
     <!-- Summary -->
     <section v-if="summary" class="surface">
       <div class="metric-cards">
-        <article><span>Owner</span><strong style="font-size:14px">{{ summary.ownerEmail || '—' }}</strong><small style="color:var(--muted);font-size:11.5px">{{ summary.ownerId }}</small></article>
-        <article><span>Host (customer connect)</span><strong class="cell-mono" style="font-size:13px">{{ summary.ip || summary.bindIp }}:{{ summary.port }}</strong><small style="color:var(--muted);font-size:11.5px">egress {{ summary.bindIp }} · {{ summary.nodeName }} · {{ summary.zone }}</small></article>
-        <article><span>Đang mở</span><strong :style="{color: summary.active ? 'var(--green)' : 'var(--muted)'}">{{ summary.active }}</strong><small style="color:var(--muted);font-size:11.5px">{{ formatNumber(summary.total) }} all-time</small></article>
-        <article><span>Băng thông</span><strong style="font-size:14px">{{ formatBytes(summary.uploadBytes + summary.downloadBytes) }}</strong><small style="color:var(--muted);font-size:11.5px">↑ {{ formatRate(summary.bpsOut) }} · ↓ {{ formatRate(summary.bpsIn) }}</small></article>
+        <article><span>{{ t('admin.connDetail.owner') }}</span><strong style="font-size:14px">{{ summary.ownerEmail || '—' }}</strong><small style="color:var(--muted);font-size:11.5px">{{ summary.ownerId }}</small></article>
+        <article><span>{{ t('admin.connDetail.host') }}</span><strong class="cell-mono" style="font-size:13px">{{ summary.ip || summary.bindIp }}:{{ summary.port }}</strong><small style="color:var(--muted);font-size:11.5px">{{ t('admin.connDetail.egressPrefix') }}{{ summary.bindIp }} · {{ summary.nodeName }} · {{ summary.zone }}</small></article>
+        <article><span>{{ t('admin.connDetail.open') }}</span><strong :style="{color: summary.active ? 'var(--green)' : 'var(--muted)'}">{{ summary.active }}</strong><small style="color:var(--muted);font-size:11.5px">{{ t('admin.connDetail.allTime', { n: formatNumber(summary.total) }) }}</small></article>
+        <article><span>{{ t('admin.connDetail.bandwidth') }}</span><strong style="font-size:14px">{{ formatBytes(summary.uploadBytes + summary.downloadBytes) }}</strong><small style="color:var(--muted);font-size:11.5px">↑ {{ formatRate(summary.bpsOut) }} · ↓ {{ formatRate(summary.bpsIn) }}</small></article>
       </div>
     </section>
 
     <!-- Bandwidth chart -->
     <section class="surface">
-      <div class="section-head"><h2>Băng thông {{ range }}</h2></div>
-      <p v-if="!history.length" class="empty-text" style="padding:24px 0">Chưa có dữ liệu lịch sử.</p>
+      <div class="section-head"><h2>{{ t('admin.connDetail.bwTitle', { range }) }}</h2></div>
+      <p v-if="!history.length" class="empty-text" style="padding:24px 0">{{ t('admin.connDetail.bwEmpty') }}</p>
       <apexchart v-else type="area" :options="bwOptions" :series="bwSeries" :height="240" />
     </section>
 
     <!-- Top hosts in window -->
     <section class="surface">
-      <div class="section-head"><h2>Top destination ({{ range }})</h2></div>
-      <p v-if="!topHosts.length" class="empty-text">Không có request nào trong khoảng này.</p>
+      <div class="section-head"><h2>{{ t('admin.connDetail.topTitle', { range }) }}</h2></div>
+      <p v-if="!topHosts.length" class="empty-text">{{ t('admin.connDetail.topEmpty') }}</p>
       <div v-if="topHosts.length" class="data-table">
         <div class="table-head" style="grid-template-columns: 2fr 80px 1fr 1fr 32px">
-          <span>Host</span>
-          <span style="text-align:right">Lượt</span>
-          <span style="text-align:right">Bytes</span>
-          <span style="text-align:right">Lần cuối</span>
+          <span>{{ t('admin.connDetail.colHost') }}</span>
+          <span style="text-align:right">{{ t('admin.connDetail.colHits') }}</span>
+          <span style="text-align:right">{{ t('admin.connDetail.colBytes') }}</span>
+          <span style="text-align:right">{{ t('admin.connDetail.colLast') }}</span>
           <span></span>
         </div>
         <div v-for="h in topHosts" :key="h.host" class="table-row" style="grid-template-columns: 2fr 80px 1fr 1fr 32px">
@@ -144,29 +147,29 @@ const bwOptions = computed(() => ({
           <span style="text-align:right">{{ formatNumber(h.count) }}</span>
           <span class="cell-mono" style="text-align:right; font-size:12px">{{ formatBytes(h.bytesUp + h.bytesDown) }}</span>
           <span style="text-align:right; color:var(--muted); font-size:11.5px">{{ new Date(h.lastTs).toLocaleString('vi-VN') }}</span>
-          <button class="icon-button" type="button" title="Chặn host này" @click="blockHost(h.host)"><Ban :size="12" /></button>
+          <button class="icon-button" type="button" :title="t('admin.connDetail.blockTitle')" @click="blockHost(h.host)"><Ban :size="12" /></button>
         </div>
       </div>
     </section>
 
     <!-- Event log -->
     <section class="surface">
-      <div class="section-head"><h2>Lịch sử kết nối ({{ events.length }})</h2></div>
+      <div class="section-head"><h2>{{ t('admin.connDetail.evLogTitle', { n: events.length }) }}</h2></div>
       <div class="ord-filters">
         <div class="filter-row">
-          <label class="filter-field"><Search :size="13" /><input v-model="hostFilter" placeholder="lọc host" @input="loadEvents" /></label>
-          <label class="filter-field"><Search :size="13" /><input v-model="srcFilter" placeholder="lọc client IP" @input="loadEvents" /></label>
+          <label class="filter-field"><Search :size="13" /><input v-model="hostFilter" :placeholder="t('admin.connDetail.filterHost')" @input="loadEvents" /></label>
+          <label class="filter-field"><Search :size="13" /><input v-model="srcFilter" :placeholder="t('admin.connDetail.filterSrc')" @input="loadEvents" /></label>
         </div>
       </div>
-      <p v-if="!events.length && !loading" class="empty-text">Không có event nào trong khoảng này.</p>
+      <p v-if="!events.length && !loading" class="empty-text">{{ t('admin.connDetail.evEmpty') }}</p>
       <div v-if="events.length" class="data-table" style="margin-top:10px">
         <div class="table-head" style="grid-template-columns: 1.3fr 0.9fr 2fr 70px 60px 1fr">
-          <span>Khi</span>
-          <span>Client</span>
-          <span>Đích</span>
-          <span style="text-align:right">Bytes</span>
-          <span style="text-align:right">ms</span>
-          <span>Kind</span>
+          <span>{{ t('admin.connDetail.colWhen') }}</span>
+          <span>{{ t('admin.connDetail.colClient') }}</span>
+          <span>{{ t('admin.connDetail.colTarget') }}</span>
+          <span style="text-align:right">{{ t('admin.connDetail.colBytes') }}</span>
+          <span style="text-align:right">{{ t('admin.connDetail.colMs') }}</span>
+          <span>{{ t('admin.connDetail.colKind') }}</span>
         </div>
         <div v-for="(c, i) in events" :key="i" class="table-row" style="grid-template-columns: 1.3fr 0.9fr 2fr 70px 60px 1fr">
           <span style="font-size:11.5px; color:var(--muted)">{{ new Date(c.ts).toLocaleString('vi-VN') }}</span>

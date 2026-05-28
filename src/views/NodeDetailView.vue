@@ -85,7 +85,7 @@ async function loadUpgrade() {
   finally { upgradeLoading.value = false }
 }
 async function rotateUpgradeToken() {
-  if (!confirm('Tạo token mới? URL cũ sẽ ngừng hoạt động.')) return
+  if (!confirm(t('nodeDetail.confirmUpgradeTokenRotate'))) return
   upgradeLoading.value = true
   try { upgrade.value = await apiFetch(`/api/nodes/${nodeId.value}/upgrade-command`, { method: 'POST' }) }
   catch (e) { errorText.value = e.message }
@@ -323,38 +323,38 @@ const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).l
 
     <!-- ── Bandwidth (1h / 24h / 30d) — total traffic served from this node ── -->
     <section v-if="node" class="surface">
-      <div class="section-head"><h2><BarChart3 :size="16" style="vertical-align:-3px" /> Băng thông node</h2></div>
+      <div class="section-head"><h2><BarChart3 :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.bwTitle') }}</h2></div>
       <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">1 giờ qua</div><div class="metric-value">{{ formatBytes((windows.h1.up + windows.h1.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h1.up) }} · ↓ {{ formatBytes(windows.h1.down) }}</div></div>
-        <div class="metric-card"><div class="metric-label">24 giờ qua</div><div class="metric-value">{{ formatBytes((windows.h24.up + windows.h24.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h24.up) }} · ↓ {{ formatBytes(windows.h24.down) }}</div></div>
-        <div class="metric-card"><div class="metric-label">30 ngày qua</div><div class="metric-value">{{ formatBytes((windows.d30.up + windows.d30.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.d30.up) }} · ↓ {{ formatBytes(windows.d30.down) }}</div></div>
-        <div class="metric-card"><div class="metric-label">Khách trên node</div><div class="metric-value">{{ owners.length }}</div><div class="metric-foot">{{ proxies.length }} proxy</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bw1h') }}</div><div class="metric-value">{{ formatBytes((windows.h1.up + windows.h1.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h1.up) }} · ↓ {{ formatBytes(windows.h1.down) }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bw24h') }}</div><div class="metric-value">{{ formatBytes((windows.h24.up + windows.h24.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h24.up) }} · ↓ {{ formatBytes(windows.h24.down) }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bw30d') }}</div><div class="metric-value">{{ formatBytes((windows.d30.up + windows.d30.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.d30.up) }} · ↓ {{ formatBytes(windows.d30.down) }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bwOwners') }}</div><div class="metric-value">{{ owners.length }}</div><div class="metric-foot">{{ t('nodeDetail.bwOwnersSub', { n: proxies.length }) }}</div></div>
       </div>
       <!-- chart -->
       <div style="display:flex; gap:6px; margin:14px 0 8px; align-items:center">
         <button v-for="r in ['24h','7d','30d']" :key="r" type="button" :class="['ghost-button', bwRange === r ? 'active' : '']" style="padding:4px 10px; font-size:11px" @click="setBwRange(r)">{{ r }}</button>
-        <span v-if="bwLoading" style="font-size:11px; color:var(--muted); margin-left:8px">đang tải…</span>
+        <span v-if="bwLoading" style="font-size:11px; color:var(--muted); margin-left:8px">{{ t('nodeDetail.loading') }}</span>
       </div>
       <ApexChart v-if="bwSeries.length" type="area" height="240" :options="chartOptions" :series="chartSeries" />
-      <p v-else class="empty-text" style="padding:24px 0; text-align:center">Chưa có dữ liệu băng thông cho khoảng thời gian này.</p>
+      <p v-else class="empty-text" style="padding:24px 0; text-align:center">{{ t('nodeDetail.bwEmpty') }}</p>
     </section>
 
     <!-- ── Customers on this node — who's using it, how much ── -->
     <section v-if="node && owners.length" class="surface">
       <div class="section-head">
-        <h2><Users :size="16" style="vertical-align:-3px" /> Khách dùng proxy trên node ({{ owners.length }})</h2>
-        <span style="color:var(--muted); font-size:12px">Click vào dòng để xem chi tiết proxy của khách trên node này</span>
+        <h2><Users :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.ownersTitle', { n: owners.length }) }}</h2>
+        <span style="color:var(--muted); font-size:12px">{{ t('nodeDetail.ownersNote') }}</span>
       </div>
       <div class="data-table">
         <div class="table-head" style="grid-template-columns: 0.2fr 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr">
           <span></span>
-          <span>Khách</span>
-          <span style="text-align:right">Proxy</span>
-          <span style="text-align:right">Active</span>
-          <span style="text-align:right">Expired</span>
-          <span style="text-align:right">Băng thông 30d</span>
-          <span style="text-align:right">Auto-fix</span>
-          <span style="text-align:right">Last check</span>
+          <span>{{ t('nodeDetail.colCustomer') }}</span>
+          <span style="text-align:right">{{ t('nodeDetail.colProxy') }}</span>
+          <span style="text-align:right">{{ t('nodeDetail.colActive') }}</span>
+          <span style="text-align:right">{{ t('nodeDetail.colExpired') }}</span>
+          <span style="text-align:right">{{ t('nodeDetail.colBw30d') }}</span>
+          <span style="text-align:right">{{ t('nodeDetail.colAutoFix') }}</span>
+          <span style="text-align:right">{{ t('nodeDetail.colLastCheck') }}</span>
         </div>
         <template v-for="o in owners" :key="o.ownerId">
           <div class="table-row" style="grid-template-columns: 0.2fr 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr; cursor:pointer" @click="toggleOwnerDrill(o.ownerId)">
@@ -364,7 +364,7 @@ const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).l
             </span>
             <span>
               <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block">{{ o.email }}</span>
-              <small v-if="o.suspended" class="status-pill error" style="font-size:10px">suspended</small>
+              <small v-if="o.suspended" class="status-pill error" style="font-size:10px">{{ t('nodeDetail.suspended') }}</small>
             </span>
             <span class="cell-mono" style="text-align:right; font-weight:600">{{ o.total }}</span>
             <span class="cell-mono" style="text-align:right; color:var(--green)">{{ o.active }}</span>
@@ -382,15 +382,15 @@ const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).l
           <!-- expanded drilldown -->
           <div v-if="ownerDrill && ownerDrill.owner?.id === o.ownerId" class="owner-drill">
             <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border-soft)">
-              <span style="font-size:12px; color:var(--muted)">Proxy của <strong style="color:var(--text)">{{ ownerDrill.owner?.email || o.email }}</strong> trên node này ({{ ownerDrill.proxies.length }})</span>
-              <button class="ghost-button" type="button" style="font-size:11px; padding:3px 8px" @click.stop="goToUser(o.ownerId)">Mở trang khách →</button>
+              <span style="font-size:12px; color:var(--muted)" v-html="t('nodeDetail.drilldown', { email: ownerDrill.owner?.email || o.email, n: ownerDrill.proxies.length })"></span>
+              <button class="ghost-button" type="button" style="font-size:11px; padding:3px 8px" @click.stop="goToUser(o.ownerId)">{{ t('nodeDetail.openCustomer') }}</button>
             </div>
-            <div v-if="ownerDrillLoading === o.ownerId" class="empty-text" style="padding:14px">Đang tải…</div>
+            <div v-if="ownerDrillLoading === o.ownerId" class="empty-text" style="padding:14px">{{ t('nodeDetail.drillLoading') }}</div>
             <div v-else class="data-table" style="border:none">
               <div v-for="p in ownerDrill.proxies" :key="p.id" class="table-row" style="grid-template-columns: 1.2fr 1.4fr 0.5fr 0.7fr 1fr">
                 <span class="cell-mono" style="font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ p.name || p.id }}</span>
                 <span class="cell-mono" style="font-size:11.5px">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-                <span><span :class="['status-pill', p.status]">{{ p.status }}</span><span v-if="p.suspended" class="status-pill error" style="font-size:10px; margin-left:4px">suspended</span></span>
+                <span><span :class="['status-pill', p.status]">{{ p.status }}</span><span v-if="p.suspended" class="status-pill error" style="font-size:10px; margin-left:4px">{{ t('nodeDetail.suspended') }}</span></span>
                 <span style="text-align:right">
                   <strong v-if="p.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">×{{ p.autoFixCount }}</strong>
                   <span v-else style="color:var(--muted)">—</span>
@@ -408,85 +408,85 @@ const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).l
 
     <!-- ── Management actions ── -->
     <section v-if="node && !isLocal" class="surface">
-      <div class="section-head"><h2><Wrench :size="16" style="vertical-align:-3px" /> Quản lý node</h2></div>
+      <div class="section-head"><h2><Wrench :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.manageTitle') }}</h2></div>
       <div class="action-row" style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(node.disabled ? 'undrain' : 'drain', node.disabled ? null : 'Drain sẽ ngừng nhận kết nối MỚI trên node này (các kết nối hiện tại tiếp tục). Tiếp tục?')">
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(node.disabled ? 'undrain' : 'drain', node.disabled ? null : t('nodeDetail.confirmDrain'))">
           <Play v-if="node.disabled" :size="13" /><Pause v-else :size="13" />
-          {{ node.disabled ? 'Bật lại node (undrain)' : 'Drain (ngừng nhận conn mới)' }}
+          {{ node.disabled ? t('nodeDetail.btnUndrain') : t('nodeDetail.btnDrain') }}
         </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(suspendedCount > 0 ? 'resume-all-proxies' : 'suspend-all-proxies', suspendedCount > 0 ? 'Bỏ tạm dừng toàn bộ proxy trên node?' : 'Tạm dừng toàn bộ proxy trên node? Khách sẽ mất khả năng dùng proxy đến khi resume.')">
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(suspendedCount > 0 ? 'resume-all-proxies' : 'suspend-all-proxies', suspendedCount > 0 ? t('nodeDetail.confirmResumeAll') : t('nodeDetail.confirmSuspendAll'))">
           <Play v-if="suspendedCount > 0" :size="13" /><Pause v-else :size="13" />
-          {{ suspendedCount > 0 ? `Resume ${suspendedCount} proxy đang suspend` : 'Suspend toàn bộ proxy' }}
+          {{ suspendedCount > 0 ? t('nodeDetail.btnResumeN', { n: suspendedCount }) : t('nodeDetail.btnSuspendAll') }}
         </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('restart-agent', 'Restart agent service trên node? (~30s downtime cho mọi proxy trên node này)')">
-          <RefreshCw :size="13" /> Restart agent
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('restart-agent', t('nodeDetail.confirmRestartAgent'))">
+          <RefreshCw :size="13" /> {{ t('nodeDetail.btnRestartAgent') }}
         </button>
         <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('refresh-network', null)">
-          <Zap :size="13" /> Refresh network info
+          <Zap :size="13" /> {{ t('nodeDetail.btnRefreshNet') }}
         </button>
         <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('diagnostics', null)">
-          <Activity :size="13" /> Diagnostics
+          <Activity :size="13" /> {{ t('nodeDetail.btnDiagnostics') }}
         </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('rotate-token', 'Đổi agent token? Token cũ sẽ ngừng hoạt động ngay; agent restart sẽ pick up token mới.')">
-          <RefreshCw :size="13" /> Rotate agent token
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('rotate-token', t('nodeDetail.confirmRotateToken'))">
+          <RefreshCw :size="13" /> {{ t('nodeDetail.btnRotateToken') }}
         </button>
       </div>
-      <p v-if="actionBusy" class="empty-text" style="padding:8px 0">Đang chạy: {{ actionBusy }}…</p>
+      <p v-if="actionBusy" class="empty-text" style="padding:8px 0">{{ t('nodeDetail.actionRunning', { name: actionBusy }) }}</p>
     </section>
 
     <!-- ── Alert thresholds (per-node override) ── -->
     <section v-if="node && !isLocal" class="surface">
       <div class="section-head">
-        <h2><Bell :size="16" style="vertical-align:-3px" /> Ngưỡng cảnh báo node</h2>
-        <span style="font-size:11.5px; color:var(--muted)">Bỏ trống → dùng mặc định (RAM 90%, Load 100, Fail 80%)</span>
+        <h2><Bell :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.alertsTitle') }}</h2>
+        <span style="font-size:11.5px; color:var(--muted)">{{ t('nodeDetail.alertsHint') }}</span>
       </div>
       <div class="detail-grid">
         <div>
-          <span>RAM (%)</span>
+          <span>{{ t('nodeDetail.alertsRam') }}</span>
           <input v-model="alertsForm.ramPct" type="number" min="1" max="100" placeholder="90" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
         </div>
         <div>
-          <span>Load 1m</span>
+          <span>{{ t('nodeDetail.alertsLoad') }}</span>
           <input v-model="alertsForm.load1" type="number" min="1" max="10000" placeholder="100" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
         </div>
         <div>
-          <span>Tỉ lệ fail (%)</span>
+          <span>{{ t('nodeDetail.alertsFail') }}</span>
           <input v-model="alertsForm.failPct" type="number" min="1" max="100" placeholder="80" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
         </div>
         <div style="display:flex; align-items:flex-end">
-          <button class="primary-action small" type="button" :disabled="alertsSaving" @click="saveAlerts">{{ alertsSaving ? 'Đang lưu…' : 'Lưu ngưỡng' }}</button>
+          <button class="primary-action small" type="button" :disabled="alertsSaving" @click="saveAlerts">{{ alertsSaving ? t('nodeDetail.alertsSaving') : t('nodeDetail.alertsSave') }}</button>
         </div>
       </div>
     </section>
 
     <!-- ── Reaper telemetry (IPv6 stale-address sweeper) ── -->
     <section v-if="reaper" class="surface">
-      <div class="section-head"><h2><Trash :size="16" style="vertical-align:-3px" /> IPv6 reaper</h2></div>
+      <div class="section-head"><h2><Trash :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.reaperTitle') }}</h2></div>
       <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">Active /128 đang giữ</div><div class="metric-value">{{ reaper.activeCount }}</div></div>
-        <div class="metric-card"><div class="metric-label">Sweep gần nhất</div><div class="metric-value" style="font-size:18px">{{ fmtMs(reaper.lastSweepAt) }}</div><div class="metric-foot cell-mono">{{ reaper.lastSweepAt }}</div></div>
-        <div class="metric-card"><div class="metric-label">Reaped lần cuối</div><div class="metric-value">{{ reaper.lastReapedCount }}</div></div>
-        <div class="metric-card"><div class="metric-label">Tổng reaped (từ khi agent start)</div><div class="metric-value">{{ reaper.totalReaped }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperActive') }}</div><div class="metric-value">{{ reaper.activeCount }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperLastSweep') }}</div><div class="metric-value" style="font-size:18px">{{ fmtMs(reaper.lastSweepAt) }}</div><div class="metric-foot cell-mono">{{ reaper.lastSweepAt }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperLastReaped') }}</div><div class="metric-value">{{ reaper.lastReapedCount }}</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperTotal') }}</div><div class="metric-value">{{ reaper.totalReaped }}</div></div>
       </div>
     </section>
 
     <!-- ── IPv6 pool utilization ── -->
     <section v-if="pool" class="surface">
-      <div class="section-head"><h2><Network :size="16" style="vertical-align:-3px" /> IP pool ({{ pool.family }})</h2></div>
+      <div class="section-head"><h2><Network :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.poolTitle', { family: pool.family }) }}</h2></div>
       <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">Proxy đang dùng</div><div class="metric-value">{{ pool.proxiesOnNode }}</div></div>
-        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">IPv6 attached</div><div class="metric-value">{{ pool.ipv6Attached }}</div><div class="metric-foot">In use: {{ pool.ipv6InUse }} ({{ pool.utilizationPctOfAttached }}%)</div></div>
-        <div v-if="pool.family === 'ipv4'" class="metric-card"><div class="metric-label">IPv4 attached</div><div class="metric-value">{{ pool.ipv4Attached }}</div><div class="metric-foot">In use: {{ pool.ipv4InUse }}</div></div>
-        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">Subnet /64 distinct</div><div class="metric-value">{{ pool.distinct64InUse }}</div><div class="metric-foot">Attached: {{ pool.distinct64Attached }}</div></div>
-        <div v-if="pool.family === 'ipv6' && pool.capacityCidr" class="metric-card"><div class="metric-label">Capacity prefix</div><div class="metric-value cell-mono" style="font-size:14px">{{ pool.capacityCidr }}</div><div class="metric-foot">~2^{{ 128 - Number(pool.capacityCidr.split('/')[1] || 0) }} hosts</div></div>
+        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolProxies') }}</div><div class="metric-value">{{ pool.proxiesOnNode }}</div></div>
+        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolIpv6Attached') }}</div><div class="metric-value">{{ pool.ipv6Attached }}</div><div class="metric-foot">{{ t('nodeDetail.poolIpv6InUse', { n: pool.ipv6InUse, pct: pool.utilizationPctOfAttached }) }}</div></div>
+        <div v-if="pool.family === 'ipv4'" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolIpv4Attached') }}</div><div class="metric-value">{{ pool.ipv4Attached }}</div><div class="metric-foot">{{ t('nodeDetail.poolIpv4InUse', { n: pool.ipv4InUse }) }}</div></div>
+        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolDistinct64') }}</div><div class="metric-value">{{ pool.distinct64InUse }}</div><div class="metric-foot">{{ t('nodeDetail.poolDistinct64A', { n: pool.distinct64Attached }) }}</div></div>
+        <div v-if="pool.family === 'ipv6' && pool.capacityCidr" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolCapacity') }}</div><div class="metric-value cell-mono" style="font-size:14px">{{ pool.capacityCidr }}</div><div class="metric-foot">{{ t('nodeDetail.poolHosts', { n: 128 - Number(pool.capacityCidr.split('/')[1] || 0) }) }}</div></div>
       </div>
     </section>
 
     <!-- ── Recent activity: auto-heal events + open errors for this node ── -->
     <section v-if="node && (recentFixes.length || recentErrors.length)" class="surface">
-      <div class="section-head"><h2><Activity :size="16" style="vertical-align:-3px" /> Hoạt động gần đây trên node</h2></div>
+      <div class="section-head"><h2><Activity :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.recentTitle') }}</h2></div>
       <div v-if="recentErrors.length" style="margin-bottom:14px">
-        <h3 style="font-size:13px; color:var(--red); margin:0 0 8px"><AlertCircle :size="13" style="vertical-align:-2px" /> Lỗi đang mở ({{ recentErrors.length }})</h3>
+        <h3 style="font-size:13px; color:var(--red); margin:0 0 8px"><AlertCircle :size="13" style="vertical-align:-2px" /> {{ t('nodeDetail.openErrors', { n: recentErrors.length }) }}</h3>
         <div class="data-table">
           <div v-for="e in recentErrors" :key="e.id" class="table-row" style="grid-template-columns: 0.5fr 0.7fr 1fr 1.6fr 0.4fr">
             <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ fmtAgo(e.last_ts) }}</span>
@@ -498,7 +498,7 @@ const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).l
         </div>
       </div>
       <div v-if="recentFixes.length">
-        <h3 style="font-size:13px; color:var(--muted); margin:0 0 8px">Auto-heal ({{ recentFixes.length }})</h3>
+        <h3 style="font-size:13px; color:var(--muted); margin:0 0 8px">{{ t('nodeDetail.autoHeal', { n: recentFixes.length }) }}</h3>
         <div class="data-table">
           <div v-for="(f, i) in recentFixes" :key="i" class="table-row" style="grid-template-columns: 0.7fr 0.7fr 2fr">
             <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ f.ts.slice(11, 19) }}</span>
@@ -512,27 +512,25 @@ const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).l
     <!-- Upgrade agent — admin runs the one-liner on the node to swap binary -->
     <section v-if="node && !isLocal" class="surface">
       <div class="section-head" style="display:flex; align-items:center; gap:10px">
-        <h2><Download :size="16" style="vertical-align:-3px" /> Cập nhật agent</h2>
-        <span v-if="upgrade?.outdated" class="status-pill pending" style="font-size:11px">v{{ upgrade.currentVersion }} → v{{ upgrade.latestVersion }}</span>
-        <span v-else-if="upgrade && !upgrade.outdated && upgrade.currentVersion" class="status-pill active" style="font-size:11px">đang dùng phiên bản mới nhất (v{{ upgrade.latestVersion }})</span>
+        <h2><Download :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.upgradeTitle') }}</h2>
+        <span v-if="upgrade?.outdated" class="status-pill pending" style="font-size:11px">{{ t('nodeDetail.upgradeOutdated', { cur: upgrade.currentVersion, latest: upgrade.latestVersion }) }}</span>
+        <span v-else-if="upgrade && !upgrade.outdated && upgrade.currentVersion" class="status-pill active" style="font-size:11px">{{ t('nodeDetail.upgradeLatest', { latest: upgrade.latestVersion }) }}</span>
         <div class="spacer"></div>
-        <button class="ghost-button" type="button" :disabled="upgradeLoading" @click="rotateUpgradeToken" style="font-size:11px">Đổi token</button>
+        <button class="ghost-button" type="button" :disabled="upgradeLoading" @click="rotateUpgradeToken" style="font-size:11px">{{ t('nodeDetail.upgradeRotate') }}</button>
       </div>
-      <p v-if="!upgrade" class="empty-text" style="padding:10px 0">Đang tải lệnh upgrade…</p>
+      <p v-if="!upgrade" class="empty-text" style="padding:10px 0">{{ t('nodeDetail.upgradeLoading') }}</p>
       <div v-else>
-        <p style="font-size:13px; color:var(--muted); margin:0 0 8px">
-          SSH vào node <code>{{ node.host }}</code> và chạy lệnh dưới đây để cập nhật agent lên phiên bản mới nhất.
-          Lệnh tự stop service, tải binary, restart — config + PKI giữ nguyên.
+        <p style="font-size:13px; color:var(--muted); margin:0 0 8px" v-html="t('nodeDetail.upgradeHint', { host: node.host })">
         </p>
         <div class="upgrade-cmd-box">
           <code>{{ upgrade.oneLiner }}</code>
           <button class="ghost-button" type="button" @click="copyUpgradeCmd">
-            {{ upgradeCopied ? '✓ copied' : 'copy' }}
+            {{ upgradeCopied ? t('nodeDetail.upgradeCopied') : t('nodeDetail.upgradeCopy') }}
           </button>
         </div>
         <p style="font-size:11.5px; color:var(--muted); margin:8px 0 0">
-          Script: <a :href="upgrade.upgradeScriptUrl" target="_blank" rel="noopener" style="color:var(--muted)">xem nội dung</a> ·
-          Binary: <a :href="upgrade.binaryUrl" target="_blank" rel="noopener" style="color:var(--muted)">download</a>
+          {{ t('nodeDetail.upgradeScript') }}: <a :href="upgrade.upgradeScriptUrl" target="_blank" rel="noopener" style="color:var(--muted)">{{ t('nodeDetail.upgradeScriptView') }}</a> ·
+          {{ t('nodeDetail.upgradeBinary') }}: <a :href="upgrade.binaryUrl" target="_blank" rel="noopener" style="color:var(--muted)">{{ t('nodeDetail.upgradeBinaryDl') }}</a>
         </p>
       </div>
     </section>
