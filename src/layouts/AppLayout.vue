@@ -38,6 +38,7 @@ const navGroups = [
     { name: 'admin-bandwidth',     labelKey: 'page.bandwidth',    icon: BarChart3 },
     { name: 'admin-health',        labelKey: 'page.health',       icon: Heart },
     { name: 'admin-nodes',         labelKey: 'page.nodes',        icon: Server },
+    { name: 'admin-nodes-compare', labelKey: 'page.nodesCompare', icon: Server },
     { name: 'admin-hubs',          labelKey: 'page.hubs',         icon: Cloud },
     { name: 'admin-zones',         labelKey: 'page.zones',        icon: Globe }
   ] },

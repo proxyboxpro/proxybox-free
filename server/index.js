@@ -548,6 +548,44 @@ async function handleNodeAction(req, res, node, action) {
     return sendJson(res, 200, { ok: true })
   }
 
+  if (action === 'undrain') {
+    if (!node.disabled) return sendJson(res, 200, { ok: true, already: true })
+    node.disabled = false
+    node.drainedAt = null
+    bumpConfigRev()
+    await saveConfig()
+    audited('undrain — node re-enabled')
+    return sendJson(res, 200, { ok: true })
+  }
+
+  if (action === 'suspend-all-proxies') {
+    let n = 0
+    for (const p of config.proxies) {
+      if (p.nodeId === node.id && p.status === 'active' && !p.suspended) {
+        p.suspended = true
+        p.suspendedAt = new Date().toISOString()
+        n += 1
+      }
+    }
+    if (n) { bumpConfigRev(); await saveConfig() }
+    audited(`suspend-all-proxies: ${n} proxies suspended`)
+    return sendJson(res, 200, { ok: true, suspended: n })
+  }
+
+  if (action === 'resume-all-proxies') {
+    let n = 0
+    for (const p of config.proxies) {
+      if (p.nodeId === node.id && p.suspended) {
+        delete p.suspended
+        delete p.suspendedAt
+        n += 1
+      }
+    }
+    if (n) { bumpConfigRev(); await saveConfig() }
+    audited(`resume-all-proxies: ${n} proxies resumed`)
+    return sendJson(res, 200, { ok: true, resumed: n })
+  }
+
   if (action === 'tail-logs') {
     if (!creds) return sendJson(res, 501, { error: 'no SSH credentials' })
     const lines = Math.min(500, Math.max(50, Number(new URL(req.url, 'http://x').searchParams.get('lines')) || 100))
@@ -765,15 +803,15 @@ setInterval(() => {
     // so we eval against latest snapshot. Only fire for ONLINE nodes (an
     // offline node already has its own watchdog alert and stale metrics).
     if (n.status === 'online' && n.metrics) {
+      const ramThreshold  = Number(n.alerts?.ramPct) || 90
+      const loadThreshold = Number(n.alerts?.load1)  || 100
       const ramPct = Number(n.metrics.ramPct) || 0
-      if (ramPct >= 90) {
-        logError({ source: 'watchdog', level: 'warn', code: 'node:ram-high', message: `RAM ${ramPct}% on ${n.name || n.id}`, nodeId: n.id, context: { ramPct, ramUsed: n.metrics.ramUsed, ramTotal: n.metrics.ramTotal } })
+      if (ramPct >= ramThreshold) {
+        logError({ source: 'watchdog', level: 'warn', code: 'node:ram-high', message: `RAM ${ramPct}% on ${n.name || n.id} (threshold ${ramThreshold}%)`, nodeId: n.id, context: { ramPct, threshold: ramThreshold, ramUsed: n.metrics.ramUsed, ramTotal: n.metrics.ramTotal } })
       }
-      // load >2x vcpu count is the classic "needs attention" line; we don't
-      // know vcpu, but load1 >100 on any reasonable VM is definitely bad.
       const load1 = Number(n.metrics.load1) || 0
-      if (load1 >= 100) {
-        logError({ source: 'watchdog', level: 'warn', code: 'node:load-high', message: `load1=${load1.toFixed(0)} on ${n.name || n.id}`, nodeId: n.id, context: { load1, load5: n.metrics.load5, cpuPct: n.metrics.cpuPct } })
+      if (load1 >= loadThreshold) {
+        logError({ source: 'watchdog', level: 'warn', code: 'node:load-high', message: `load1=${load1.toFixed(0)} on ${n.name || n.id} (threshold ${loadThreshold})`, nodeId: n.id, context: { load1, threshold: loadThreshold, load5: n.metrics.load5, cpuPct: n.metrics.cpuPct } })
       }
     }
   }
@@ -915,6 +953,7 @@ function agentListFor(node) {
   return config.proxies.filter((p) => {
     if (p.nodeId !== node.id) return false
     if (p.status === 'expired') return false
+    if (p.suspended) return false
     const pf = p.type === 'IPv6' ? 'ipv6' : 'ipv4'
     if (fam === 'dual') return true
     return fam === pf
@@ -5519,6 +5558,15 @@ async function handleAgentRequest(req, res, url, node) {
         ts: new Date().toISOString()
       }
     }
+    if (body.reaper && typeof body.reaper === 'object') {
+      const ms = Number(body.reaper.lastSweepMs) || 0
+      node.reaper = {
+        lastSweepAt: ms > 0 ? new Date(ms).toISOString() : new Date().toISOString(),
+        lastReapedCount: Number(body.reaper.lastReapedCount) || 0,
+        totalReaped: Number(body.reaper.totalReaped) || 0,
+        activeCount: Number(body.reaper.activeCount) || 0
+      }
+    }
     if (body.stats && typeof body.stats === 'object') {
       for (const [id, s] of Object.entries(body.stats)) {
         const m = ensureStats(id)
@@ -7130,6 +7178,133 @@ async function handleApi(req, res, url) {
       audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: 'manual health sweep triggered' })
       return sendJson(res, 202, { ok: true, triggered: true, ts: t0 })
     }
+
+    // ── admin: per-node bandwidth time series (hourly buckets) ──
+    const bwSeriesMatch = url.pathname.match(/^\/api\/admin\/nodes\/([^/]+)\/bandwidth-series$/)
+    if (bwSeriesMatch && req.method === 'GET') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      if (!sqliteDb) return sendJson(res, 200, { range: '24h', points: [] })
+      const nid = bwSeriesMatch[1]
+      const range = String(url.searchParams.get('range') || '24h')
+      const HOURS = range === '7d' ? 168 : range === '30d' ? 720 : 24
+      const sinceHour = new Date(Date.now() - HOURS * 3_600_000).toISOString().slice(0, 13)
+      const proxyIds = config.proxies.filter((p) => (p.nodeId || 'local') === nid).map((p) => p.id)
+      if (!proxyIds.length) return sendJson(res, 200, { range, points: [] })
+      try {
+        const ph = proxyIds.map(() => '?').join(',')
+        const rows = sqliteDb.prepare(`
+          SELECT hour, SUM(upload_bytes) AS up, SUM(download_bytes) AS dn
+          FROM history WHERE proxy_id IN (${ph}) AND hour >= ?
+          GROUP BY hour ORDER BY hour
+        `).all(...proxyIds, sinceHour)
+        return sendJson(res, 200, { range, hours: HOURS, points: rows.map((r) => ({ hour: r.hour, up: Number(r.up) || 0, down: Number(r.dn) || 0 })) })
+      } catch (e) { return sendJson(res, 500, { error: e.message }) }
+    }
+
+    // ── admin: v6 pool utilization for a node ──
+    const poolMatch = url.pathname.match(/^\/api\/admin\/nodes\/([^/]+)\/pool$/)
+    if (poolMatch && req.method === 'GET') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const nid = poolMatch[1]
+      const node = nid === 'local' ? null : config.nodes.find((n) => n.id === nid)
+      if (nid !== 'local' && !node) return sendJson(res, 404, { error: 'node not found' })
+      const isV6 = (node?.family || (nid === 'local' ? 'ipv4' : 'ipv4')).toLowerCase() === 'ipv6'
+      const proxiesOnNode = config.proxies.filter((p) => (p.nodeId || 'local') === nid && p.status !== 'expired')
+      const ipv6 = node?.network?.ipv6 || []
+      const ipv4 = node?.network?.ipv4 || []
+      const prefixes = node?.network?.ipv6Prefixes || []
+      const sixtyFourPrefix = (v6) => v6.split(':').slice(0, 4).join(':') + '::/64'
+      const attached64 = new Set()
+      for (const e of ipv6) attached64.add(sixtyFourPrefix(e.address || ''))
+      const inUseBindIp = new Set(proxiesOnNode.map((p) => p.bindIp).filter(Boolean))
+      const inUse64 = new Set([...inUseBindIp].map(sixtyFourPrefix))
+      let capacityBits = 0; let capacityCidr = ''
+      for (const p of prefixes) { const len = Number(p.prefixLen); if (len > 0 && (!capacityBits || len < capacityBits)) { capacityBits = len; capacityCidr = `${p.prefix}/${len}` } }
+      const capacityHosts = capacityBits ? (capacityBits >= 128 ? 1 : Math.pow(2, 128 - capacityBits)) : 0
+      return sendJson(res, 200, {
+        family: isV6 ? 'ipv6' : 'ipv4',
+        proxiesOnNode: proxiesOnNode.length,
+        ipv4Attached: ipv4.length,
+        ipv4InUse: [...inUseBindIp].filter((ip) => !ip.includes(':')).length,
+        ipv6Attached: ipv6.length,
+        ipv6InUse: [...inUseBindIp].filter((ip) => ip.includes(':')).length,
+        distinct64Attached: attached64.size,
+        distinct64InUse: inUse64.size,
+        capacityCidr: capacityCidr || null,
+        capacityHosts: Number.isFinite(capacityHosts) ? capacityHosts : 0,
+        utilizationPctOfAttached: ipv6.length ? Math.round(([...inUseBindIp].filter((ip) => ip.includes(':')).length / ipv6.length) * 1000) / 10 : 0,
+        prefixes
+      })
+    }
+
+    // ── admin: per-owner drilldown on a node ──
+    const ownerDrillMatch = url.pathname.match(/^\/api\/admin\/nodes\/([^/]+)\/owners\/([^/]+)$/)
+    if (ownerDrillMatch && req.method === 'GET') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const [, nid, oid] = ownerDrillMatch
+      const ownerProxies = config.proxies.filter((p) => (p.nodeId || 'local') === nid && p.ownerId === oid)
+      if (!ownerProxies.length) return sendJson(res, 404, { error: 'no proxies for this owner on this node' })
+      const bytesByProxy = new Map()
+      if (sqliteDb) {
+        try {
+          const cutoff = Date.now() - 30 * 86_400_000
+          const ids = ownerProxies.map((p) => p.id)
+          const ph = ids.map(() => '?').join(',')
+          const rows = sqliteDb.prepare(`SELECT proxy_id, SUM(up) AS up, SUM(dn) AS dn FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ? GROUP BY proxy_id`).all(...ids, cutoff)
+          for (const r of rows) bytesByProxy.set(r.proxy_id, { up: Number(r.up) || 0, down: Number(r.dn) || 0 })
+        } catch { /* leave empty */ }
+      }
+      const user = config.users.find((u) => u.id === oid)
+      const proxies = ownerProxies.map((p) => ({
+        ...publicProxy(p),
+        bytes30d: bytesByProxy.get(p.id) || { up: 0, down: 0 },
+        autoFixCount: Number(p.autoFixCount) || 0,
+        lastAutoFixAt: p.lastAutoFixAt || null,
+        suspended: !!p.suspended
+      })).sort((a, b) => (b.bytes30d.up + b.bytes30d.down) - (a.bytes30d.up + a.bytes30d.down))
+      return sendJson(res, 200, {
+        nodeId: nid,
+        owner: user ? { id: user.id, email: user.email, name: user.name, suspended: !!user.suspended } : { id: oid },
+        proxies
+      })
+    }
+
+    // ── admin: side-by-side node comparison ──
+    if (req.method === 'GET' && url.pathname === '/api/admin/nodes/compare') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const a = url.searchParams.get('a'), b = url.searchParams.get('b')
+      if (!a || !b) return sendJson(res, 400, { error: 'a and b query params required' })
+      function snapshot(nid) {
+        const node = nid === 'local' ? null : config.nodes.find((n) => n.id === nid)
+        if (nid !== 'local' && !node) return null
+        const proxiesOnNode = config.proxies.filter((p) => (p.nodeId || 'local') === nid)
+        const active = proxiesOnNode.filter((p) => p.status === 'active').length
+        const failing = proxiesOnNode.filter((p) => (Number(p.checkFailCount) || 0) >= 3).length
+        const ownerSet = new Set(proxiesOnNode.map((p) => p.ownerId).filter(Boolean))
+        let bandwidth30d = { up: 0, down: 0 }
+        if (sqliteDb && proxiesOnNode.length) {
+          try {
+            const cutoff = Date.now() - 30 * 86_400_000
+            const ph = proxiesOnNode.map(() => '?').join(',')
+            const r = sqliteDb.prepare(`SELECT COALESCE(SUM(up),0) up, COALESCE(SUM(dn),0) dn FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ?`).get(...proxiesOnNode.map((p) => p.id), cutoff)
+            bandwidth30d = { up: Number(r.up) || 0, down: Number(r.dn) || 0 }
+          } catch { /* leave zero */ }
+        }
+        return {
+          id: nid, name: node?.name || nid, host: node?.host || '',
+          status: node?.status || (nid === 'local' ? 'online' : 'unknown'),
+          family: node?.family || 'auto',
+          version: node?.version || '',
+          metrics: node?.metrics || null,
+          alerts: node?.alerts || {},
+          proxies: { total: proxiesOnNode.length, active, expired: proxiesOnNode.filter((p) => p.status === 'expired').length, failing },
+          owners: ownerSet.size,
+          bandwidth30d
+        }
+      }
+      return sendJson(res, 200, { a: snapshot(a), b: snapshot(b) })
+    }
+
     // ── admin: aggregate metrics time series for the dashboard chart ──
     // range: 1h (minute granularity), 24h (5-minute), 7d (hour), 30d (hour),
     //        all (day, sourced from hourly history table).
@@ -8596,6 +8771,15 @@ async function handleApi(req, res, url) {
           return sendJson(res, 400, { error: 'family must be "ipv4" or "ipv6"' })
         }
         node.family = fam
+      }
+      if (body.alerts && typeof body.alerts === 'object') {
+        if (!node.alerts) node.alerts = {}
+        const setNum = (k, min, max) => {
+          if (body.alerts[k] === null || body.alerts[k] === '') { delete node.alerts[k]; return }
+          const n = Number(body.alerts[k]); if (Number.isFinite(n) && n >= min && n <= max) node.alerts[k] = n
+        }
+        setNum('ramPct', 1, 100); setNum('load1', 1, 10000); setNum('failPct', 1, 100)
+        if (!Object.keys(node.alerts).length) delete node.alerts
       }
       await saveConfig()
       return sendJson(res, 200, publicNode(node))

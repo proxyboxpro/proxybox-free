@@ -80,6 +80,7 @@ const router = createRouter({
 
       // Infrastructure
       { path: 'nodes',                         name: 'admin-nodes',         component: NodesView },
+      { path: 'nodes/compare',                 name: 'admin-nodes-compare', component: () => import('./views/admin/AdminNodesCompareView.vue') },
       { path: 'nodes/:nodeId',                 name: 'admin-node-detail',   component: NodeDetailView },
       { path: 'hubs',                          name: 'admin-hubs',          component: () => import('./views/admin/AdminHubsView.vue') },
       { path: 'zones',                         name: 'admin-zones',         component: AdminZonesView },
@@ -194,6 +195,7 @@ const ROUTE_TITLE_KEYS = {
   // Admin
   'admin-dashboard':         'page.dashboard',
   'admin-nodes':             'page.nodes',
+  'admin-nodes-compare':     'page.nodesCompare',
   'admin-node-detail':       'page.node-detail',
   'admin-hubs':              'page.hubs',
   'admin-zones':             'page.zones',

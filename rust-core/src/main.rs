@@ -715,6 +715,15 @@ async fn attach_v6_for_proxy(proxy_id: &str, ip: IpAddr) {
 // large backlog doesn't crush the host. Skips link-local, ULA, loopback,
 // and the canonical SLAAC-/cloud-provider-assigned addresses (those have
 // finite preferred_lft; we only touch our "/128 forever" entries).
+// Reaper telemetry — captured each sweep and read by the heartbeat thread.
+// Lets admins see, in /admin/nodes/:id, when the v6 garbage-collector last
+// ran, how much it cleaned, and how much it has cleaned in total since
+// process start. Helpful for diagnosing iface bloat / netlink-dump slowdowns.
+static REAPER_LAST_SWEEP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REAPER_LAST_REAPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REAPER_TOTAL_REAPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REAPER_LAST_ACTIVE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn reap_stale_v6(active: std::collections::HashSet<Ipv6Addr>, max_per_cycle: usize) {
     let Ok(addrs) = if_addrs::get_if_addrs() else { return };
     let mut iface: Option<String> = None;
@@ -734,12 +743,18 @@ fn reap_stale_v6(active: std::collections::HashSet<Ipv6Addr>, max_per_cycle: usi
     let total = stale.len();
     if stale.len() > max_per_cycle { stale.truncate(max_per_cycle); }
     eprintln!("[v6-reaper] reaping {}/{} stale /128 (active={})", stale.len(), total, active.len());
+    let reaped = stale.len() as u64;
     for v6 in stale {
         let target = format!("{}/128", v6);
         let _ = std::process::Command::new("ip")
             .args(["-6", "addr", "del", &target, "dev", &name])
             .output();
     }
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    REAPER_LAST_SWEEP_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+    REAPER_LAST_REAPED.store(reaped, std::sync::atomic::Ordering::Relaxed);
+    REAPER_LAST_ACTIVE.store(active.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    REAPER_TOTAL_REAPED.fetch_add(reaped, std::sync::atomic::Ordering::Relaxed);
 }
 
 // ──────────────────────────── SSRF block ────────────────────────────────────
@@ -2612,11 +2627,25 @@ impl Agent {
             v.drain(..).collect()
         };
         let network = tokio::task::spawn_blocking(detect_network).await.unwrap_or_default();
+        // Reaper telemetry: timestamp of last sweep + counts. Master surfaces
+        // this in /admin/nodes/:id so admins see GC activity at a glance.
+        let reaper_last_ms = REAPER_LAST_SWEEP_MS.load(std::sync::atomic::Ordering::Relaxed);
+        let reaper_obj = if reaper_last_ms == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({
+                "lastSweepMs": reaper_last_ms,
+                "lastReapedCount": REAPER_LAST_REAPED.load(std::sync::atomic::Ordering::Relaxed),
+                "totalReaped": REAPER_TOTAL_REAPED.load(std::sync::atomic::Ordering::Relaxed),
+                "activeCount": REAPER_LAST_ACTIVE.load(std::sync::atomic::Ordering::Relaxed),
+            })
+        };
         let body = serde_json::json!({
             "version": AGENT_VERSION,
             "network": network,
             "stats": stats_map,
             "metrics": metrics,
+            "reaper": reaper_obj,
             "commandResults": command_results,
         });
         let resp = self.agent_post("heartbeat").await.json(&body).send().await.map_err(|e| e.to_string())?;

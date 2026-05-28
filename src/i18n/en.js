@@ -905,6 +905,7 @@ export default {
   'page.proxies-ipv4': 'IPv4 proxies',
   'page.proxies-ipv6': 'IPv6 proxies',
   'page.nodes':        'Nodes',
+  'page.nodesCompare': 'Compare nodes',
   'page.hubs':         'Hub plans',
   'page.zones':        'Zones',
   'page.connections':  'Live connections',

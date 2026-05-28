@@ -923,6 +923,7 @@ export default {
   'page.proxies-ipv4': 'Proxy IPv4',
   'page.proxies-ipv6': 'Proxy IPv6',
   'page.nodes':        'Máy chủ',
+  'page.nodesCompare': 'So sánh node',
   'page.hubs':         'Hub plans',
   'page.zones':        'Khu vực (Zones)',
   'page.connections':  'Kết nối live',

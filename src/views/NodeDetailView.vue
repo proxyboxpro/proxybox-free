@@ -1,11 +1,13 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, AlertCircle, ArrowDown, ArrowLeft, ArrowUp, BarChart3, Cpu, Download, FileText, HardDrive, RefreshCw, Server, Terminal, Trash2, Users, Wrench, Zap } from 'lucide-vue-next'
+import { Activity, AlertCircle, ArrowLeft, BarChart3, Bell, ChevronDown, ChevronRight, Cpu, Download, FileText, HardDrive, Network, Pause, Play, RefreshCw, Server, Terminal, Trash2, Trash, Users, Wrench, Zap } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 import { apiFetch } from '../api'
 import { fetchNode, syncNode, removeNode, installNode } from '../store/nodes'
 import { formatBytes } from '../utils/format'
+
+const ApexChart = defineAsyncComponent(() => import('vue3-apexcharts'))
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -164,8 +166,94 @@ async function nodeAction(name, confirmText) {
   finally { actionBusy.value = '' }
 }
 
-watch(nodeId, () => { load(); loadUpgrade() })
-onMounted(() => { load(); loadUpgrade() })
+// ─── bandwidth series chart ───────────────────────────────────────
+const bwRange = ref('24h')
+const bwSeries = ref([])
+const bwLoading = ref(false)
+async function loadBandwidthSeries() {
+  if (bwLoading.value) return
+  bwLoading.value = true
+  try {
+    const r = await apiFetch(`/api/admin/nodes/${nodeId.value}/bandwidth-series?range=${bwRange.value}`)
+    bwSeries.value = r.points || []
+  } catch (e) { errorText.value = e.message; bwSeries.value = [] }
+  finally { bwLoading.value = false }
+}
+function setBwRange(r) { if (bwRange.value === r) return; bwRange.value = r; loadBandwidthSeries() }
+const chartOptions = computed(() => ({
+  chart: { id: 'node-bw', toolbar: { show: false }, foreColor: '#9bb8b1', animations: { enabled: false }, background: 'transparent' },
+  colors: ['#4ade80', '#60a5fa'],
+  stroke: { curve: 'smooth', width: 2 },
+  dataLabels: { enabled: false },
+  legend: { labels: { colors: '#9bb8b1' } },
+  xaxis: { type: 'datetime', labels: { style: { colors: '#9bb8b1' } } },
+  yaxis: { labels: { style: { colors: '#9bb8b1' }, formatter: (v) => formatBytes(v) } },
+  tooltip: { theme: 'dark', y: { formatter: (v) => formatBytes(v) } },
+  grid: { borderColor: '#1f2a35', strokeDashArray: 3 }
+}))
+const chartSeries = computed(() => ([
+  { name: 'Upload',   data: bwSeries.value.map((p) => [new Date(p.hour + ':00:00Z').getTime(), p.up]) },
+  { name: 'Download', data: bwSeries.value.map((p) => [new Date(p.hour + ':00:00Z').getTime(), p.down]) }
+]))
+
+// ─── ipv6 pool stats ───────────────────────────────────────────────
+const pool = ref(null)
+async function loadPool() {
+  try { pool.value = await apiFetch(`/api/admin/nodes/${nodeId.value}/pool`) }
+  catch (e) { /* not fatal */ pool.value = null }
+}
+
+// ─── owner drilldown (per-proxy 30d bytes for one owner on this node) ──
+const ownerDrill = ref(null)
+const ownerDrillLoading = ref('')
+async function toggleOwnerDrill(ownerId) {
+  if (ownerDrill.value && ownerDrill.value.owner?.id === ownerId) { ownerDrill.value = null; return }
+  ownerDrillLoading.value = ownerId
+  try { ownerDrill.value = await apiFetch(`/api/admin/nodes/${nodeId.value}/owners/${ownerId}`) }
+  catch (e) { errorText.value = e.message; ownerDrill.value = null }
+  finally { ownerDrillLoading.value = '' }
+}
+
+// ─── per-node alert thresholds ─────────────────────────────────────
+const alertsForm = ref({ ramPct: '', load1: '', failPct: '' })
+const alertsSaving = ref(false)
+function syncAlertsForm() {
+  const a = node.value?.alerts || {}
+  alertsForm.value = {
+    ramPct: a.ramPct != null ? String(a.ramPct) : '',
+    load1: a.load1 != null ? String(a.load1) : '',
+    failPct: a.failPct != null ? String(a.failPct) : ''
+  }
+}
+async function saveAlerts() {
+  if (alertsSaving.value) return
+  alertsSaving.value = true; errorText.value = ''
+  const payload = {}
+  for (const k of ['ramPct', 'load1', 'failPct']) {
+    const v = alertsForm.value[k]
+    payload[k] = v === '' ? null : Number(v)
+  }
+  try {
+    const updated = await apiFetch(`/api/nodes/${nodeId.value}`, { method: 'PATCH', body: { alerts: payload } })
+    node.value = { ...node.value, ...updated }
+    syncAlertsForm()
+  } catch (e) { errorText.value = e.message }
+  finally { alertsSaving.value = false }
+}
+
+watch(node, syncAlertsForm)
+watch(nodeId, () => { load(); loadUpgrade(); loadBandwidthSeries(); loadPool(); ownerDrill.value = null })
+onMounted(() => { load(); loadUpgrade(); loadBandwidthSeries(); loadPool() })
+
+// reaper telemetry from heartbeat
+const reaper = computed(() => node.value?.reaper || null)
+function fmtMs(iso) {
+  if (!iso) return '—'
+  try { const t = new Date(iso).getTime(); return fmtAgo(t) } catch { return '—' }
+}
+
+// suspended count for management UI hint
+const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).length)
 </script>
 
 <template>
@@ -242,16 +330,24 @@ onMounted(() => { load(); loadUpgrade() })
         <div class="metric-card"><div class="metric-label">30 ngày qua</div><div class="metric-value">{{ formatBytes((windows.d30.up + windows.d30.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.d30.up) }} · ↓ {{ formatBytes(windows.d30.down) }}</div></div>
         <div class="metric-card"><div class="metric-label">Khách trên node</div><div class="metric-value">{{ owners.length }}</div><div class="metric-foot">{{ proxies.length }} proxy</div></div>
       </div>
+      <!-- chart -->
+      <div style="display:flex; gap:6px; margin:14px 0 8px; align-items:center">
+        <button v-for="r in ['24h','7d','30d']" :key="r" type="button" :class="['ghost-button', bwRange === r ? 'active' : '']" style="padding:4px 10px; font-size:11px" @click="setBwRange(r)">{{ r }}</button>
+        <span v-if="bwLoading" style="font-size:11px; color:var(--muted); margin-left:8px">đang tải…</span>
+      </div>
+      <ApexChart v-if="bwSeries.length" type="area" height="240" :options="chartOptions" :series="chartSeries" />
+      <p v-else class="empty-text" style="padding:24px 0; text-align:center">Chưa có dữ liệu băng thông cho khoảng thời gian này.</p>
     </section>
 
     <!-- ── Customers on this node — who's using it, how much ── -->
     <section v-if="node && owners.length" class="surface">
       <div class="section-head">
         <h2><Users :size="16" style="vertical-align:-3px" /> Khách dùng proxy trên node ({{ owners.length }})</h2>
-        <span style="color:var(--muted); font-size:12px">Click vào dòng để mở trang chi tiết khách</span>
+        <span style="color:var(--muted); font-size:12px">Click vào dòng để xem chi tiết proxy của khách trên node này</span>
       </div>
       <div class="data-table">
-        <div class="table-head" style="grid-template-columns: 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr">
+        <div class="table-head" style="grid-template-columns: 0.2fr 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr">
+          <span></span>
           <span>Khách</span>
           <span style="text-align:right">Proxy</span>
           <span style="text-align:right">Active</span>
@@ -260,24 +356,53 @@ onMounted(() => { load(); loadUpgrade() })
           <span style="text-align:right">Auto-fix</span>
           <span style="text-align:right">Last check</span>
         </div>
-        <div v-for="o in owners" :key="o.ownerId" class="table-row" style="grid-template-columns: 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr; cursor:pointer" @click="goToUser(o.ownerId)">
-          <span>
-            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block">{{ o.email }}</span>
-            <small v-if="o.suspended" class="status-pill error" style="font-size:10px">suspended</small>
-          </span>
-          <span class="cell-mono" style="text-align:right; font-weight:600">{{ o.total }}</span>
-          <span class="cell-mono" style="text-align:right; color:var(--green)">{{ o.active }}</span>
-          <span class="cell-mono" style="text-align:right; color:var(--muted)">{{ o.expired }}</span>
-          <span class="cell-mono" style="text-align:right">
-            {{ formatBytes(o.bytes30dTotal) }}
-            <small style="display:block; color:var(--muted); font-size:10.5px">↑{{ formatBytes(o.bytes30dUp) }} ↓{{ formatBytes(o.bytes30dDown) }}</small>
-          </span>
-          <span style="text-align:right">
-            <strong v-if="o.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">{{ o.autoFixCount }}</strong>
-            <span v-else style="color:var(--muted)">—</span>
-          </span>
-          <span class="cell-mono" style="text-align:right; font-size:11px; color:var(--muted)">{{ fmtAgo(o.lastActive) }}</span>
-        </div>
+        <template v-for="o in owners" :key="o.ownerId">
+          <div class="table-row" style="grid-template-columns: 0.2fr 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr; cursor:pointer" @click="toggleOwnerDrill(o.ownerId)">
+            <span style="color:var(--muted)">
+              <ChevronDown v-if="ownerDrill && ownerDrill.owner?.id === o.ownerId" :size="13" />
+              <ChevronRight v-else :size="13" />
+            </span>
+            <span>
+              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block">{{ o.email }}</span>
+              <small v-if="o.suspended" class="status-pill error" style="font-size:10px">suspended</small>
+            </span>
+            <span class="cell-mono" style="text-align:right; font-weight:600">{{ o.total }}</span>
+            <span class="cell-mono" style="text-align:right; color:var(--green)">{{ o.active }}</span>
+            <span class="cell-mono" style="text-align:right; color:var(--muted)">{{ o.expired }}</span>
+            <span class="cell-mono" style="text-align:right">
+              {{ formatBytes(o.bytes30dTotal) }}
+              <small style="display:block; color:var(--muted); font-size:10.5px">↑{{ formatBytes(o.bytes30dUp) }} ↓{{ formatBytes(o.bytes30dDown) }}</small>
+            </span>
+            <span style="text-align:right">
+              <strong v-if="o.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">{{ o.autoFixCount }}</strong>
+              <span v-else style="color:var(--muted)">—</span>
+            </span>
+            <span class="cell-mono" style="text-align:right; font-size:11px; color:var(--muted)">{{ fmtAgo(o.lastActive) }}</span>
+          </div>
+          <!-- expanded drilldown -->
+          <div v-if="ownerDrill && ownerDrill.owner?.id === o.ownerId" class="owner-drill">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border-soft)">
+              <span style="font-size:12px; color:var(--muted)">Proxy của <strong style="color:var(--text)">{{ ownerDrill.owner?.email || o.email }}</strong> trên node này ({{ ownerDrill.proxies.length }})</span>
+              <button class="ghost-button" type="button" style="font-size:11px; padding:3px 8px" @click.stop="goToUser(o.ownerId)">Mở trang khách →</button>
+            </div>
+            <div v-if="ownerDrillLoading === o.ownerId" class="empty-text" style="padding:14px">Đang tải…</div>
+            <div v-else class="data-table" style="border:none">
+              <div v-for="p in ownerDrill.proxies" :key="p.id" class="table-row" style="grid-template-columns: 1.2fr 1.4fr 0.5fr 0.7fr 1fr">
+                <span class="cell-mono" style="font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ p.name || p.id }}</span>
+                <span class="cell-mono" style="font-size:11.5px">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
+                <span><span :class="['status-pill', p.status]">{{ p.status }}</span><span v-if="p.suspended" class="status-pill error" style="font-size:10px; margin-left:4px">suspended</span></span>
+                <span style="text-align:right">
+                  <strong v-if="p.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">×{{ p.autoFixCount }}</strong>
+                  <span v-else style="color:var(--muted)">—</span>
+                </span>
+                <span class="cell-mono" style="text-align:right; font-size:11.5px">
+                  {{ formatBytes(p.bytes30d.up + p.bytes30d.down) }}
+                  <small style="display:block; color:var(--muted); font-size:10.5px">↑{{ formatBytes(p.bytes30d.up) }} ↓{{ formatBytes(p.bytes30d.down) }}</small>
+                </span>
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -286,7 +411,12 @@ onMounted(() => { load(); loadUpgrade() })
       <div class="section-head"><h2><Wrench :size="16" style="vertical-align:-3px" /> Quản lý node</h2></div>
       <div class="action-row" style="display:flex; gap:8px; flex-wrap:wrap">
         <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(node.disabled ? 'undrain' : 'drain', node.disabled ? null : 'Drain sẽ ngừng nhận kết nối MỚI trên node này (các kết nối hiện tại tiếp tục). Tiếp tục?')">
-          {{ node.disabled ? '▶︎ Bật lại node (undrain)' : '⏸︎ Drain (ngừng nhận conn mới)' }}
+          <Play v-if="node.disabled" :size="13" /><Pause v-else :size="13" />
+          {{ node.disabled ? 'Bật lại node (undrain)' : 'Drain (ngừng nhận conn mới)' }}
+        </button>
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(suspendedCount > 0 ? 'resume-all-proxies' : 'suspend-all-proxies', suspendedCount > 0 ? 'Bỏ tạm dừng toàn bộ proxy trên node?' : 'Tạm dừng toàn bộ proxy trên node? Khách sẽ mất khả năng dùng proxy đến khi resume.')">
+          <Play v-if="suspendedCount > 0" :size="13" /><Pause v-else :size="13" />
+          {{ suspendedCount > 0 ? `Resume ${suspendedCount} proxy đang suspend` : 'Suspend toàn bộ proxy' }}
         </button>
         <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('restart-agent', 'Restart agent service trên node? (~30s downtime cho mọi proxy trên node này)')">
           <RefreshCw :size="13" /> Restart agent
@@ -298,10 +428,58 @@ onMounted(() => { load(); loadUpgrade() })
           <Activity :size="13" /> Diagnostics
         </button>
         <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('rotate-token', 'Đổi agent token? Token cũ sẽ ngừng hoạt động ngay; agent restart sẽ pick up token mới.')">
-          🔑 Rotate agent token
+          <RefreshCw :size="13" /> Rotate agent token
         </button>
       </div>
       <p v-if="actionBusy" class="empty-text" style="padding:8px 0">Đang chạy: {{ actionBusy }}…</p>
+    </section>
+
+    <!-- ── Alert thresholds (per-node override) ── -->
+    <section v-if="node && !isLocal" class="surface">
+      <div class="section-head">
+        <h2><Bell :size="16" style="vertical-align:-3px" /> Ngưỡng cảnh báo node</h2>
+        <span style="font-size:11.5px; color:var(--muted)">Bỏ trống → dùng mặc định (RAM 90%, Load 100, Fail 80%)</span>
+      </div>
+      <div class="detail-grid">
+        <div>
+          <span>RAM (%)</span>
+          <input v-model="alertsForm.ramPct" type="number" min="1" max="100" placeholder="90" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
+        </div>
+        <div>
+          <span>Load 1m</span>
+          <input v-model="alertsForm.load1" type="number" min="1" max="10000" placeholder="100" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
+        </div>
+        <div>
+          <span>Tỉ lệ fail (%)</span>
+          <input v-model="alertsForm.failPct" type="number" min="1" max="100" placeholder="80" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
+        </div>
+        <div style="display:flex; align-items:flex-end">
+          <button class="primary-action small" type="button" :disabled="alertsSaving" @click="saveAlerts">{{ alertsSaving ? 'Đang lưu…' : 'Lưu ngưỡng' }}</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Reaper telemetry (IPv6 stale-address sweeper) ── -->
+    <section v-if="reaper" class="surface">
+      <div class="section-head"><h2><Trash :size="16" style="vertical-align:-3px" /> IPv6 reaper</h2></div>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="metric-label">Active /128 đang giữ</div><div class="metric-value">{{ reaper.activeCount }}</div></div>
+        <div class="metric-card"><div class="metric-label">Sweep gần nhất</div><div class="metric-value" style="font-size:18px">{{ fmtMs(reaper.lastSweepAt) }}</div><div class="metric-foot cell-mono">{{ reaper.lastSweepAt }}</div></div>
+        <div class="metric-card"><div class="metric-label">Reaped lần cuối</div><div class="metric-value">{{ reaper.lastReapedCount }}</div></div>
+        <div class="metric-card"><div class="metric-label">Tổng reaped (từ khi agent start)</div><div class="metric-value">{{ reaper.totalReaped }}</div></div>
+      </div>
+    </section>
+
+    <!-- ── IPv6 pool utilization ── -->
+    <section v-if="pool" class="surface">
+      <div class="section-head"><h2><Network :size="16" style="vertical-align:-3px" /> IP pool ({{ pool.family }})</h2></div>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="metric-label">Proxy đang dùng</div><div class="metric-value">{{ pool.proxiesOnNode }}</div></div>
+        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">IPv6 attached</div><div class="metric-value">{{ pool.ipv6Attached }}</div><div class="metric-foot">In use: {{ pool.ipv6InUse }} ({{ pool.utilizationPctOfAttached }}%)</div></div>
+        <div v-if="pool.family === 'ipv4'" class="metric-card"><div class="metric-label">IPv4 attached</div><div class="metric-value">{{ pool.ipv4Attached }}</div><div class="metric-foot">In use: {{ pool.ipv4InUse }}</div></div>
+        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">Subnet /64 distinct</div><div class="metric-value">{{ pool.distinct64InUse }}</div><div class="metric-foot">Attached: {{ pool.distinct64Attached }}</div></div>
+        <div v-if="pool.family === 'ipv6' && pool.capacityCidr" class="metric-card"><div class="metric-label">Capacity prefix</div><div class="metric-value cell-mono" style="font-size:14px">{{ pool.capacityCidr }}</div><div class="metric-foot">~2^{{ 128 - Number(pool.capacityCidr.split('/')[1] || 0) }} hosts</div></div>
+      </div>
     </section>
 
     <!-- ── Recent activity: auto-heal events + open errors for this node ── -->
@@ -454,4 +632,6 @@ onMounted(() => { load(); loadUpgrade() })
 .family-toggle .family-btn:hover:not(:disabled) { border-color:var(--green); color:var(--text) }
 .family-toggle .family-btn.active { background:rgba(74,222,128,0.12); border-color:var(--green); color:var(--green) }
 .family-toggle .family-btn:disabled { opacity:0.6; cursor:default }
+.ghost-button.active { background:rgba(74,222,128,0.12); border-color:var(--green); color:var(--green) }
+.owner-drill { background:var(--surface-2); border-left:2px solid var(--green); padding:4px 0 8px }
 </style>
