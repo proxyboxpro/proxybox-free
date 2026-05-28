@@ -918,6 +918,7 @@ export default {
   'page.zones':        'Khu vực (Zones)',
   'page.connections':  'Kết nối live',
   'page.bandwidth':    'Băng thông',
+  'page.health':       'Sức khoẻ proxy',
   'page.users':        'Khách hàng',
   'page.oauth':        'Login social',
   'page.orders':       'Đơn hàng (nhóm)',

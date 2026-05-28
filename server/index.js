@@ -1140,8 +1140,9 @@ setInterval(pruneConnEvents, 3600_000).unref()
 // ── Accurate rolling-window byte totals (from the per-connection event log) ──
 // conn_events is the authoritative source: one row per closed relay with exact
 // up/down bytes. We sum it over 1h / 24h / 30d windows in a single pass using
-// conditional SUMs. This is cumulative transferred bytes, NOT instantaneous
-// bps. up = client→proxy (upload), down = target→proxy (download).
+// conditional SUMs. This is what "tổng lưu lượng up/down trong 1h/1 ngày/1
+// tháng" means — cumulative transferred bytes, NOT instantaneous bps.
+// up = client→proxy (upload), down = target→proxy (download).
 const WINDOW_SECS = { h1: 3600, h24: 86_400, d30: 2_592_000 }
 const WINDOW_SELECT = `
     SELECT
@@ -4652,63 +4653,133 @@ function slaPercent(proxyId, days = 30) {
 
 // â”€â”€ Continuous health sweep â€” probe each active proxy through its own listener
 // every 5 minutes. Mirrors what real managed proxy services run server-side.
+// Probe every active proxy, then heal in a controlled second pass.
+// Auto-fix ladder (with safety guards):
+//   T1: v6 dead egress → mint a fresh /128 from the node's prefix (remote agents
+//       pick up the new bindIp via the long-poll rev bump, so no listener
+//       restart is needed). Triggers at 3 consecutive fails.
+//   T2: dead past the rotate threshold (6 fails, with an order, not already
+//       replaced) → autoReplaceProxy() provisions a fresh proxy attached to
+//       the same order. Works for both local and remote.
+// Safety guards (so a flaky node doesn't burn the v6 pool):
+//   - Node-health gate: if ≥50% of a node's probes failed this sweep (≥10
+//     probes), the issue is node-wide (not per-IP) — suppress auto-fix on
+//     that node, alert admin instead.
+//   - Per-proxy cooldown: don't auto-fix the same proxy again within an hour
+//     (gives the new IP / replacement time to prove itself).
+//   - Per-sweep cap: at most N auto-fixes per cycle (protects the pool when
+//     many fail at once).
+//   - Feature flag: config.features.autoHeal !== false.
 async function runHealthSweep() {
-  const offlineNodeIds = new Set(
-    config.nodes.filter(n => !nodeIsOnline(n)).map(n => n.id)
-  )
+  const offlineNodeIds = new Set(config.nodes.filter(n => !nodeIsOnline(n)).map(n => n.id))
+  // 1) Probe in parallel.
   const probes = []
   for (const proxy of config.proxies) {
-    if (proxy.status === 'expired' || proxy.status === 'failover-pending') continue
+    if (proxy.status === 'expired' || proxy.status === 'failover-pending' || proxy.status === 'replaced') continue
     if (!proxy.bindIp || !proxy.port) continue
-    // Skip health checks for proxies on offline nodes — agent manages its own lifecycle.
     if (proxy.nodeId && proxy.nodeId !== 'local' && offlineNodeIds.has(proxy.nodeId)) continue
-    probes.push((async () => {
-      try {
-        const r = await remoteCheckProxy(proxy)
-        proxy.lastCheckedAt = new Date().toISOString()
-        proxy.lastCheckOk = r.ok
-        if (r.ok) {
-          proxy.checkFailCount = 0
-          proxy.totalFails = 0
-          if (proxy.status === 'error') proxy.status = 'active'
-          updateSlaTick(proxy.id, true)
-          if (Number.isFinite(r.latencyMs)) proxy.latency = r.latencyMs
-        } else {
-          proxy.checkFailCount = (Number(proxy.checkFailCount) || 0) + 1
-          proxy.totalFails = (Number(proxy.totalFails) || 0) + 1
-          updateSlaTick(proxy.id, false)
-          if (proxy.checkFailCount === 3) {
-            dispatchWebhook(proxy.ownerId, 'proxy.checkFailed', { proxyId: proxy.id, bindIp: proxy.bindIp, port: proxy.port, consecutiveFails: proxy.checkFailCount })
-          }
-          // Auto-rotate after 3 consecutive failures for local proxies only;
-          // remote agents handle their own listener lifecycle.
-          if (proxy.checkFailCount >= 3 && (proxy.nodeId || 'local') === 'local') {
-            try {
-              const next = pickBindIp(proxy.type, proxy.nodeId)
-              if (next && next !== proxy.bindIp) {
-                const old = proxy.bindIp
-                proxy.bindIp = next
-                stopProxy(proxy.id); await startProxy(proxy)
-                proxy.checkFailCount = 0
-                proxy.status = 'active'
-                pushAlert(`proxy:${proxy.id}:auto-rotate`, `Auto-rotated ${proxy.id}: ${old}â†'${next}`, 'warn')
-              } else proxy.status = 'error'
-            } catch { proxy.status = 'error' }
-          } else if ((proxy.nodeId || 'local') === 'local') {
-            proxy.status = 'error'
-          }
-          // Auto-replace: dead past the rotate threshold (6 consecutive failed checks),
-          // pool proxy with an order, not already replaced, feature on → swap for a fresh one.
-          if ((Number(proxy.totalFails) || 0) >= 6 && proxy.orderId && !proxy.replacedBy && config.features?.autoReplace !== false && (proxy.nodeId || 'local') === 'local') {
-            try { await autoReplaceProxy(proxy) } catch { /* leave as error; retry next sweep */ }
-          }
-          // For remote proxies: don't auto-error on panel-side check failure — agent manages status.
-        }
-      } catch { /* swallow */ }
-    })())
+    probes.push(
+      remoteCheckProxy(proxy)
+        .then((r) => ({ proxy, r }))
+        .catch((e) => ({ proxy, r: { ok: false, error: e?.message || 'probe-err' } }))
+    )
   }
-  await Promise.all(probes)
-  if (probes.length) saveConfig().catch(() => {})
+  const results = await Promise.all(probes)
+  if (!results.length) return
+
+  // 2) Per-node fail rate → suppress auto-fix on nodes that look node-wide broken.
+  const perNode = new Map()
+  for (const { proxy, r } of results) {
+    const nid = proxy.nodeId || 'local'
+    const e = perNode.get(nid) || { total: 0, failed: 0 }
+    e.total += 1; if (!r.ok) e.failed += 1
+    perNode.set(nid, e)
+  }
+  const suspectNodes = new Set()
+  const suspectPct = Number(config.healthCheck?.nodeSuspectPct) || 50
+  for (const [nid, e] of perNode) {
+    if (e.total >= 10 && (e.failed * 100 / e.total) >= suspectPct) {
+      suspectNodes.add(nid)
+      pushAlert(`node:${nid}:suspect`, `Node ${nid}: ${e.failed}/${e.total} probes failed this sweep — auto-heal suppressed (looks node-wide).`, 'warn')
+    }
+  }
+
+  // 3) Apply remediation with guards.
+  const autoHealOn = config.features?.autoHeal !== false
+  let budget = Number(config.healthCheck?.maxAutoFixPerSweep) || 30
+  const cooldownMs = Number(config.healthCheck?.autoFixCooldownMs) || 60 * 60 * 1000
+  const nowMs = Date.now()
+  let fixed = 0, replaced = 0
+
+  for (const { proxy, r } of results) {
+    proxy.lastCheckedAt = new Date().toISOString()
+    proxy.lastCheckOk = r.ok
+    if (r.ok) {
+      proxy.checkFailCount = 0
+      proxy.totalFails = 0
+      if (proxy.status === 'error') proxy.status = 'active'
+      updateSlaTick(proxy.id, true)
+      if (Number.isFinite(r.latencyMs)) proxy.latency = r.latencyMs
+      continue
+    }
+    proxy.checkFailCount = (Number(proxy.checkFailCount) || 0) + 1
+    proxy.totalFails = (Number(proxy.totalFails) || 0) + 1
+    updateSlaTick(proxy.id, false)
+    if (proxy.checkFailCount === 3) {
+      dispatchWebhook(proxy.ownerId, 'proxy.checkFailed', { proxyId: proxy.id, bindIp: proxy.bindIp, port: proxy.port, consecutiveFails: proxy.checkFailCount })
+    }
+
+    const nid = proxy.nodeId || 'local'
+    const cooldownActive = proxy.lastAutoFixAt && (nowMs - new Date(proxy.lastAutoFixAt).getTime() < cooldownMs)
+    const canAct = autoHealOn && !suspectNodes.has(nid) && !cooldownActive && budget > 0
+
+    // T1: rotate v6 egress.
+    if (canAct && proxy.checkFailCount >= 3 && proxy.type === 'IPv6') {
+      try {
+        const next = pickBindIp(proxy.type, proxy.nodeId)
+        if (next && next !== proxy.bindIp) {
+          const old = proxy.bindIp
+          proxy.bindIp = next
+          proxy.lastAutoFixAt = new Date().toISOString()
+          proxy.autoFixCount = (Number(proxy.autoFixCount) || 0) + 1
+          proxy.lastAutoFixAction = 'rotate'
+          if (nid === 'local') { stopProxy(proxy.id); await startProxy(proxy) }
+          // Remote: agent picks up the new bindIp on its next /api/agent/proxies long-poll (saveConfig bumps rev).
+          proxy.checkFailCount = 0
+          proxy.status = 'active'
+          budget -= 1; fixed += 1
+          audit({ actor: 'auto-heal', method: 'AUTO', path: `/proxy/${proxy.id}/rotate`, note: `${old} -> ${next} (after ${proxy.totalFails} fails)` })
+          pushAlert(`proxy:${proxy.id}:auto-rotate`, `Auto-rotated ${proxy.id} (${nid}): ${old} -> ${next}`, 'warn')
+          continue
+        }
+      } catch (e) {
+        audit({ actor: 'auto-heal', method: 'AUTO', path: `/proxy/${proxy.id}/rotate-fail`, note: e?.message || String(e) })
+      }
+    }
+
+    // T2: replace (covers v4, and v6 where rotation didn't stick).
+    if (canAct && (Number(proxy.totalFails) || 0) >= 6 && proxy.orderId && !proxy.replacedBy && config.features?.autoReplace !== false) {
+      try {
+        await autoReplaceProxy(proxy)
+        proxy.lastAutoFixAt = new Date().toISOString()
+        proxy.autoFixCount = (Number(proxy.autoFixCount) || 0) + 1
+        proxy.lastAutoFixAction = 'replace'
+        budget -= 1; replaced += 1
+        audit({ actor: 'auto-heal', method: 'AUTO', path: `/proxy/${proxy.id}/replace`, note: `replaced after ${proxy.totalFails} fails -> ${proxy.replacedBy}` })
+        continue
+      } catch (e) {
+        audit({ actor: 'auto-heal', method: 'AUTO', path: `/proxy/${proxy.id}/replace-fail`, note: e?.message || String(e) })
+      }
+    }
+
+    // No remediation — keep visible: only mark local proxies 'error' (agent owns remote status).
+    if (nid === 'local' && proxy.checkFailCount >= 3) proxy.status = 'error'
+  }
+
+  if (fixed || replaced) {
+    console.log(`[auto-heal] sweep: rotated=${fixed} replaced=${replaced} suspectNodes=${[...suspectNodes].join(',') || '-'} budgetLeft=${budget}`)
+  }
+  saveConfig().catch(() => {})
 }
 
 // Provision a fresh replacement for a persistently-dead pool proxy, attach it to
@@ -6667,6 +6738,81 @@ async function handleApi(req, res, url) {
         })
         return sendJson(res, 200, { window: winParam, sinceMs, totals: { up: tUp, down: tDn, conns: tConns, proxyCount: list.length }, proxies: list })
       } catch (e) { return sendJson(res, 500, { error: e.message }) }
+    }
+    // ── admin: health snapshot + manual sweep trigger ──
+    // Surfaces what the auto-healer is doing (current failers, per-node fail %,
+    // recent rotations/replacements from audit) so admins don't have to grep
+    // the audit table. POST /sweep runs runHealthSweep() on demand.
+    if (req.method === 'GET' && url.pathname === '/api/admin/health') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const userById = new Map((config.users || []).map((u) => [u.id, u]))
+      const nodeById = new Map((config.nodes || []).map((n) => [n.id, n]))
+      const counters = { total: 0, active: 0, error: 0, expired: 0, replaced: 0, failing: 0, neverChecked: 0 }
+      const perNodeMap = new Map()
+      const failers = []
+      for (const p of config.proxies) {
+        counters.total += 1
+        counters[p.status] = (counters[p.status] || 0) + 1
+        if (!p.lastCheckedAt) counters.neverChecked += 1
+        const fc = Number(p.checkFailCount) || 0
+        if (fc > 0) counters.failing += 1
+        const nid = p.nodeId || 'local'
+        const ne = perNodeMap.get(nid) || { total: 0, failing: 0 }
+        ne.total += 1; if (fc > 0) ne.failing += 1
+        perNodeMap.set(nid, ne)
+        if (fc > 0 || p.status === 'error') {
+          failers.push({
+            proxyId: p.id, port: p.port, type: p.type, status: p.status,
+            ownerId: p.ownerId || '', ownerEmail: userById.get(p.ownerId)?.email || '',
+            nodeId: nid, nodeName: nodeById.get(nid)?.name || nid,
+            checkFailCount: fc, totalFails: Number(p.totalFails) || 0,
+            autoFixCount: Number(p.autoFixCount) || 0,
+            lastAutoFixAt: p.lastAutoFixAt || null,
+            lastAutoFixAction: p.lastAutoFixAction || null,
+            lastCheckedAt: p.lastCheckedAt || null,
+            lastCheckOk: !!p.lastCheckOk,
+            bindIp: p.bindIp || ''
+          })
+        }
+      }
+      const suspectPct = Number(config.healthCheck?.nodeSuspectPct) || 50
+      const perNode = [...perNodeMap.entries()].map(([nid, e]) => ({
+        nodeId: nid, nodeName: nodeById.get(nid)?.name || nid, host: nodeById.get(nid)?.host || '',
+        total: e.total, failing: e.failing,
+        failPct: e.total ? Math.round((e.failing / e.total) * 1000) / 10 : 0,
+        suspect: e.total >= 10 && (e.failing * 100 / e.total) >= suspectPct
+      })).sort((a, b) => b.failPct - a.failPct)
+      failers.sort((a, b) => b.checkFailCount - a.checkFailCount)
+      let recentFixes = []
+      if (sqliteDb) {
+        try {
+          recentFixes = sqliteDb.prepare(`SELECT ts, actor, path, note FROM audit WHERE actor = 'auto-heal' ORDER BY id DESC LIMIT 100`).all()
+        } catch { /* table may be young — leave empty */ }
+      }
+      return sendJson(res, 200, {
+        settings: {
+          autoHeal: config.features?.autoHeal !== false,
+          autoReplace: config.features?.autoReplace !== false,
+          maxAutoFixPerSweep: Number(config.healthCheck?.maxAutoFixPerSweep) || 30,
+          autoFixCooldownMs: Number(config.healthCheck?.autoFixCooldownMs) || 3_600_000,
+          nodeSuspectPct: suspectPct,
+          sweepIntervalMs: 5 * 60 * 1000
+        },
+        counters,
+        perNode,
+        topFailers: failers.slice(0, 200),
+        failerCount: failers.length,
+        recentFixes
+      })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/admin/health/sweep') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      // Don't await — sweep can probe thousands of proxies in parallel and we
+      // don't want to block the HTTP response. Audit captures the outcome.
+      const t0 = Date.now()
+      runHealthSweep().catch((e) => console.warn('[auto-heal] manual sweep error:', e?.message))
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: 'manual health sweep triggered' })
+      return sendJson(res, 202, { ok: true, triggered: true, ts: t0 })
     }
     // ── admin: aggregate metrics time series for the dashboard chart ──
     // range: 1h (minute granularity), 24h (5-minute), 7d (hour), 30d (hour),
@@ -8795,7 +8941,8 @@ async function handleUserV1(req, res, url) {
     }
     const top = [...allTop.values()].sort((a, b) => (b.bytesUp + b.bytesDown) - (a.bytesUp + a.bytesDown)).slice(0, 20)
     // Accurate cumulative transferred bytes over 1h/24h/30d (from conn_events),
-    // split up/down — the real total volume, vs the since-restart counters above.
+    // split up/down — the "tổng lưu lượng" the customer actually wants, vs the
+    // since-restart in-memory counters above.
     const windows = connWindowTotals({ by: 'owner', id: user.id })
     return sendJson(res, 200, { proxies: ownedProxies.length, active, total, uploadBytes: up, downloadBytes: down, monthBytes: month, topTargets: top, windows })
   }
@@ -9623,15 +9770,15 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     // Accurate per-proxy transferred bytes over 24h / 30d windows, summed from
     // conn_events in one grouped pass — lets the customer see which port moved
     // the most data (not the misleading since-restart in-memory counters).
-    // owner_id scope is essential: proxy ports get recycled between customers,
-    // so without it a recycled port would surface a previous owner's traffic
-    // (data leak + quota inflation).
     if (sqliteDb && ownedIds.length) {
       try {
         const now = Date.now()
         const c24 = now - 86_400_000
         const c30 = now - 2_592_000_000
         const ph = ownedIds.map(() => '?').join(',')
+        // owner_id scope is essential: proxy ports get recycled between
+        // customers, so without it a recycled port would surface a previous
+        // owner's traffic (data leak + quota inflation).
         const rows = sqliteDb.prepare(`
           SELECT proxy_id,
             COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up24,

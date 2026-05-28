@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity, BarChart3, Book, Box, Cloud, CreditCard, DollarSign, Download, FileText, Globe, KeyRound, LayoutDashboard, LogOut,
+  Activity, BarChart3, Book, Box, Cloud, CreditCard, DollarSign, Download, FileText, Globe, Heart, KeyRound, LayoutDashboard, LogOut,
   Mail, Megaphone, Menu, Moon, Network, Server, Settings, ShieldCheck, ShoppingCart, Sun,
   Tag, Ticket, User, Users, Wallet, Webhook, ChevronRight, MoreHorizontal, Gift
 } from 'lucide-vue-next'
@@ -36,6 +36,7 @@ const navGroups = [
     { name: 'admin-orders',        labelKey: 'page.proxiesOrders',icon: Network },
     { name: 'admin-connections',   labelKey: 'page.connections',  icon: Activity },
     { name: 'admin-bandwidth',     labelKey: 'page.bandwidth',    icon: BarChart3 },
+    { name: 'admin-health',        labelKey: 'page.health',       icon: Heart },
     { name: 'admin-nodes',         labelKey: 'page.nodes',        icon: Server },
     { name: 'admin-hubs',          labelKey: 'page.hubs',         icon: Cloud },
     { name: 'admin-zones',         labelKey: 'page.zones',        icon: Globe }

@@ -900,6 +900,7 @@ export default {
   'page.zones':        'Zones',
   'page.connections':  'Live connections',
   'page.bandwidth':    'Bandwidth',
+  'page.health':       'Proxy health',
   'page.users':        'Customers',
   'page.oauth':        'Social login',
   'page.orders':       'Order groups',
