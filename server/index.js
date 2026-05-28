@@ -2736,9 +2736,15 @@ const errorInsertStmt = sqliteDb ? sqliteDb.prepare(`
   INSERT INTO errors (first_ts, last_ts, count, source, level, code, message, context, node_id, proxy_id)
   VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
 `) : null
+// Dedup key includes proxy_id + node_id so per-proxy errors stay distinct
+// (otherwise a single "tls:bind-fail" row would swallow events from every
+// failing proxy and admins couldn't see which ones are affected).
 const errorDedupStmt = sqliteDb ? sqliteDb.prepare(`
   UPDATE errors SET last_ts = ?, count = count + 1, message = ?, context = ?
-  WHERE source = ? AND COALESCE(code, '') = COALESCE(?, '') AND resolved = 0
+  WHERE source = ? AND COALESCE(code, '') = COALESCE(?, '')
+    AND COALESCE(node_id, '') = COALESCE(?, '')
+    AND COALESCE(proxy_id, '') = COALESCE(?, '')
+    AND resolved = 0
 `) : null
 const errorPruneStmt = sqliteDb ? sqliteDb.prepare(
   `DELETE FROM errors WHERE resolved = 1 AND last_ts < ?`
@@ -2752,7 +2758,7 @@ function logError({ source, level, code, message, context, nodeId, proxyId } = {
     const msg = message ? String(message).slice(0, 1000) : null
     const codeStr = code ? String(code).slice(0, 80) : null
     // Try dedup first; if no row updated, insert fresh.
-    const upd = errorDedupStmt.run(now, msg, ctx, source, codeStr)
+    const upd = errorDedupStmt.run(now, msg, ctx, source, codeStr, nodeId || null, proxyId || null)
     if (!upd || !upd.changes) {
       errorInsertStmt.run(now, now, source, lvl, codeStr, msg, ctx, nodeId || null, proxyId || null)
     }

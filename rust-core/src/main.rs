@@ -2031,6 +2031,13 @@ async fn serve_proxy_tls(cfg: ProxyCfg, acceptor: TlsAcceptor, locks: Arc<ProxyL
         }
     };
     let _ = sock.set_reuseaddr(true);
+    // SO_REUSEPORT matches the plain-listener path. Without it, the brief
+    // overlap during reconcile-driven rotation (old task aborted but its
+    // listener socket not yet closed when the new task tries to bind the
+    // same port) returns EADDRINUSE and the TLS endpoint for that proxy
+    // goes dead until the next reconcile cycle. With REUSEPORT both old
+    // and new can coexist briefly; the kernel cleans up the dying socket.
+    #[cfg(unix)] let _ = sock.set_reuseport(true);
     let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
     let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
     if let Err(e) = sock.bind(addr) {
