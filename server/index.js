@@ -17,9 +17,13 @@ import { DOCS_EN } from './_docs_en.mjs'
 
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err.message)
+  // Guarded — logError() may not be initialized yet on early boot.
+  try { logError({ source: 'panel', level: 'error', code: 'uncaught', message: err.message, context: { stack: (err.stack || '').split('\n').slice(0, 6).join('\n') } }) } catch {}
 })
 process.on('unhandledRejection', (reason) => {
-  console.error('[unhandledRejection]', reason?.message ?? reason)
+  const msg = reason?.message ?? String(reason)
+  console.error('[unhandledRejection]', msg)
+  try { logError({ source: 'panel', level: 'error', code: 'unhandled-rejection', message: msg, context: { stack: (reason?.stack || '').split('\n').slice(0, 6).join('\n') } }) } catch {}
 })
 
 // node:sqlite is stable in Node 22.22+; fallback gracefully if missing.
@@ -103,6 +107,27 @@ try {
     );
     CREATE INDEX IF NOT EXISTS oss_downloads_ts ON oss_downloads(ts DESC);
     CREATE INDEX IF NOT EXISTS oss_downloads_kind ON oss_downloads(kind, ts DESC);
+    -- Centralized error log. Dedup key is (source, code, resolved=0): repeats
+    -- bump count + last_ts instead of inserting new rows. Purged after 30d.
+    CREATE TABLE IF NOT EXISTS errors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      first_ts INTEGER NOT NULL,
+      last_ts INTEGER NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL,             -- panel | agent | sweep | watchdog | client | mtls | auto-heal | ...
+      level TEXT NOT NULL,              -- error | warn | info
+      code TEXT,                        -- short stable identifier (e.g. 'sweep:timeout', 'agent:stale')
+      message TEXT,
+      context TEXT,                     -- JSON blob with extra fields (proxy_id, node_id, etc.)
+      node_id TEXT,
+      proxy_id TEXT,
+      resolved INTEGER NOT NULL DEFAULT 0,
+      resolved_at INTEGER,
+      resolved_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS errors_last_ts ON errors(last_ts DESC);
+    CREATE INDEX IF NOT EXISTS errors_unresolved ON errors(resolved, last_ts DESC);
+    CREATE INDEX IF NOT EXISTS errors_dedup ON errors(source, code, resolved);
   `)
   // Versioned migrations. v1: the `history` table used to store a cumulative
   // snapshot per hour bucket (running total), which made every hourly chart
@@ -714,6 +739,31 @@ setInterval(() => { runHealthSweep() }, 5 * 60 * 1000).unref()
 setInterval(() => { detected = detectNetwork() }, 5 * 60 * 1000).unref()
 setInterval(() => { cleanupSessions() }, 60 * 60 * 1000).unref()
 setInterval(() => { sweepNodes() }, 30 * 1000).unref()
+
+// Per-node basic rate limit for the agent-side /api/agent/error endpoint:
+// drops anything beyond ~60 errors/min/node so a runaway agent can't blow
+// up the errors table. Dedup at logError() still kicks in for repeats.
+const agentErrorRate = new Map()
+
+// Agent watchdog: every 60s, scan all nodes — if status='online' but
+// lastSeenAt > 5min ago, log a watchdog error (dedup'd by node) + flip
+// status to 'offline' so dashboards reflect reality. Restoration logged
+// when the node comes back. Runs entirely panel-side: relies on the
+// existing heartbeat path to refresh lastSeenAt.
+setInterval(() => {
+  if (!Array.isArray(config.nodes)) return
+  const now = Date.now()
+  const SILENT_MS = 5 * 60 * 1000
+  for (const n of config.nodes) {
+    if (!n.lastSeenAt) continue
+    const age = now - new Date(n.lastSeenAt).getTime()
+    if (age > SILENT_MS && n.status !== 'offline') {
+      logError({ source: 'watchdog', level: 'error', code: 'agent:silent', message: `Agent ${n.name || n.id} silent for ${Math.round(age / 60000)}min`, nodeId: n.id, context: { lastSeenAt: n.lastSeenAt, ageMs: age } })
+      n.status = 'offline'
+      pushAlert(`node:${n.id}:silent`, `Node ${n.name || n.id} hasn't heartbeated in ${Math.round(age / 60000)}min — agent likely down.`, 'error')
+    }
+  }
+}, 60_000).unref()
 
 const apiServer = http.createServer(handleHttp)
 apiServer.listen(config.api.port, config.api.host, () => {
@@ -2676,6 +2726,51 @@ function audit(entry) {
     fs.appendFile(auditPath, JSON.stringify(full) + '\n').catch(() => {})
   } catch { /* ignore */ }
 }
+
+// ── Centralized error log ────────────────────────────────────────────────
+// Dedupes by (source, code, resolved): identical errors get coalesced into
+// one row via count + last_ts. Severity ladder: info < warn < error. Context
+// is a JSON blob (whatever extra fields are useful for triage). Auto-purges
+// resolved rows older than 30d hourly.
+const errorInsertStmt = sqliteDb ? sqliteDb.prepare(`
+  INSERT INTO errors (first_ts, last_ts, count, source, level, code, message, context, node_id, proxy_id)
+  VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+`) : null
+const errorDedupStmt = sqliteDb ? sqliteDb.prepare(`
+  UPDATE errors SET last_ts = ?, count = count + 1, message = ?, context = ?
+  WHERE source = ? AND COALESCE(code, '') = COALESCE(?, '') AND resolved = 0
+`) : null
+const errorPruneStmt = sqliteDb ? sqliteDb.prepare(
+  `DELETE FROM errors WHERE resolved = 1 AND last_ts < ?`
+) : null
+function logError({ source, level, code, message, context, nodeId, proxyId } = {}) {
+  if (!sqliteDb || !source) return
+  try {
+    const now = Date.now()
+    const lvl = level === 'info' || level === 'warn' ? level : 'error'
+    const ctx = context ? (typeof context === 'string' ? context : JSON.stringify(context)) : null
+    const msg = message ? String(message).slice(0, 1000) : null
+    const codeStr = code ? String(code).slice(0, 80) : null
+    // Try dedup first; if no row updated, insert fresh.
+    const upd = errorDedupStmt.run(now, msg, ctx, source, codeStr)
+    if (!upd || !upd.changes) {
+      errorInsertStmt.run(now, now, source, lvl, codeStr, msg, ctx, nodeId || null, proxyId || null)
+    }
+  } catch (e) {
+    // Never let error-logging itself crash the caller — fall back to stderr only.
+    console.warn('[logError] insert failed:', e.message)
+  }
+}
+function pruneErrors() {
+  if (!errorPruneStmt) return
+  try {
+    const cutoff = Date.now() - 30 * 86_400_000
+    const info = errorPruneStmt.run(cutoff)
+    if (info && info.changes > 0) console.log(`[errors] pruned ${info.changes} resolved row(s) older than 30d`)
+  } catch { /* noop */ }
+}
+setInterval(pruneErrors, 3600_000).unref()
+function safeJsonParse(s) { try { return JSON.parse(s) } catch { return s } }
 
 function execAsync(command, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
@@ -4701,6 +4796,7 @@ async function runHealthSweep() {
     if (e.total >= 10 && (e.failed * 100 / e.total) >= suspectPct) {
       suspectNodes.add(nid)
       pushAlert(`node:${nid}:suspect`, `Node ${nid}: ${e.failed}/${e.total} probes failed this sweep — auto-heal suppressed (looks node-wide).`, 'warn')
+      logError({ source: 'watchdog', level: 'warn', code: 'node:suspect', message: `${e.failed}/${e.total} probes failed`, nodeId: nid, context: { failed: e.failed, total: e.total, failPct: Math.round(e.failed * 1000 / e.total) / 10 } })
     }
   }
 
@@ -4754,6 +4850,7 @@ async function runHealthSweep() {
         }
       } catch (e) {
         audit({ actor: 'auto-heal', method: 'AUTO', path: `/proxy/${proxy.id}/rotate-fail`, note: e?.message || String(e) })
+        logError({ source: 'auto-heal', level: 'error', code: 'rotate-fail', message: e?.message || String(e), proxyId: proxy.id, nodeId: nid })
       }
     }
 
@@ -4769,6 +4866,7 @@ async function runHealthSweep() {
         continue
       } catch (e) {
         audit({ actor: 'auto-heal', method: 'AUTO', path: `/proxy/${proxy.id}/replace-fail`, note: e?.message || String(e) })
+        logError({ source: 'auto-heal', level: 'error', code: 'replace-fail', message: e?.message || String(e), proxyId: proxy.id, nodeId: nid })
       }
     }
 
@@ -5289,6 +5387,28 @@ async function handleAgentRequest(req, res, url, node) {
     if (body.version) node.version = String(body.version)
     if (body.network) node.network = body.network
     await saveConfig()
+    return sendJson(res, 200, { ok: true })
+  }
+  // Agent self-reports an error/warn to the panel — wired into our shared
+  // errors table so admin can triage all node + panel errors in one view.
+  // Token-auth (node already validated upstream of this handler). Per-node
+  // basic rate limit so a runaway agent can't fill the table.
+  if (req.method === 'POST' && url.pathname === '/api/agent/error') {
+    const body = await readJson(req, 64 * 1024)
+    const last = agentErrorRate.get(node.id) || { ts: 0, n: 0 }
+    const now = Date.now()
+    if (now - last.ts > 60_000) { last.ts = now; last.n = 0 }
+    if (last.n >= 60) return sendJson(res, 429, { error: 'rate limited' })
+    last.n += 1; agentErrorRate.set(node.id, last)
+    logError({
+      source: 'agent',
+      level: body.level === 'warn' || body.level === 'info' ? body.level : 'error',
+      code: body.code ? String(body.code).slice(0, 80) : null,
+      message: body.message ? String(body.message).slice(0, 1000) : null,
+      context: body.context || null,
+      nodeId: node.id,
+      proxyId: body.proxyId || null
+    })
     return sendJson(res, 200, { ok: true })
   }
   if (req.method === 'POST' && url.pathname === '/api/agent/heartbeat') {
@@ -6804,6 +6924,54 @@ async function handleApi(req, res, url) {
         failerCount: failers.length,
         recentFixes
       })
+    }
+    // ── admin: centralized error log (panel, agent, sweep, watchdog) ──
+    // Query: ?source=panel|agent|sweep|watchdog|auto-heal&level=error|warn|info
+    //        &resolved=0|1&limit=N&since=ms
+    if (req.method === 'GET' && url.pathname === '/api/admin/errors') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      if (!sqliteDb) return sendJson(res, 200, { errors: [], counters: {} })
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 200), 1), 1000)
+      const source = url.searchParams.get('source') || ''
+      const level = url.searchParams.get('level') || ''
+      const resolved = url.searchParams.get('resolved')
+      const sinceMs = Number(url.searchParams.get('since') || 0)
+      const where = []; const args = []
+      if (source) { where.push('source = ?'); args.push(source) }
+      if (level)  { where.push('level = ?');  args.push(level) }
+      if (resolved === '0' || resolved === '1') { where.push('resolved = ?'); args.push(Number(resolved)) }
+      if (sinceMs > 0) { where.push('last_ts >= ?'); args.push(sinceMs) }
+      const sql = `SELECT id, first_ts, last_ts, count, source, level, code, message, context, node_id AS nodeId, proxy_id AS proxyId, resolved, resolved_at AS resolvedAt, resolved_by AS resolvedBy FROM errors ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY last_ts DESC LIMIT ${limit}`
+      try {
+        const rows = sqliteDb.prepare(sql).all(...args)
+        // Counters: total unresolved, by source, by level.
+        const cBySource = sqliteDb.prepare(`SELECT source, COUNT(*) AS n FROM errors WHERE resolved = 0 GROUP BY source`).all()
+        const cByLevel  = sqliteDb.prepare(`SELECT level, COUNT(*) AS n FROM errors WHERE resolved = 0 GROUP BY level`).all()
+        const tot = sqliteDb.prepare(`SELECT COUNT(*) AS n FROM errors WHERE resolved = 0`).get()
+        return sendJson(res, 200, {
+          errors: rows.map((r) => ({ ...r, context: r.context ? safeJsonParse(r.context) : null })),
+          counters: {
+            unresolved: Number(tot?.n) || 0,
+            bySource: Object.fromEntries(cBySource.map((x) => [x.source, x.n])),
+            byLevel: Object.fromEntries(cByLevel.map((x) => [x.level, x.n]))
+          }
+        })
+      } catch (e) { return sendJson(res, 500, { error: e.message }) }
+    }
+    const errorResolve = url.pathname.match(/^\/api\/admin\/errors\/(\d+)\/resolve$/)
+    if (errorResolve && req.method === 'POST') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      try {
+        sqliteDb.prepare(`UPDATE errors SET resolved = 1, resolved_at = ?, resolved_by = ? WHERE id = ?`).run(Date.now(), actorOf(req) || 'admin', Number(errorResolve[1]))
+        return sendJson(res, 200, { ok: true })
+      } catch (e) { return sendJson(res, 500, { error: e.message }) }
+    }
+    if (req.method === 'POST' && url.pathname === '/api/admin/errors/resolve-all') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      try {
+        const r = sqliteDb.prepare(`UPDATE errors SET resolved = 1, resolved_at = ?, resolved_by = ? WHERE resolved = 0`).run(Date.now(), actorOf(req) || 'admin')
+        return sendJson(res, 200, { ok: true, resolved: r.changes })
+      } catch (e) { return sendJson(res, 500, { error: e.message }) }
     }
     if (req.method === 'POST' && url.pathname === '/api/admin/health/sweep') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Activity, BarChart3, Book, Box, Cloud, CreditCard, DollarSign, Download, FileText, Globe, Heart, KeyRound, LayoutDashboard, LogOut,
+  Activity, AlertCircle, BarChart3, Book, Box, Cloud, CreditCard, DollarSign, Download, FileText, Globe, Heart, KeyRound, LayoutDashboard, LogOut,
   Mail, Megaphone, Menu, Moon, Network, Server, Settings, ShieldCheck, ShoppingCart, Sun,
   Tag, Ticket, User, Users, Wallet, Webhook, ChevronRight, MoreHorizontal, Gift
 } from 'lucide-vue-next'
@@ -59,6 +59,7 @@ const navGroups = [
     { name: 'admin-docs',          labelKey: 'page.docs',         icon: Book },
     { name: 'admin-downloads',     labelKey: 'page.downloads',    icon: Download },
     { name: 'admin-audit',         labelKey: 'page.audit',        icon: FileText },
+    { name: 'admin-errors',        labelKey: 'page.errors',       icon: AlertCircle },
     { name: 'admin-webhook',       labelKey: 'page.webhook',      icon: Webhook },
     { name: 'admin-api',           labelKey: 'page.api',          icon: KeyRound },
     { name: 'admin-apikey',        labelKey: 'page.apikey',       icon: ShieldCheck },

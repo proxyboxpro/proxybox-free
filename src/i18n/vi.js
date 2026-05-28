@@ -919,6 +919,7 @@ export default {
   'page.connections':  'Kết nối live',
   'page.bandwidth':    'Băng thông',
   'page.health':       'Sức khoẻ proxy',
+  'page.errors':       'Nhật ký lỗi',
   'page.users':        'Khách hàng',
   'page.oauth':        'Login social',
   'page.orders':       'Đơn hàng (nhóm)',

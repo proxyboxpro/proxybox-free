@@ -87,6 +87,7 @@ const router = createRouter({
       { path: 'connections/:proxyId',          name: 'admin-connection-detail',  component: () => import('./views/admin/AdminConnectionDetailView.vue') },
       { path: 'bandwidth',                     name: 'admin-bandwidth',          component: () => import('./views/admin/AdminBandwidthView.vue') },
       { path: 'health',                        name: 'admin-health',             component: () => import('./views/admin/AdminHealthView.vue') },
+      { path: 'errors',                        name: 'admin-errors',             component: () => import('./views/admin/AdminErrorsView.vue') },
 
       // Users
       { path: 'users',                         name: 'admin-users',         component: AdminUsersView },

@@ -901,6 +901,7 @@ export default {
   'page.connections':  'Live connections',
   'page.bandwidth':    'Bandwidth',
   'page.health':       'Proxy health',
+  'page.errors':       'Error log',
   'page.users':        'Customers',
   'page.oauth':        'Social login',
   'page.orders':       'Order groups',
