@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Cpu, Download, FileText, HardDrive, RefreshCw, Server, Terminal, Trash2 } from 'lucide-vue-next'
+import { Activity, AlertCircle, ArrowDown, ArrowLeft, ArrowUp, BarChart3, Cpu, Download, FileText, HardDrive, RefreshCw, Server, Terminal, Trash2, Users, Wrench, Zap } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 import { apiFetch } from '../api'
 import { fetchNode, syncNode, removeNode, installNode } from '../store/nodes'
@@ -129,6 +129,41 @@ const totalUp = computed(() => proxies.value.reduce((a, p) => a + (p.stats?.uplo
 const totalDown = computed(() => proxies.value.reduce((a, p) => a + (p.stats?.downloadBytes || 0), 0))
 const totalMonth = computed(() => proxies.value.reduce((a, p) => a + (p.stats?.monthBytes || 0), 0))
 
+// Enrichment from the extended /api/nodes/:id payload (1.5.3+):
+//   • owners[]       — per-customer breakdown for this node
+//   • windowsBandwidth — { h1, h24, d30 } each { up, down }
+//   • recentFixes[]  — last 20 auto-heal events affecting this node
+//   • recentErrors[] — open errors keyed on this node
+const owners = computed(() => node.value?.owners || [])
+const windows = computed(() => node.value?.windowsBandwidth || { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } })
+const recentFixes = computed(() => node.value?.recentFixes || [])
+const recentErrors = computed(() => node.value?.recentErrors || [])
+function fmtAgo(ms) {
+  if (!ms) return '—'
+  const s = Math.floor((Date.now() - Number(ms)) / 1000)
+  if (s < 60) return s + 's'
+  if (s < 3600) return Math.floor(s / 60) + 'm'
+  if (s < 86400) return Math.floor(s / 3600) + 'h'
+  return Math.floor(s / 86400) + 'd'
+}
+function goToUser(uid) { router.push({ name: 'admin-user-detail', params: { userId: uid } }) }
+
+// Management actions. Wired to the existing /api/nodes/:id/action/:action
+// endpoint (drain, undrain, restart-agent etc.) — server already routes
+// each whitelisted action through handleNodeAction.
+const actionBusy = ref('')
+async function nodeAction(name, confirmText) {
+  if (actionBusy.value) return
+  if (confirmText && !confirm(confirmText)) return
+  actionBusy.value = name
+  try {
+    const r = await apiFetch(`/api/nodes/${nodeId.value}/action/${name}`, { method: 'POST' })
+    if (r && r.error) errorText.value = r.error
+    setTimeout(load, 1500)
+  } catch (e) { errorText.value = e.message }
+  finally { actionBusy.value = '' }
+}
+
 watch(nodeId, () => { load(); loadUpgrade() })
 onMounted(() => { load(); loadUpgrade() })
 </script>
@@ -195,6 +230,104 @@ onMounted(() => { load(); loadUpgrade() })
         <div class="metric-card"><div class="metric-label">Net RX</div><div class="metric-value">{{ formatBytes(node.metrics.netRxBps) }}/s</div></div>
         <div class="metric-card"><div class="metric-label">Net TX</div><div class="metric-value">{{ formatBytes(node.metrics.netTxBps) }}/s</div></div>
         <div class="metric-card"><div class="metric-label">{{ t('nodes.uptime') }}</div><div class="metric-value">{{ uptime(node.metrics.uptimeSec) }}</div></div>
+      </div>
+    </section>
+
+    <!-- ── Bandwidth (1h / 24h / 30d) — total traffic served from this node ── -->
+    <section v-if="node" class="surface">
+      <div class="section-head"><h2><BarChart3 :size="16" style="vertical-align:-3px" /> Băng thông node</h2></div>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="metric-label">1 giờ qua</div><div class="metric-value">{{ formatBytes((windows.h1.up + windows.h1.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h1.up) }} · ↓ {{ formatBytes(windows.h1.down) }}</div></div>
+        <div class="metric-card"><div class="metric-label">24 giờ qua</div><div class="metric-value">{{ formatBytes((windows.h24.up + windows.h24.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h24.up) }} · ↓ {{ formatBytes(windows.h24.down) }}</div></div>
+        <div class="metric-card"><div class="metric-label">30 ngày qua</div><div class="metric-value">{{ formatBytes((windows.d30.up + windows.d30.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.d30.up) }} · ↓ {{ formatBytes(windows.d30.down) }}</div></div>
+        <div class="metric-card"><div class="metric-label">Khách trên node</div><div class="metric-value">{{ owners.length }}</div><div class="metric-foot">{{ proxies.length }} proxy</div></div>
+      </div>
+    </section>
+
+    <!-- ── Customers on this node — who's using it, how much ── -->
+    <section v-if="node && owners.length" class="surface">
+      <div class="section-head">
+        <h2><Users :size="16" style="vertical-align:-3px" /> Khách dùng proxy trên node ({{ owners.length }})</h2>
+        <span style="color:var(--muted); font-size:12px">Click vào dòng để mở trang chi tiết khách</span>
+      </div>
+      <div class="data-table">
+        <div class="table-head" style="grid-template-columns: 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr">
+          <span>Khách</span>
+          <span style="text-align:right">Proxy</span>
+          <span style="text-align:right">Active</span>
+          <span style="text-align:right">Expired</span>
+          <span style="text-align:right">Băng thông 30d</span>
+          <span style="text-align:right">Auto-fix</span>
+          <span style="text-align:right">Last check</span>
+        </div>
+        <div v-for="o in owners" :key="o.ownerId" class="table-row" style="grid-template-columns: 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr; cursor:pointer" @click="goToUser(o.ownerId)">
+          <span>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block">{{ o.email }}</span>
+            <small v-if="o.suspended" class="status-pill error" style="font-size:10px">suspended</small>
+          </span>
+          <span class="cell-mono" style="text-align:right; font-weight:600">{{ o.total }}</span>
+          <span class="cell-mono" style="text-align:right; color:var(--green)">{{ o.active }}</span>
+          <span class="cell-mono" style="text-align:right; color:var(--muted)">{{ o.expired }}</span>
+          <span class="cell-mono" style="text-align:right">
+            {{ formatBytes(o.bytes30dTotal) }}
+            <small style="display:block; color:var(--muted); font-size:10.5px">↑{{ formatBytes(o.bytes30dUp) }} ↓{{ formatBytes(o.bytes30dDown) }}</small>
+          </span>
+          <span style="text-align:right">
+            <strong v-if="o.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">{{ o.autoFixCount }}</strong>
+            <span v-else style="color:var(--muted)">—</span>
+          </span>
+          <span class="cell-mono" style="text-align:right; font-size:11px; color:var(--muted)">{{ fmtAgo(o.lastActive) }}</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Management actions ── -->
+    <section v-if="node && !isLocal" class="surface">
+      <div class="section-head"><h2><Wrench :size="16" style="vertical-align:-3px" /> Quản lý node</h2></div>
+      <div class="action-row" style="display:flex; gap:8px; flex-wrap:wrap">
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(node.disabled ? 'undrain' : 'drain', node.disabled ? null : 'Drain sẽ ngừng nhận kết nối MỚI trên node này (các kết nối hiện tại tiếp tục). Tiếp tục?')">
+          {{ node.disabled ? '▶︎ Bật lại node (undrain)' : '⏸︎ Drain (ngừng nhận conn mới)' }}
+        </button>
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('restart-agent', 'Restart agent service trên node? (~30s downtime cho mọi proxy trên node này)')">
+          <RefreshCw :size="13" /> Restart agent
+        </button>
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('refresh-network', null)">
+          <Zap :size="13" /> Refresh network info
+        </button>
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('diagnostics', null)">
+          <Activity :size="13" /> Diagnostics
+        </button>
+        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('rotate-token', 'Đổi agent token? Token cũ sẽ ngừng hoạt động ngay; agent restart sẽ pick up token mới.')">
+          🔑 Rotate agent token
+        </button>
+      </div>
+      <p v-if="actionBusy" class="empty-text" style="padding:8px 0">Đang chạy: {{ actionBusy }}…</p>
+    </section>
+
+    <!-- ── Recent activity: auto-heal events + open errors for this node ── -->
+    <section v-if="node && (recentFixes.length || recentErrors.length)" class="surface">
+      <div class="section-head"><h2><Activity :size="16" style="vertical-align:-3px" /> Hoạt động gần đây trên node</h2></div>
+      <div v-if="recentErrors.length" style="margin-bottom:14px">
+        <h3 style="font-size:13px; color:var(--red); margin:0 0 8px"><AlertCircle :size="13" style="vertical-align:-2px" /> Lỗi đang mở ({{ recentErrors.length }})</h3>
+        <div class="data-table">
+          <div v-for="e in recentErrors" :key="e.id" class="table-row" style="grid-template-columns: 0.5fr 0.7fr 1fr 1.6fr 0.4fr">
+            <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ fmtAgo(e.last_ts) }}</span>
+            <span><span :class="['status-pill', e.level === 'error' ? 'error' : 'pending']">{{ e.level }}</span></span>
+            <span class="cell-mono" style="font-size:11.5px">{{ e.source }}/{{ e.code }}</span>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px">{{ e.message }}</span>
+            <span class="cell-mono" style="text-align:right; color:var(--yellow)">×{{ e.count }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="recentFixes.length">
+        <h3 style="font-size:13px; color:var(--muted); margin:0 0 8px">Auto-heal ({{ recentFixes.length }})</h3>
+        <div class="data-table">
+          <div v-for="(f, i) in recentFixes" :key="i" class="table-row" style="grid-template-columns: 0.7fr 0.7fr 2fr">
+            <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ f.ts.slice(11, 19) }}</span>
+            <span><span v-if="f.path && f.path.endsWith('/rotate')" class="status-pill pending">rotate</span><span v-else-if="f.path && f.path.endsWith('/replace')" class="status-pill active">replace</span><span v-else class="status-pill error">{{ (f.path||'').split('/').pop() }}</span> <small class="cell-mono" style="color:var(--muted); font-size:10.5px">{{ (f.path||'').match(/\/proxy\/([^/]+)/)?.[1] }}</small></span>
+            <span class="cell-mono" style="font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ f.note }}</span>
+          </div>
+        </div>
       </div>
     </section>
 

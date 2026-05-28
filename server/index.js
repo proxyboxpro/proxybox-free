@@ -8602,10 +8602,103 @@ async function handleApi(req, res, url) {
     }
     if (nodeMatch && req.method === 'GET') {
       const id = nodeMatch[1]
-      if (id === 'local') return sendJson(res, 200, { ...localNode(), proxies: config.proxies.filter((p) => (p.nodeId || 'local') === 'local').map(publicProxy) })
-      const node = config.nodes.find((n) => n.id === id)
-      if (!node) return sendJson(res, 404, { error: 'node not found' })
-      return sendJson(res, 200, { ...publicNode(node), proxies: config.proxies.filter((p) => p.nodeId === node.id).map(publicProxy), syncRequestedAt: node.syncRequestedAt || null })
+      const isLocal = id === 'local'
+      const node = isLocal ? null : config.nodes.find((n) => n.id === id)
+      if (!isLocal && !node) return sendJson(res, 404, { error: 'node not found' })
+      const proxiesOnNode = config.proxies.filter((p) => (p.nodeId || 'local') === id)
+      // Per-customer breakdown: who's using this node + how much. Lets admin
+      // see, in one glance, who would be affected if the node went offline,
+      // and which customers are the heaviest users on this hardware.
+      const userById = new Map((config.users || []).map((u) => [u.id, u]))
+      const ownerMap = new Map()
+      for (const p of proxiesOnNode) {
+        if (!p.ownerId) continue
+        const e = ownerMap.get(p.ownerId) || { ownerId: p.ownerId, total: 0, active: 0, expired: 0, error: 0, replaced: 0, autoFixCount: 0, lastActive: null }
+        e.total += 1
+        e[p.status] = (e[p.status] || 0) + 1
+        e.autoFixCount += Number(p.autoFixCount) || 0
+        const last = p.lastCheckedAt ? new Date(p.lastCheckedAt).getTime() : 0
+        if (last && (!e.lastActive || last > e.lastActive)) e.lastActive = last
+        ownerMap.set(p.ownerId, e)
+      }
+      // 30-day bytes per owner from conn_events (the per-conn truth log)
+      // grouped by owner_id for proxies on THIS node only. One query, much
+      // cheaper than per-owner lookups.
+      if (sqliteDb && ownerMap.size) {
+        try {
+          const cutoff = Date.now() - 30 * 86_400_000
+          const proxyIds = proxiesOnNode.map((p) => p.id)
+          if (proxyIds.length) {
+            const ph = proxyIds.map(() => '?').join(',')
+            const rows = sqliteDb.prepare(`SELECT owner_id, SUM(up) AS up, SUM(dn) AS dn FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ? GROUP BY owner_id`).all(...proxyIds, cutoff)
+            for (const r of rows) {
+              const e = ownerMap.get(r.owner_id)
+              if (e) { e.bytes30dUp = Number(r.up) || 0; e.bytes30dDown = Number(r.dn) || 0 }
+            }
+          }
+        } catch { /* leave bytes empty on error */ }
+      }
+      const owners = [...ownerMap.values()].map((e) => {
+        const u = userById.get(e.ownerId)
+        return {
+          ownerId: e.ownerId,
+          email: u?.email || '(unknown)',
+          name: u?.name || '',
+          suspended: !!u?.suspended,
+          total: e.total, active: e.active || 0, expired: e.expired || 0, error: e.error || 0, replaced: e.replaced || 0,
+          autoFixCount: e.autoFixCount,
+          lastActive: e.lastActive,
+          bytes30dUp: e.bytes30dUp || 0, bytes30dDown: e.bytes30dDown || 0,
+          bytes30dTotal: (e.bytes30dUp || 0) + (e.bytes30dDown || 0)
+        }
+      }).sort((a, b) => b.bytes30dTotal - a.bytes30dTotal || b.total - a.total)
+      // Bandwidth windows for the whole node (1h / 24h / 30d, split up/down).
+      const windowsBandwidth = connWindowTotals && proxiesOnNode.length
+        ? (() => {
+            // Aggregate by summing per-proxy windows, since the helper is
+            // proxy/owner scoped (no node-scoped variant yet).
+            const tot = { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
+            for (const p of proxiesOnNode) {
+              const w = connWindowTotals({ by: 'proxy', id: p.id })
+              tot.h1.up += w.h1.up; tot.h1.down += w.h1.down
+              tot.h24.up += w.h24.up; tot.h24.down += w.h24.down
+              tot.d30.up += w.d30.up; tot.d30.down += w.d30.down
+            }
+            return tot
+          })()
+        : { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
+      // Recent auto-heal events on this node (from audit table).
+      let recentFixes = []
+      if (sqliteDb) {
+        try {
+          recentFixes = sqliteDb.prepare(
+            `SELECT ts, path, note FROM audit WHERE actor = 'auto-heal' AND note LIKE '%' ORDER BY id DESC LIMIT 80`
+          ).all().filter((r) => {
+            // path is like /proxy/<id>/rotate — keep only ones on this node's proxies
+            const m = (r.path || '').match(/\/proxy\/([^/]+)/)
+            return m && proxiesOnNode.some((p) => p.id === m[1])
+          }).slice(0, 20)
+        } catch { /* leave empty */ }
+      }
+      // Recent open errors for this node.
+      let recentErrors = []
+      if (sqliteDb) {
+        try {
+          recentErrors = sqliteDb.prepare(
+            `SELECT id, first_ts, last_ts, count, source, level, code, message, proxy_id AS proxyId FROM errors WHERE node_id = ? AND resolved = 0 ORDER BY last_ts DESC LIMIT 20`
+          ).all(id)
+        } catch { /* leave empty */ }
+      }
+      const base = isLocal ? localNode() : publicNode(node)
+      return sendJson(res, 200, {
+        ...base,
+        proxies: proxiesOnNode.map(publicProxy),
+        syncRequestedAt: (node && node.syncRequestedAt) || null,
+        owners,
+        windowsBandwidth,
+        recentFixes,
+        recentErrors
+      })
     }
     if (nodeMatch && req.method === 'DELETE') {
       const idx = config.nodes.findIndex((n) => n.id === nodeMatch[1])
