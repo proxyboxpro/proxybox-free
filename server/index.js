@@ -4906,29 +4906,44 @@ async function runHealthSweep() {
   saveConfig().catch(() => {})
 
   // ── TLS-side companion probe ───────────────────────────────────────────
-  // The main check only probes the PLAIN proxy port. The TLS port (Trojan +
-  // HTTPS-proxy wrap) was invisible to health monitoring until 1.4.17 — that
-  // blind spot is exactly why the bind-race bug fixed in 1.4.16 hid for so
-  // long. This step does a lightweight TLS handshake against each proxy's
-  // tlsPort (only for proxies whose plain check passed and that aren't on
-  // a suspect node) and logs `proxy:tls-down` for any failure. It does NOT
-  // affect heal decisions — purely an observability instrument.
+  // Catches TLS-specific bugs invisible to the plain CONNECT check (e.g. the
+  // bind-race that was fixed in 1.4.16). Two guards keep this signal honest:
+  //   (a) Concurrency limit: firing 2000+ TLS handshakes simultaneously at
+  //       one node trips the provider's per-source connection-burst limit,
+  //       and a contiguous block of probes comes back ECONNREFUSED. That's
+  //       a path-level false positive, not a real per-proxy failure. Cap at
+  //       N in flight so the burst stays under the edge threshold.
+  //   (b) Two-strike rule: a single failure increments proxy.tlsFailCount
+  //       but is NOT logged — only the second consecutive failure crosses
+  //       the threshold. A pass resets the counter. Mirrors the plain
+  //       check's 3-fail rotation gate.
   const tlsCandidates = results.filter(({ proxy, r }) =>
     r.ok && Number(proxy.tlsPort) > 0 && !suspectNodes.has(proxy.nodeId || 'local')
   )
   if (tlsCandidates.length) {
-    // Don't block the sweep on TLS probes — fire-and-forget background task.
     ;(async () => {
-      let tlsDown = 0
-      const probes = tlsCandidates.map(({ proxy }) => tlsHandshakeProbe(proxy).then((tr) => ({ proxy, tr })))
-      const tlsResults = await Promise.all(probes)
-      for (const { proxy, tr } of tlsResults) {
-        if (!tr.ok) {
-          tlsDown += 1
-          logError({ source: 'sweep', level: 'warn', code: 'proxy:tls-down', message: `TLS handshake fail on tlsPort ${proxy.tlsPort}: ${tr.error}`, proxyId: proxy.id, nodeId: proxy.nodeId, context: { tlsPort: proxy.tlsPort, host: customerFacingHost(proxy) || proxy.listenHost, error: tr.error, latencyMs: tr.latencyMs } })
+      const TLS_CONCURRENCY = Number(config.healthCheck?.tlsProbeConcurrency) || 40
+      let i = 0, downReports = 0
+      async function worker() {
+        while (i < tlsCandidates.length) {
+          const { proxy } = tlsCandidates[i++]
+          const tr = await tlsHandshakeProbe(proxy)
+          if (tr.ok) {
+            if (proxy.tlsFailCount) proxy.tlsFailCount = 0
+          } else {
+            proxy.tlsFailCount = (Number(proxy.tlsFailCount) || 0) + 1
+            // Only surface as an error after two consecutive failures, so
+            // the noisy provider-edge bursts we can't control don't pollute
+            // the log with hundreds of one-off ECONNREFUSEDs.
+            if (proxy.tlsFailCount >= 2) {
+              downReports += 1
+              logError({ source: 'sweep', level: 'warn', code: 'proxy:tls-down', message: `TLS handshake fail on tlsPort ${proxy.tlsPort}: ${tr.error}`, proxyId: proxy.id, nodeId: proxy.nodeId, context: { tlsPort: proxy.tlsPort, host: customerFacingHost(proxy) || proxy.listenHost, error: tr.error, latencyMs: tr.latencyMs, consecutive: proxy.tlsFailCount } })
+            }
+          }
         }
       }
-      if (tlsDown) console.log(`[tls-probe] ${tlsDown}/${tlsCandidates.length} proxies failed TLS handshake this sweep`)
+      await Promise.all(Array.from({ length: TLS_CONCURRENCY }, worker))
+      if (downReports) console.log(`[tls-probe] ${downReports} proxies failed TLS handshake (>=2 consecutive) this sweep`)
     })().catch(() => { /* noop — purely observability */ })
   }
 }
