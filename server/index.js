@@ -5782,6 +5782,81 @@ async function handleApi(req, res, url) {
 
     // â”€â”€ Stripe webhook (public, signature-verified) â€” must read raw body BEFORE
     //    the auth gate. Stripe calls this on payment success â†' we credit wallet.
+    // ── SePay webhook (VN bank-transfer matching service) ──
+    // Memo conventions: wallet topup = "<prefix>U<userShort>", direct order = "ORD-XXXXXX".
+    // Docs: https://docs.sepay.vn/tich-hop-webhooks.html
+    if (req.method === 'POST' && url.pathname === '/api/webhooks/sepay') {
+      if (!config.billing?.sepayEnabled) { res.writeHead(503); return res.end('sepay disabled\n') }
+      const expectedKey = readSecret(config.billing.sepayApiKey)
+      if (!expectedKey) { res.writeHead(503); return res.end('sepay api key not configured\n') }
+      const auth = req.headers['authorization'] || ''
+      const token = auth.startsWith('Apikey ') ? auth.slice(7).trim() : auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+      if (!token || !timingEqual(token, expectedKey)) {
+        audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', status: 401, note: 'bad authorization' })
+        res.writeHead(401); return res.end('unauthorized\n')
+      }
+      let event
+      try { event = JSON.parse((await readRawBody(req)).toString('utf8') || '{}') } catch { res.writeHead(400); return res.end('bad body\n') }
+      if (sqliteDb) {
+        try {
+          sqliteDb.exec('CREATE TABLE IF NOT EXISTS sepay_seen (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, amount INTEGER, ref TEXT, user_id TEXT, order_id TEXT)')
+          const ins = sqliteDb.prepare('INSERT OR IGNORE INTO sepay_seen (id, ts, amount, ref) VALUES (?, ?, ?, ?)').run(Number(event.id) || 0, new Date().toISOString(), Number(event.transferAmount) || 0, String(event.referenceCode || ''))
+          if (ins.changes === 0) { res.writeHead(200); return res.end('{"success":true,"duplicate":true}') }
+        } catch (e) { /* fall through */ }
+      }
+      if (event.transferType !== 'in') {
+        audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `ignored transferType=${event.transferType}` })
+        res.writeHead(200); return res.end('{"success":true,"ignored":"not in"}')
+      }
+      const amount = Math.floor(Number(event.transferAmount) || 0)
+      if (amount <= 0) { res.writeHead(200); return res.end('{"success":true,"ignored":"zero amount"}') }
+      const memo = String(event.code || event.content || '').toUpperCase()
+      const prefix = (config.billing.sepayPrefix || 'PB').toUpperCase()
+      let matched = null
+      const ordMatch = memo.match(/ORD-?[A-Z0-9]{4,12}/)
+      if (ordMatch) {
+        const oid = ordMatch[0]
+        const ord = orders.find((o) => o.id === oid || o.id === oid.replace(/^ORD/, 'ORD-'))
+        if (ord) matched = { kind: 'order', orderId: ord.id, ownerId: ord.ownerId }
+      }
+      if (!matched) {
+        const userMatch = memo.match(new RegExp(`${prefix}U([A-Z0-9]{4,16})`))
+        if (userMatch) {
+          const short = userMatch[1].toLowerCase()
+          const user = config.users.find((u) => (u.id || '').toLowerCase().endsWith(short))
+          if (user) matched = { kind: 'topup', userId: user.id }
+        }
+      }
+      if (!matched) {
+        audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `no match memo=${memo} amount=${amount}` })
+        res.writeHead(200); return res.end('{"success":true,"ignored":"no match"}')
+      }
+      try {
+        if (matched.kind === 'topup') {
+          const next = recordBillingTx(matched.userId, 'topup', amount, `sepay ${event.id} ref=${event.referenceCode || ''}`)
+          if (sqliteDb) { try { sqliteDb.prepare('UPDATE sepay_seen SET user_id = ? WHERE id = ?').run(matched.userId, Number(event.id)) } catch {} }
+          audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `topup user=${matched.userId} +${amount} -> ${next}` })
+        } else if (matched.kind === 'order') {
+          const ord = orders.find((o) => o.id === matched.orderId)
+          if (ord && ord.status !== 'paid' && ord.status !== 'active') {
+            ord.status = 'paid'
+            ord.paidAt = new Date().toISOString()
+            ord.paymentMethod = 'sepay'
+            ord.sepayTxnId = Number(event.id)
+            await saveOrders()
+            if (typeof provisionOrder === 'function') {
+              try { await provisionOrder(ord) } catch (e) { logError({ source: 'sepay', level: 'error', code: 'sepay:provision-fail', message: e.message, context: { orderId: ord.id } }) }
+            }
+            if (sqliteDb) { try { sqliteDb.prepare('UPDATE sepay_seen SET order_id = ?, user_id = ? WHERE id = ?').run(ord.id, ord.ownerId || '', Number(event.id)) } catch {} }
+            audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `order paid ${ord.id} ${amount}` })
+          }
+        }
+      } catch (e) {
+        logError({ source: 'sepay', level: 'error', code: 'sepay:apply-fail', message: e.message, context: { id: event.id, memo, amount } })
+      }
+      res.writeHead(200); return res.end('{"success":true}')
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
       const secret = readSecret(config.billing?.stripeWebhookSecret)
       if (!secret) { res.writeHead(503); return res.end('webhook secret not configured\n') }
@@ -6788,7 +6863,13 @@ async function handleApi(req, res, url) {
           paypalSecret: maskSecret(config.billing.paypalSecret),
           paypalReturnUrl: config.billing.paypalReturnUrl || '',
           paypalCancelUrl: config.billing.paypalCancelUrl || '',
-          paypalCurrency: config.billing.paypalCurrency || 'USD'
+          paypalCurrency: config.billing.paypalCurrency || 'USD',
+          sepayEnabled: Boolean(config.billing.sepayEnabled),
+          sepayApiKey: maskSecret(config.billing.sepayApiKey),
+          sepayBankCode: config.billing.sepayBankCode || '',
+          sepayAccountNumber: config.billing.sepayAccountNumber || '',
+          sepayAccountHolder: config.billing.sepayAccountHolder || '',
+          sepayPrefix: config.billing.sepayPrefix || 'PB'
         })
       }
       if (req.method === 'PATCH') {
@@ -6823,6 +6904,14 @@ async function handleApi(req, res, url) {
         if (typeof body.paypalReturnUrl === 'string') config.billing.paypalReturnUrl = body.paypalReturnUrl.trim().slice(0, 500)
         if (typeof body.paypalCancelUrl === 'string') config.billing.paypalCancelUrl = body.paypalCancelUrl.trim().slice(0, 500)
         if (typeof body.paypalCurrency === 'string') config.billing.paypalCurrency = body.paypalCurrency.toUpperCase().slice(0, 8)
+        if (typeof body.sepayEnabled === 'boolean') config.billing.sepayEnabled = body.sepayEnabled
+        if (typeof body.sepayApiKey === 'string' && body.sepayApiKey && !body.sepayApiKey.startsWith('••••')) {
+          config.billing.sepayApiKey = writeSecret(body.sepayApiKey.trim())
+        }
+        if (typeof body.sepayBankCode === 'string') config.billing.sepayBankCode = body.sepayBankCode.trim().toUpperCase().slice(0, 16)
+        if (typeof body.sepayAccountNumber === 'string') config.billing.sepayAccountNumber = body.sepayAccountNumber.trim().replace(/\s+/g, '').slice(0, 32)
+        if (typeof body.sepayAccountHolder === 'string') config.billing.sepayAccountHolder = body.sepayAccountHolder.trim().slice(0, 64)
+        if (typeof body.sepayPrefix === 'string') config.billing.sepayPrefix = body.sepayPrefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'PB'
         // Reset cached token when credentials change
         _paypalTokenCache = { value: '', expiresAt: 0 }
         await saveConfig()
@@ -10546,6 +10635,7 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         stripeEnabled: Boolean(config.billing?.stripeSecretKey),
         paypalEnabled: Boolean(config.billing?.paypalEnabled && config.billing?.paypalClientId && config.billing?.paypalSecret),
         paypalCurrency: String(config.billing?.paypalCurrency || 'USD').toUpperCase(),
+        sepayEnabled: Boolean(config.billing?.sepayEnabled && config.billing?.sepayBankCode && config.billing?.sepayAccountNumber && config.billing?.sepayApiKey),
         testMode: Boolean(config.billing?.testMode)
       }
     })
@@ -10660,6 +10750,46 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     } catch (e) {
       return sendJson(res, 502, { error: `Stripe: ${e.message}` })
     }
+  }
+
+  // ── SePay (VN bank transfer): return a VIETQR url + memo for the user ──
+  if (req.method === 'GET' && sub === 'billing/sepay/qr') {
+    if (!config.billing?.sepayEnabled) return sendJson(res, 503, { error: 'SePay not enabled' })
+    if (!config.billing.sepayBankCode || !config.billing.sepayAccountNumber) {
+      return sendJson(res, 503, { error: 'SePay bank account not configured' })
+    }
+    const amount = Math.floor(Number(url.searchParams.get('amount')) || 0)
+    if (amount < 10_000 || amount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 10,000..100,000,000 VND' })
+    const orderId = String(url.searchParams.get('orderId') || '').trim()
+    let memo, kind
+    if (orderId) {
+      const ord = orders.find((o) => o.id === orderId && o.ownerId === user.id)
+      if (!ord) return sendJson(res, 404, { error: 'order not found' })
+      if (ord.status === 'paid' || ord.status === 'active') return sendJson(res, 400, { error: 'order already paid' })
+      memo = ord.id; kind = 'order'
+    } else {
+      const prefix = (config.billing.sepayPrefix || 'PB').toUpperCase()
+      memo = `${prefix}U${(user.id || '').slice(-8).toUpperCase()}`
+      kind = 'topup'
+    }
+    const bank = String(config.billing.sepayBankCode || '').toUpperCase()
+    const acc = String(config.billing.sepayAccountNumber || '').replace(/\s+/g, '')
+    const holder = String(config.billing.sepayAccountHolder || '').slice(0, 64)
+    const qrUrl = `https://img.vietqr.io/image/${encodeURIComponent(bank)}-${encodeURIComponent(acc)}-compact2.png?amount=${amount}&addInfo=${encodeURIComponent(memo)}&accountName=${encodeURIComponent(holder)}`
+    return sendJson(res, 200, {
+      qrUrl, memo, amount, kind,
+      bank: { code: bank, accountNumber: acc, accountHolder: holder },
+      instructions: 'Scan the QR with your banking app. Do NOT change the transfer memo. Wallet credits in 10-60 seconds.'
+    })
+  }
+
+  if (req.method === 'GET' && sub === 'billing/sepay/latest') {
+    if (!config.billing?.sepayEnabled) return sendJson(res, 503, { error: 'SePay not enabled' })
+    if (!sqliteDb) return sendJson(res, 200, { hits: [] })
+    const since = Number(url.searchParams.get('sinceMs')) || (Date.now() - 30 * 60_000)
+    const rows = sqliteDb.prepare('SELECT id, ts, amount, ref, user_id, order_id FROM sepay_seen WHERE user_id = ? AND ts >= ? ORDER BY id DESC LIMIT 10')
+      .all(user.id, new Date(since).toISOString())
+    return sendJson(res, 200, { hits: rows.map((r) => ({ id: r.id, ts: r.ts, amount: r.amount, ref: r.ref, orderId: r.order_id || null })) })
   }
 
   // ── PayPal: create order (returns approveUrl for redirect) ──────────────

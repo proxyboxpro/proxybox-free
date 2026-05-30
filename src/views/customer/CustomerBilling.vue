@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowDownLeft, ArrowUpRight, ChevronRight, CircleDollarSign, CreditCard,
-  FileText, Gift, Plus, RefreshCw, Search, Tag, Wallet
+  FileText, Gift, Landmark, Plus, QrCode, RefreshCw, Search, Tag, Wallet, X
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
@@ -82,6 +82,51 @@ async function pay() {
     else flash.value = t('cust.billing.sessionCreated')
   } catch (e) { err.value = e.message } finally { busy.value = false }
 }
+// ─── SePay (VN bank transfer) ──────────────────────────────────────
+const sepayOpen = ref(false)
+const sepayData = ref(null)         // { qrUrl, memo, amount, bank }
+const sepayPollMs = ref(0)
+const sepayCheck = ref(null)        // matched txn from /sepay/latest
+let sepayPollTimer = null
+async function payWithSepay() {
+  if (busy.value) return
+  busy.value = true; err.value = ''; flash.value = ''
+  try {
+    const amount = Math.max(10000, Math.floor(Number(topup.value) || 0))
+    const r = await apiFetch(`/api/v1/user/billing/sepay/qr?amount=${amount}`)
+    sepayData.value = r
+    sepayOpen.value = true
+    sepayPollMs.value = Date.now()
+    sepayCheck.value = null
+    // Poll every 5s for up to 15 min. On a hit, stop + refresh wallet.
+    sepayPollTimer = setInterval(async () => {
+      try {
+        const r2 = await apiFetch(`/api/v1/user/billing/sepay/latest?sinceMs=${sepayPollMs.value}`)
+        const hit = (r2.hits || []).find((h) => Number(h.amount) >= Number(sepayData.value.amount))
+        if (hit) {
+          sepayCheck.value = hit
+          clearInterval(sepayPollTimer); sepayPollTimer = null
+          flash.value = t('cust.billing.sepayHit', { amount: Number(hit.amount).toLocaleString() })
+          await refresh()
+        }
+      } catch { /* keep polling */ }
+    }, 5000)
+    setTimeout(() => { if (sepayPollTimer) { clearInterval(sepayPollTimer); sepayPollTimer = null } }, 15 * 60_000)
+  } catch (e) { err.value = e.message } finally { busy.value = false }
+}
+function closeSepay() {
+  sepayOpen.value = false
+  if (sepayPollTimer) { clearInterval(sepayPollTimer); sepayPollTimer = null }
+}
+async function copyMemo() {
+  if (!sepayData.value?.memo) return
+  try { await navigator.clipboard.writeText(sepayData.value.memo); flash.value = t('cust.billing.copied') } catch {}
+}
+async function copyAccount() {
+  if (!sepayData.value?.bank?.accountNumber) return
+  try { await navigator.clipboard.writeText(sepayData.value.bank.accountNumber); flash.value = t('cust.billing.copied') } catch {}
+}
+
 async function payWithPaypal() {
   if (busy.value) return
   busy.value = true; err.value = ''; flash.value = ''
@@ -204,7 +249,8 @@ onMounted(async () => {
             <div style="display:flex; flex-direction:column; gap:6px; padding:6px 11px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:var(--radius-sm); color:var(--text); font-size:13px">
               <span v-if="billing?.paymentMethods?.stripeEnabled" style="display:inline-flex; align-items:center; gap:6px"><CreditCard :size="14" style="color:var(--pxl)" /> Stripe (Card / Apple / Google Pay)</span>
               <span v-if="billing?.paymentMethods?.paypalEnabled" style="display:inline-flex; align-items:center; gap:6px"><CircleDollarSign :size="14" style="color:#1546a0" /> PayPal ({{ billing.paymentMethods.paypalCurrency || 'USD' }})</span>
-              <span v-if="!billing?.paymentMethods?.stripeEnabled && !billing?.paymentMethods?.paypalEnabled" style="font-size:11.5px; color:var(--muted)">No payment method enabled — contact admin.</span>
+              <span v-if="billing?.paymentMethods?.sepayEnabled" style="display:inline-flex; align-items:center; gap:6px"><Landmark :size="14" style="color:var(--green)" /> {{ t('cust.billing.sepayMethodLabel') }}</span>
+              <span v-if="!billing?.paymentMethods?.stripeEnabled && !billing?.paymentMethods?.paypalEnabled && !billing?.paymentMethods?.sepayEnabled" style="font-size:11.5px; color:var(--muted)">No payment method enabled — contact admin.</span>
             </div>
           </div>
         </div>
@@ -220,8 +266,41 @@ onMounted(async () => {
           <button v-if="billing?.paymentMethods?.paypalEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithPaypal" style="background:#0070ba; border-color:#0070ba">
             <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : 'Pay with PayPal' }}
           </button>
+          <button v-if="billing?.paymentMethods?.sepayEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithSepay" style="background:var(--green); border-color:var(--green); color:#0a1f1a">
+            <QrCode :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.sepayPayBtn', { amount: Number(topup).toLocaleString() }) }}
+          </button>
         </div>
       </section>
+
+      <!-- SePay QR modal — shown after clicking Pay via VN bank transfer -->
+      <div v-if="sepayOpen" class="sepay-modal-overlay" @click.self="closeSepay">
+        <div class="sepay-modal">
+          <div class="sepay-modal-head">
+            <h3><QrCode :size="16" style="vertical-align:-3px" /> {{ t('cust.billing.sepayQrTitle') }}</h3>
+            <button class="ghost-button" type="button" @click="closeSepay" style="padding:4px 8px"><X :size="14" /></button>
+          </div>
+          <div v-if="sepayCheck" class="sepay-success">
+            <div style="font-size:32px">✓</div>
+            <h4>{{ t('cust.billing.sepayPaid') }}</h4>
+            <p>{{ t('cust.billing.sepayPaidDesc', { amount: Number(sepayCheck.amount).toLocaleString() }) }}</p>
+            <button class="primary-action" type="button" @click="closeSepay">{{ t('common.close') }}</button>
+          </div>
+          <div v-else class="sepay-modal-body">
+            <div class="sepay-qr-wrap">
+              <img :src="sepayData.qrUrl" alt="VietQR" class="sepay-qr" />
+            </div>
+            <div class="sepay-info">
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayBank') }}</span><strong class="cell-mono">{{ sepayData.bank.code }}</strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayAccount') }}</span><strong class="cell-mono">{{ sepayData.bank.accountNumber }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyAccount">{{ t('cust.billing.copy') }}</button></strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayHolder') }}</span><strong>{{ sepayData.bank.accountHolder }}</strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayAmount') }}</span><strong class="cell-mono" style="color:var(--green)">{{ Number(sepayData.amount).toLocaleString() }} VND</strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayMemo') }}</span><strong class="cell-mono" style="color:var(--yellow)">{{ sepayData.memo }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyMemo">{{ t('cust.billing.copy') }}</button></strong></div>
+              <p class="sepay-hint">{{ sepayData.instructions }}</p>
+              <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.sepayPolling') }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Redeem free-credit promo code -->
       <section class="surface" style="padding:18px">
@@ -333,3 +412,24 @@ onMounted(async () => {
     </aside>
   </div>
 </template>
+
+<style scoped>
+.sepay-modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:1000; padding:16px }
+.sepay-modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; max-width:560px; width:100%; max-height:90vh; overflow:auto }
+.sepay-modal-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border-soft) }
+.sepay-modal-head h3 { margin:0; font-size:15px; color:var(--text) }
+.sepay-modal-body { display:grid; grid-template-columns: auto 1fr; gap:18px; padding:18px }
+@media (max-width: 600px) { .sepay-modal-body { grid-template-columns: 1fr } }
+.sepay-qr-wrap { display:flex; align-items:center; justify-content:center; background:#fff; padding:8px; border-radius:8px }
+.sepay-qr { width:220px; height:220px; display:block }
+.sepay-info { display:flex; flex-direction:column; gap:8px }
+.sepay-row { display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:4px 0; border-bottom:1px dashed var(--border-soft) }
+.sepay-row .lbl { color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:0.04em }
+.sepay-hint { font-size:11.5px; color:var(--muted); margin-top:8px; line-height:1.5 }
+.sepay-poll { font-size:11.5px; color:var(--green); margin-top:4px; display:flex; align-items:center; gap:4px }
+.spin { animation: spin 1.5s linear infinite }
+@keyframes spin { from { transform:rotate(0deg) } to { transform:rotate(360deg) } }
+.sepay-success { padding:32px 18px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:10px }
+.sepay-success h4 { margin:0; font-size:18px; color:var(--green) }
+.sepay-success p { margin:0; color:var(--muted); font-size:13px }
+</style>

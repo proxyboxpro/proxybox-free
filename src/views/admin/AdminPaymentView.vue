@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
 
@@ -8,6 +8,7 @@ const billing = ref(null)
 const smtp = ref(null)
 const testTo = ref('')
 const err = ref(''); const flash = ref('')
+const webhookUrl = computed(() => `${window.location.origin}/api/webhooks/sepay`)
 
 async function refresh() {
   try { billing.value = await apiFetch('/api/admin/billing/config'); smtp.value = await apiFetch('/api/admin/smtp') }
@@ -72,6 +73,24 @@ onMounted(refresh)
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.cancelUrl') }}</span><input v-model="billing.paypalCancelUrl" placeholder="https://your-domain/customer/billing?paypal=cancel" /></label>
       </div>
       <button class="primary-action small" type="button" @click="saveBilling">{{ t('admin.pay.savePaypal') }}</button>
+    </section>
+
+    <section v-if="billing" class="surface">
+      <div class="section-head"><h2>{{ t('admin.pay.sepayTitle') }}</h2></div>
+      <p style="font-size:13px; color:var(--muted)" v-html="t('admin.pay.sepayHelp')"></p>
+      <div class="form-grid">
+        <label class="check-line" style="grid-column:1/-1"><input v-model="billing.sepayEnabled" type="checkbox" /><span>{{ t('admin.pay.sepayEnable') }}</span></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.sepayApiKey') }}</span><input v-model="billing.sepayApiKey" type="password" placeholder="••••" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.sepayBankCode') }}</span><input v-model="billing.sepayBankCode" placeholder="VCB, TCB, MB, ACB, BIDV..." maxlength="16" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.sepayAccountNumber') }}</span><input v-model="billing.sepayAccountNumber" placeholder="1017588888" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.sepayAccountHolder') }}</span><input v-model="billing.sepayAccountHolder" placeholder="NGUYEN VAN A" maxlength="64" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.sepayPrefix') }}</span><input v-model="billing.sepayPrefix" placeholder="PB" maxlength="8" /></label>
+      </div>
+      <p style="font-size:12px; color:var(--muted); margin-top:6px">
+        <strong>{{ t('admin.pay.sepayWebhookLabel') }}:</strong>
+        <code style="font-family:var(--mono); background:var(--surface-2); padding:2px 6px; border-radius:4px; margin-left:4px">{{ webhookUrl }}</code>
+      </p>
+      <button class="primary-action small" type="button" @click="saveBilling">{{ t('admin.pay.saveSepay') }}</button>
     </section>
 
     <section v-if="smtp" class="surface">
