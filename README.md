@@ -2,7 +2,7 @@
 
 Open-source proxy SaaS control plane. Self-host on your own VPS to resell IPv4 / IPv6 proxies, hand out BYON (Bring Your Own Node) to customers, or rent hub VPS through Virtualizor.
 
-Published by **[Onie Cloud](https://onie.net)** · live demo: **[proxybox.pro](https://proxybox.pro)**
+Published by **[ProxyBox](https://proxybox.pro)** · live demo: **[proxybox.pro](https://proxybox.pro)**
 
 - **Protocols** — HTTP / SOCKS5 / HTTPS-proxy / Trojan on a single port pair
 - **IPv4** datacenter + **IPv6** /48 routed (strict family egress, no A/AAAA leak)
