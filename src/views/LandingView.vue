@@ -438,8 +438,8 @@ const useCases = computed(() => ([
         <span>{{ t('landing.foot.copyright', { year: new Date().getFullYear(), ver: appVersion }) }}</span>
         <span class="foot-onie">
           {{ t('landing.foot.publishedBy') }}
-          <a href="https://onie.net" target="_blank" rel="noopener">{{ t('landing.foot.onieName') }}</a>
-          · <a href="https://onie.net" target="_blank" rel="noopener">onie.net</a>
+          <a href="https://proxybox.pro" target="_blank" rel="noopener">{{ t('landing.foot.onieName') }}</a>
+          · <a href="https://proxybox.pro" target="_blank" rel="noopener">proxybox.pro</a>
         </span>
       </div>
     </footer>

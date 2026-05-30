@@ -1757,7 +1757,7 @@ export default {
   'landing.foot.apiDocs':       'API docs',
   'landing.foot.copyright':     '© {year} ProxyBox · proxybox.pro · v{ver}',
   'landing.foot.publishedBy':   'Published by',
-  'landing.foot.onieName':      'Onie Cloud',
+  'landing.foot.onieName':      'ProxyBox',
 
   // ─── admin views (bilingual) ────────────────────────────────────────────
   'admin.common.refresh':        'Refresh',
