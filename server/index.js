@@ -983,10 +983,31 @@ async function saveOrders() {
   await writeFileAtomic(ordersPath, `${JSON.stringify(orders, null, 2)}\n`)
 }
 
-async function writeFileAtomic(file, data) {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
-  await fs.writeFile(tmp, data)
-  await fs.rename(tmp, file)
+// Per-file write queue: 140+ saveConfig()/saveOrders() call sites fire
+// concurrently (Promise.all + fire-and-forget). Serializing per path prevents
+// two writers colliding on the same tmp and renaming a half-written file over
+// the real one. The tmp name carries a random suffix so even unqueued writers
+// can't clash, and a try/finally unlinks the tmp on any failure so a full disk
+// or a crashed write never leaves an orphan tmp behind.
+const writeChains = new Map()
+
+function writeFileAtomic(file, data) {
+  const prev = writeChains.get(file) || Promise.resolve()
+  const next = prev.catch(() => {}).then(() => atomicWriteOnce(file, data))
+  writeChains.set(file, next)
+  next.finally(() => { if (writeChains.get(file) === next) writeChains.delete(file) })
+  return next
+}
+
+async function atomicWriteOnce(file, data) {
+  const tmp = `${file}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}.tmp`
+  try {
+    await fs.writeFile(tmp, data)
+    await fs.rename(tmp, file)
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {})
+    throw err
+  }
 }
 
 // â”€â”€ Secret encryption (for stored SSH credentials etc.) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
