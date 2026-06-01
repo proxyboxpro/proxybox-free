@@ -5197,6 +5197,12 @@ function relay(proxy, client, upstream, initialToUpstream, connInfo) {
   // silent for well over 2 minutes. Drop the idle-destroy and switch to TCP
   // keepalive so only genuinely dead peers (NAT timeout, peer crash) get reaped.
   client.setTimeout(0)
+  // The upstream socket was opened with a 30s connect timeout (createConnection
+  // { timeout }); that idle timer stays armed after connect and its 'timeout'
+  // handler destroys the socket, which cascades to client.destroy(). Clear it
+  // too — 30s of idle would otherwise kill the tunnel even faster than the
+  // client-side 120s did.
+  upstream.setTimeout(0)
   client.setKeepAlive(true, 30_000)
   upstream.setKeepAlive(true, 30_000)
 
