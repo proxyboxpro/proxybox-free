@@ -1843,13 +1843,26 @@ async fn serve_proxy(cfg: ProxyCfg, locks: Arc<ProxyLockMap>, allow_private: boo
                             tokio::spawn(handle_client(p, locks_w.clone(), allow_private, stream, stats_w.clone()));
                         }
                         Err(e) => {
+                            // NEVER break on an accept error: losing all REUSEPORT
+                            // workers kills the proxy silently with no self-heal
+                            // until a bind-affecting reconcile. Per-connection
+                            // errors (client RST between SYN and accept, EINTR)
+                            // leave the listener healthy — just skip the conn.
+                            // Resource exhaustion (EMFILE/ENFILE/ENOBUFS) is
+                            // transient: back off briefly so we don't spin, then
+                            // keep accepting.
+                            let kind = e.kind();
+                            let per_conn = matches!(kind,
+                                std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionRefused
+                                | std::io::ErrorKind::Interrupted);
+                            if per_conn { continue; }
                             let em = e.to_string();
-                            eprintln!("[proxy:{}] accept: {em}", cfg_w.id);
-                            // accept() error breaks this worker — surfacing it
-                            // matters because losing all REUSEPORT workers kills
-                            // the proxy silently. Dedup at panel handles spam.
-                            report_err("error", "accept-fail", format!("accept on {}: {em}", cfg_w.port), serde_json::json!({"port": cfg_w.port}), Some(cfg_w.id.clone()));
-                            break;
+                            eprintln!("[proxy:{}] accept (transient): {em}", cfg_w.id);
+                            report_err("warn", "accept-transient", format!("accept on {}: {em}", cfg_w.port), serde_json::json!({"port": cfg_w.port}), Some(cfg_w.id.clone()));
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue;
                         }
                     },
                     // watch::Receiver::changed() reliably resolves once the value

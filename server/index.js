@@ -5190,6 +5190,16 @@ function relay(proxy, client, upstream, initialToUpstream, connInfo) {
   const meter = ensureStats(proxy.id)
   upstream.setNoDelay(true)
 
+  // The handshake phase armed a 120s idle timeout (slowloris guard) that
+  // destroys the socket on inactivity. Now that the tunnel is established that
+  // timer would tear down a perfectly healthy but idle connection — SSH
+  // sessions, websockets/long-poll, DB pools and browser keep-alives all sit
+  // silent for well over 2 minutes. Drop the idle-destroy and switch to TCP
+  // keepalive so only genuinely dead peers (NAT timeout, peer crash) get reaped.
+  client.setTimeout(0)
+  client.setKeepAlive(true, 30_000)
+  upstream.setKeepAlive(true, 30_000)
+
   // Account once, when both ends are closed, using the sockets' cumulative
   // bytesRead counters â€” keeps the hot relay path off the JS thread.
   let clientClosed = false
