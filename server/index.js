@@ -909,7 +909,7 @@ const APP_VERSION = '1.3.0'
 // heartbeat protocol or persisted-stat shape changes — the heartbeat response
 // reports `updateAvailable` to any agent reporting a different string so the
 // admin UI can prompt the user to run the upgrade command on that node.
-const LATEST_AGENT_VERSION = '1.9.0'
+const LATEST_AGENT_VERSION = '1.9.1'
 
 // Bumped on every saveConfig so agents long-polling /api/agent/proxies?rev=N
 // wake up immediately when their target config drifts (rotation, expiry, port

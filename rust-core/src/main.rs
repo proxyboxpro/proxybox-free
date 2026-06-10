@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 
-const AGENT_VERSION: &str = "1.9.0-rust";
+const AGENT_VERSION: &str = "1.9.1-rust";
 // Reconcile loop is now mostly a safety net — the master long-polls
 // /api/agent/proxies for up to 25s and wakes us instantly on config changes
 // (rotation, expiry). The tick remains short so a missed wake-up still
@@ -697,6 +697,15 @@ fn remember_v6_for_proxy(proxy_id: &str, new_v6: Ipv6Addr) -> Option<Ipv6Addr> {
     }
 }
 
+// Drop a proxy's last-bind record when the control plane removes it (deleted /
+// expired / reassigned). Without this the address lingers in the reaper's
+// "active" set (see reap_stale_v6: active = live binds ∪ all LAST_BIND values),
+// so a removed proxy's /128 is never reclaimed until the agent restarts.
+fn forget_v6_for_proxy(proxy_id: &str) -> Option<Ipv6Addr> {
+    let mut g = LAST_BIND_PER_PROXY.lock().unwrap_or_else(|p| p.into_inner());
+    g.as_mut().and_then(|m| m.remove(proxy_id))
+}
+
 // Attach the new IPv6 for a given proxy. Updates the per-proxy "last bind"
 // map; the old IP (if any) is cleaned up by the periodic reaper task rather
 // than scheduled inline — at high proxy counts inline scheduling produces
@@ -865,8 +874,35 @@ fn timing_eq(a: &str, b: &str) -> bool {
     for (x, y) in a.iter().zip(b.iter()) { r |= x ^ y; }
     r == 0
 }
+// Strip industry-standard sticky/geo username tags before auth, mirroring the
+// control plane's parseStickyUser (server/index.js): `-session-<id>` (1-32
+// alnum) and `-country-<cc>` (2 letters) may appear anywhere in the username.
+// We remove them and authenticate against the base credential. Without this a
+// client using `user-session-abc` / `user-country-us` (Bright Data / Soax /
+// IPRoyal convention) fails auth on rust nodes even though the panel accepts it.
+fn base_username(raw: &str) -> String {
+    fn strip_tag(s: &str, marker: &str, min: usize, max: usize, valid: fn(char) -> bool) -> String {
+        if let Some(pos) = s.find(marker) {
+            let after = &s[pos + marker.len()..];
+            let mut taken = 0usize;
+            let mut end = 0usize;
+            for (i, c) in after.char_indices() {
+                if taken >= max || !valid(c) { break; }
+                taken += 1;
+                end = i + c.len_utf8();
+            }
+            if taken >= min {
+                return format!("{}{}", &s[..pos], &after[end..]);
+            }
+        }
+        s.to_string()
+    }
+    let u = strip_tag(raw, "-session-", 1, 32, |c| c.is_ascii_alphanumeric());
+    strip_tag(&u, "-country-", 2, 2, |c| c.is_ascii_alphabetic())
+}
+
 fn proxy_authorized(p: &ProxyCfg, u: &str, pw: &str) -> bool {
-    p.status != "expired" && timing_eq(&p.username, u) && timing_eq(&p.password, pw)
+    p.status != "expired" && timing_eq(&p.username, &base_username(u)) && timing_eq(&p.password, pw)
 }
 
 // Fast-path wrapper: cache positive auth for 60s on (proxyId, srcIP, user).
@@ -1435,7 +1471,7 @@ async fn handle_unified_plain(
     };
     let lookup = {
         let g = user_index.read().unwrap_or_else(|p| p.into_inner());
-        g.get(&user).map(|v| (v.0.clone(), v.1.clone()))
+        g.get(&base_username(&user)).map(|v| (v.0.clone(), v.1.clone()))
     };
     let (cfg_arc, stats_arc) = match lookup {
         Some(v) => v,
@@ -1498,7 +1534,7 @@ async fn handle_unified_socks5(
     let pass_s = String::from_utf8_lossy(&pass).to_string();
     let lookup = {
         let g = user_index.read().unwrap_or_else(|p| p.into_inner());
-        g.get(&user_s).map(|v| (v.0.clone(), v.1.clone()))
+        g.get(&base_username(&user_s)).map(|v| (v.0.clone(), v.1.clone()))
     };
     let (cfg, stats) = match lookup {
         Some(v) => v,
@@ -2890,6 +2926,8 @@ impl Agent {
                 eprintln!("[agent] removing proxy {id}");
             }
             self.stats.lock().await.remove(&id);
+            // Drop the v6 from the reaper's active set so its /128 is reclaimed.
+            forget_v6_for_proxy(&id);
         }
         // add / restart on cfg drift
         let allow_private = self.cfg.lock().await.proxy_defaults.allow_private_targets;
