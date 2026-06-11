@@ -3877,6 +3877,14 @@ function allocateBindIp(type, nodeId) {
   if (nodeId && nodeId !== 'local') {
     const node = config.nodes.find((n) => n.id === nodeId)
     if (!node) throw new Error(`node ${nodeId} not found`)
+    // IPv6 nodes route a whole prefix (/48../64) but only the base address is
+    // attached to the NIC, so nodeAddressPool() has just one entry. Mint a
+    // fresh /128 from the routed prefix (the agent attaches it on bind) — same
+    // as pickBindIp — else every proxy on a fresh node gets the same egress IP.
+    if (String(type).toLowerCase() === 'ipv6') {
+      const minted = mintFreshIpv6(node, currentlyUsedBindIps(nodeId))
+      if (minted) return minted
+    }
     const pool = nodeAddressPool(node, type)
     if (pool.length === 0) throw new Error(`node "${node.name}" has no usable ${type} address yet (waiting for agent heartbeat)`)
     const usage = new Map()
@@ -3885,6 +3893,11 @@ function allocateBindIp(type, nodeId) {
     return pool[0]
   }
   const wantV6 = String(type).toLowerCase() === 'ipv6'
+  if (wantV6 && detected.ipv6Prefixes.length > 0) {
+    const synthNode = { network: { ipv6: detected.ipv6Prefixes.map((p) => ({ address: p.prefix, cidr: `${p.prefix}/${p.prefixLength}` })) } }
+    const minted = mintFreshIpv6(synthNode, currentlyUsedBindIps('local'))
+    if (minted) return minted
+  }
   let candidates = wantV6 ? ipv6Pool() : ipv4Pool()
   if (candidates.length === 0) candidates = [...ipv4Pool(), ...ipv6Pool()]
   if (candidates.length === 0 && config.proxyDefaults.bindIp) candidates = [config.proxyDefaults.bindIp]
@@ -11393,6 +11406,9 @@ async function handleCreateOrder(req, res) {
   // Admin can assign newly-created proxies to a customer user.
   const ownerId = typeof body.ownerId === 'string' && body.ownerId.trim() ? body.ownerId.trim() : ''
   if (ownerId && !config.users.some((u) => u.id === ownerId)) return sendJson(res, 400, { error: `ownerId ${ownerId} not found` })
+  // Optional display zone label — stamped on every member + the order so a
+  // node-provisioned batch groups + labels identically to a paid checkout.
+  const zone = typeof body.zone === 'string' && body.zone.trim() ? body.zone.trim() : ''
   const limits = { maxConnections: body.maxConnections, bytesPerSec: body.bytesPerSec, monthlyQuotaBytes: body.monthlyQuotaBytes }
   const listenHost = typeof body.listenHost === 'string' && body.listenHost.trim() ? body.listenHost.trim() : undefined
   const orderId = `ORD-${Date.now().toString().slice(-6)}`
@@ -11404,6 +11420,7 @@ async function handleCreateOrder(req, res) {
     catch (e) { return sendJson(res, 400, { error: e.message }) }
     proxy.orderId = orderId
     if (ownerId) proxy.ownerId = ownerId
+    if (zone) proxy.zone = zone
     config.proxies.push(proxy)
     ensureStats(proxy.id)
     if (targetNodeId === 'local') await startProxy(proxy)
@@ -11412,10 +11429,11 @@ async function handleCreateOrder(req, res) {
   const order = {
     id: orderId,
     ownerId: ownerId || null,
-    item: `${type} x ${quantity}`,
+    item: `${type} x ${quantity}${zone ? ` · ${zone}` : ''}`,
     amount: Number(body.amount || 0),
     status: 'paid',
     date: new Date().toISOString().slice(0, 10),
+    zone: zone || undefined,
     bytesPerSec: orderBytesPerSec,
     proxyIds: created.map((proxy) => proxy.id)
   }

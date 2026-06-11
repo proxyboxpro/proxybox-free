@@ -46,7 +46,7 @@ async function create() {
     const payload = {
       type: type.value,
       rotate: type.value === 'ipv6' && rotate.value,
-      quantity: Math.max(1, Math.min(254, Number(quantity.value) || 1)),
+      quantity: Math.max(1, Math.min(type.value === 'ipv6' ? 5000 : 254, Number(quantity.value) || 1)),
       duration: Number(duration.value) || 30,
       maxConnections: Math.max(0, Number(maxConnections.value) || 0),
       bytesPerSec: Math.round(Math.max(0, Number(mbps.value) || 0) * 1_000_000),
@@ -79,7 +79,7 @@ async function create() {
       </div>
 
       <div class="form-grid">
-        <label class="input-field"><span>{{ t('market.quantity') }}</span><input v-model.number="quantity" type="number" min="1" max="254" /></label>
+        <label class="input-field"><span>{{ t('market.quantity') }}</span><input v-model.number="quantity" type="number" min="1" :max="type === 'ipv6' ? 5000 : 254" /></label>
         <label class="input-field">
           <span>{{ t('market.duration') }}</span>
           <select v-model.number="duration">
