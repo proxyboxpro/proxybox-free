@@ -278,8 +278,9 @@ onMounted(refresh)
             transform="rotate(-90 50 50)"
             stroke-linecap="butt"
           />
-          <!-- Center label — proportional + small so it fits inside the ring hole. -->
-          <text x="50" y="46.5" text-anchor="middle" font-size="7" fill="#7d8590">{{ t('cust.usage.kpiTotal') }}</text>
+          <!-- Center label — explicit narrow sans (NOT the SVG serif default) +
+               small size so it always fits inside the ring hole, any locale. -->
+          <text x="50" y="46.5" text-anchor="middle" font-size="6.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" fill="#7d8590">{{ t('cust.usage.kpiTotal') }}</text>
           <text x="50" y="58.5" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff" font-family="ui-monospace, monospace">{{ formatBytes(totalBytes) }}</text>
         </svg>
       </div>
