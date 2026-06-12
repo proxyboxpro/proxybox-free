@@ -256,30 +256,31 @@ onMounted(refresh)
       <h2 style="margin:0; color:var(--text); font-size:15px">{{ t('cust.usage.split') }}</h2>
 
       <div style="display:flex; align-items:center; justify-content:center; padding:8px 0">
-        <svg viewBox="0 0 100 100" width="160" height="160">
+        <svg viewBox="0 0 100 100" width="170" height="170">
           <!-- Background ring -->
-          <circle cx="50" cy="50" r="36" fill="none" stroke="#232a36" stroke-width="14" />
-          <!-- Upload arc -->
+          <circle cx="50" cy="50" r="36" fill="none" stroke="#232a36" stroke-width="12" />
+          <!-- Download arc (dominant base) — flat caps so the join with the
+               upload sliver is a clean radial edge, not overlapping round bulges. -->
           <circle
             cx="50" cy="50" r="36" fill="none"
-            stroke="#4ade80" stroke-width="14"
-            :stroke-dasharray="`${donut.upDash} ${donut.circ}`"
-            stroke-dashoffset="0"
-            transform="rotate(-90 50 50)"
-            stroke-linecap="round"
-          />
-          <!-- Download arc -->
-          <circle
-            cx="50" cy="50" r="36" fill="none"
-            stroke="#60a5fa" stroke-width="14"
+            stroke="#60a5fa" stroke-width="12"
             :stroke-dasharray="`${donut.dnDash} ${donut.circ}`"
             :stroke-dashoffset="-donut.upDash"
             transform="rotate(-90 50 50)"
-            stroke-linecap="round"
+            stroke-linecap="butt"
           />
-          <!-- Center label -->
-          <text x="50" y="48" text-anchor="middle" font-size="9" fill="#7d8590" font-family="ui-monospace, monospace">{{ t('cust.usage.kpiTotal') }}</text>
-          <text x="50" y="60" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" font-family="ui-monospace, monospace">{{ formatBytes(totalBytes) }}</text>
+          <!-- Upload arc -->
+          <circle
+            cx="50" cy="50" r="36" fill="none"
+            stroke="#4ade80" stroke-width="12"
+            :stroke-dasharray="`${donut.upDash} ${donut.circ}`"
+            stroke-dashoffset="0"
+            transform="rotate(-90 50 50)"
+            stroke-linecap="butt"
+          />
+          <!-- Center label — proportional + small so it fits inside the ring hole. -->
+          <text x="50" y="46.5" text-anchor="middle" font-size="7" fill="#7d8590">{{ t('cust.usage.kpiTotal') }}</text>
+          <text x="50" y="58.5" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff" font-family="ui-monospace, monospace">{{ formatBytes(totalBytes) }}</text>
         </svg>
       </div>
 
