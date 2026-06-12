@@ -183,6 +183,7 @@ export default {
   'cust.proxies.ipAuthPh':           'Nhập IPv4 hoặc IPv6 (ví dụ 1.2.3.4)',
   'cust.proxies.ipAuthAdd':          'Thêm',
   'cust.proxies.extend':             'Gia hạn',
+  'cust.proxies.renewNow':           'Gia hạn ngay',
   'cust.proxies.extended':           'Đã gia hạn {n} proxy thêm {h}h.',
   'cust.proxies.confirmExtend':      'Gia hạn {n} proxy thêm {h} giờ? Số tiền tương ứng sẽ trừ vào ví.',
   'cust.proxies.deleteGroup':        'Xoá nhóm',

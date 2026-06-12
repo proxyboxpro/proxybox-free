@@ -172,6 +172,7 @@ export default {
   'cust.proxies.ipAuthPh':           'Enter IPv4 or IPv6 (e.g. 1.2.3.4)',
   'cust.proxies.ipAuthAdd':          'Add',
   'cust.proxies.extend':             'Extend',
+  'cust.proxies.renewNow':           'Renew now',
   'cust.proxies.extended':           'Extended {n} proxies by {h}h.',
   'cust.proxies.confirmExtend':      'Extend {n} proxies by {h} hours? Cost will be debited from your wallet.',
   'cust.proxies.deleteGroup':        'Delete group',

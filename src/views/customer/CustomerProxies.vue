@@ -1363,9 +1363,9 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
       </span>
       <div class="extend-inline">
         <input v-model.number="extendHours[g.id]" type="number" min="1" max="8760" :placeholder="'24h'" />
-        <button class="action-pill primary" type="button" :disabled="busy[g.id]" @click="extendGroup(g)">
+        <button class="action-pill primary" :class="{ 'renew-cta': g.proxies.some((p) => p.status === 'expired') }" type="button" :disabled="busy[g.id]" @click="extendGroup(g)">
           <RotateCw :size="12" />
-          {{ busy[g.id] === 'extend' ? '...' : t('cust.proxies.extend') }}
+          {{ busy[g.id] === 'extend' ? '...' : (g.proxies.some((p) => p.status === 'expired') ? t('cust.proxies.renewNow') : t('cust.proxies.extend')) }}
         </button>
       </div>
       <button v-if="g.type === 'IPv6'" class="action-pill" type="button" :title="t('cust.proxies.rotateSchedHint')" style="position:relative">
@@ -2223,6 +2223,11 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
 .action-pill.primary:hover:not(:disabled) {
   background: var(--green); color: #ffffff;
 }
+/* Expired groups: make the renew action a solid, unmistakable CTA. */
+.action-pill.renew-cta {
+  background: var(--green); border-color: var(--green); color: #ffffff; font-weight: 600;
+}
+.action-pill.renew-cta:hover:not(:disabled) { filter: brightness(1.08); }
 .action-pill.danger:hover:not(:disabled) {
   background: rgba(248,81,73,0.12); border-color: var(--red); color: var(--red);
 }
