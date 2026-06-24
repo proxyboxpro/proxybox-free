@@ -1247,19 +1247,25 @@ const proxyHistory = new Map() // id -> { hourKey, samples: [{ts, up, down, bpsI
 // `conns` is the per-hour connection-count delta — lets the bandwidth ranking
 // read counts from this rollup instead of COUNT(*) over the 10M-row event log.
 // `hour` index speeds the admin bandwidth GROUP BY (which filters by hour range).
+// owner_id is stamped per row so window totals can be scoped to ONE owner —
+// ports are recycled between customers, so summing by proxy_id alone would
+// surface a previous owner's traffic (data leak / inflation).
 if (sqliteDb) {
   try { sqliteDb.exec('ALTER TABLE history ADD COLUMN conns INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+  try { sqliteDb.exec("ALTER TABLE history ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''") } catch { /* already present */ }
   try { sqliteDb.exec('CREATE INDEX IF NOT EXISTS history_hour ON history(hour)') } catch { /* noop */ }
+  try { sqliteDb.exec('CREATE INDEX IF NOT EXISTS history_owner_hour ON history(owner_id, hour)') } catch { /* noop */ }
 }
 const historyUpsertStmt = sqliteDb ? sqliteDb.prepare(`
-  INSERT INTO history (proxy_id, hour, upload_bytes, download_bytes, bps_in, bps_out, conns)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO history (proxy_id, hour, upload_bytes, download_bytes, bps_in, bps_out, conns, owner_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(proxy_id, hour) DO UPDATE SET
     upload_bytes = upload_bytes + excluded.upload_bytes,
     download_bytes = download_bytes + excluded.download_bytes,
     bps_in = MAX(bps_in, excluded.bps_in),
     bps_out = MAX(bps_out, excluded.bps_out),
-    conns = conns + excluded.conns
+    conns = conns + excluded.conns,
+    owner_id = CASE WHEN excluded.owner_id <> '' THEN excluded.owner_id ELSE owner_id END
 `) : null
 // Per-connection event log (7-day rolling window by default). Each closed
 // relay writes one row — gives admins + customers queryable history for
@@ -1307,6 +1313,7 @@ const HISTORY_WINDOW_SELECT = `
       COALESCE(SUM(download_bytes), 0) AS dn30
     FROM history WHERE `
 const historyWindowProxyStmt = sqliteDb ? sqliteDb.prepare(`${HISTORY_WINDOW_SELECT} proxy_id = ? AND hour >= ?`) : null
+const historyWindowOwnerStmt = sqliteDb ? sqliteDb.prepare(`${HISTORY_WINDOW_SELECT} owner_id = ? AND hour >= ?`) : null
 function emptyWindows() {
   return { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
 }
@@ -1317,9 +1324,9 @@ function shapeWindows(r) {
     d30: { up: Number(r.up30) || 0, down: Number(r.dn30) || 0 }
   }
 }
-// scope: { by: 'proxy'|'owner', id: <value> }. Owner scope sums the history of
-// every proxy the owner currently holds (proxy set comes from in-memory config,
-// so no owner_id column is needed on the rollup).
+// scope: { by: 'proxy'|'owner', id: <value> }. Owner scope is scoped by the
+// stamped owner_id (NOT proxy_id) so recycled ports never surface a previous
+// owner's traffic — see the owner_id migration note above.
 function connWindowTotals(scope) {
   if (!sqliteDb || !scope || !scope.id) return emptyWindows()
   const now = Date.now()
@@ -1327,14 +1334,8 @@ function connWindowTotals(scope) {
   const h24 = hourKey(now - WINDOW_SECS.h24 * 1000)
   const h30 = hourKey(now - WINDOW_SECS.d30 * 1000)
   try {
-    if (scope.by === 'owner') {
-      const pids = config.proxies.filter((p) => p.ownerId === scope.id).map((p) => p.id)
-      if (!pids.length) return emptyWindows()
-      const ph = pids.map(() => '?').join(',')
-      const stmt = sqliteDb.prepare(`${HISTORY_WINDOW_SELECT} proxy_id IN (${ph}) AND hour >= ?`)
-      return shapeWindows(stmt.get(hCur, hCur, h24, h24, ...pids, h30))
-    }
-    return shapeWindows(historyWindowProxyStmt.get(hCur, hCur, h24, h24, scope.id, h30))
+    const stmt = scope.by === 'owner' ? historyWindowOwnerStmt : historyWindowProxyStmt
+    return shapeWindows(stmt.get(hCur, hCur, h24, h24, scope.id, h30))
   } catch { return emptyWindows() }
 }
 
@@ -1459,7 +1460,7 @@ function pushSseEvent(kind, payload) {
     try { res.write(line) } catch { /* drop on next tick */ }
   }
 }
-function recordHistorySample(id, s) {
+function recordHistorySample(id, s, ownerId) {
   const now = new Date()
   const hourKey = now.toISOString().slice(0, 13)
   // s.uploadBytes/downloadBytes are cumulative since (re)start. Persist the
@@ -1479,7 +1480,7 @@ function recordHistorySample(id, s) {
   const bpsIn = Number(s.bpsIn) || 0
   const bpsOut = Number(s.bpsOut) || 0
   if (historyUpsertStmt) {
-    try { historyUpsertStmt.run(id, hourKey, dUp, dDown, bpsIn, bpsOut, dConns) } catch {}
+    try { historyUpsertStmt.run(id, hourKey, dUp, dDown, bpsIn, bpsOut, dConns, String(ownerId || '')) } catch {}
   }
   // In-memory fallback (only consulted when SQLite is unavailable): mirror the
   // same per-hour-delta semantics — accumulate into the current hour bucket.
@@ -1499,33 +1500,41 @@ function recordHistorySample(id, s) {
   }
 }
 
-// One-time backfill of history.conns for rows that pre-date the column (all 0).
-// node:sqlite is SYNCHRONOUS, so a single GROUP BY over the 10M-row conn_events
-// table would freeze the event loop for ~minute. Instead we process ONE proxy
-// per setImmediate tick (each tick is a small indexed scan of that proxy's rows)
-// so the server stays responsive. Guarded by PRAGMA user_version (>=2 = done).
+// One-time backfill of history.conns + history.owner_id for rows that pre-date
+// those columns. node:sqlite is SYNCHRONOUS, so a single GROUP BY over the 10M-row
+// conn_events table would freeze the event loop for ~a minute. Instead we process
+// ONE proxy per setImmediate tick (each tick is a small indexed scan of that
+// proxy's rows) so the server stays responsive. conns = per-hour event count;
+// owner_id = the owner with the most events that hour (handles recycled ports).
+// Only fills hours still owner_id='' so it never clobbers live post-deploy writes.
+// Guarded by PRAGMA user_version (>=3 = done).
 function backfillHistoryConns() {
   if (!sqliteDb) return
   let ver = 0
   try { ver = Number(sqliteDb.prepare('PRAGMA user_version').get()?.user_version) || 0 } catch { return }
-  if (ver >= 2) return
+  if (ver >= 3) return
   const pids = (config.proxies || []).map((p) => p.id)
   if (!pids.length) { setTimeout(backfillHistoryConns, 30_000).unref(); return } // config not loaded yet — retry
-  const countStmt = sqliteDb.prepare(`SELECT strftime('%Y-%m-%dT%H', ts/1000, 'unixepoch') AS hour, COUNT(*) AS c FROM conn_events WHERE proxy_id = ? GROUP BY hour`)
-  const updStmt = sqliteDb.prepare('UPDATE history SET conns = ? WHERE proxy_id = ? AND hour = ? AND conns = 0')
+  const aggStmt = sqliteDb.prepare(`SELECT strftime('%Y-%m-%dT%H', ts/1000, 'unixepoch') AS hour, owner_id AS owner, COUNT(*) AS c FROM conn_events WHERE proxy_id = ? GROUP BY hour, owner_id`)
+  const updStmt = sqliteDb.prepare("UPDATE history SET conns = ?, owner_id = ? WHERE proxy_id = ? AND hour = ? AND owner_id = ''")
   let i = 0, filled = 0
   const step = () => {
     if (i >= pids.length) {
-      try { sqliteDb.exec('PRAGMA user_version = 2') } catch { /* noop */ }
-      console.log(`[sqlite] migration v2: backfilled history.conns (${filled} buckets across ${pids.length} proxies)`)
+      try { sqliteDb.exec('PRAGMA user_version = 3') } catch { /* noop */ }
+      console.log(`[sqlite] migration v3: backfilled history.conns + owner_id (${filled} buckets across ${pids.length} proxies)`)
       return
     }
     const pid = pids[i++]
     try {
-      const rows = countStmt.all(pid)
-      if (rows.length) {
+      const byHour = new Map()
+      for (const r of aggStmt.all(pid)) {
+        let a = byHour.get(r.hour); if (!a) { a = { conns: 0, owner: '', best: -1 }; byHour.set(r.hour, a) }
+        a.conns += Number(r.c) || 0
+        if ((Number(r.c) || 0) > a.best) { a.best = Number(r.c) || 0; a.owner = r.owner || '' }
+      }
+      if (byHour.size) {
         sqliteDb.exec('BEGIN')
-        for (const r of rows) { const info = updStmt.run(r.c, pid, r.hour); filled += info?.changes || 0 }
+        for (const [hour, a] of byHour) { const info = updStmt.run(a.conns, a.owner, pid, hour); filled += info?.changes || 0 }
         sqliteDb.exec('COMMIT')
       }
     } catch { try { sqliteDb.exec('ROLLBACK') } catch { /* noop */ } }
@@ -5754,7 +5763,7 @@ async function handleAgentRequest(req, res, url, node) {
             m.recentConns.splice(0, m.recentConns.length - RECENT_CONNS_MAX)
           }
         }
-        recordHistorySample(id, m)
+        recordHistorySample(id, m, config.proxies.find((p) => p.id === id)?.ownerId || '')
       }
     }
     // ── Agent-channel command queue ───────────────────────────────────────
