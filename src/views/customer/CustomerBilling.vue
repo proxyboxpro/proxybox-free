@@ -190,6 +190,22 @@ const filteredTx = computed(() => txs.value.filter((tx) => {
 
 const presets = [50000, 100000, 200000, 500000, 1000000, 2000000]
 
+// PayPal charges in a foreign currency (e.g. USD) while the wallet is VND. Show the
+// customer what they'll actually be charged, converted via the admin-set rate.
+const paypalEstimate = computed(() => {
+  const pm = billing.value?.paymentMethods
+  if (!pm) return ''
+  const payCur = (pm.paypalCurrency || 'USD').toUpperCase()
+  const walletCur = (pm.walletCurrency || pricing.value?.currency || 'VND').toUpperCase()
+  const rate = Number(pm.paypalRate) > 0 ? Number(pm.paypalRate) : 25000
+  const amount = Math.max(1, Number(topup.value) || 0)
+  if (payCur === walletCur) return `${amount.toLocaleString()} ${walletCur}`
+  const zeroDecimal = new Set(['VND', 'JPY', 'KRW', 'HUF'])
+  const charge = amount / rate
+  const shown = zeroDecimal.has(payCur) ? Math.round(charge).toLocaleString() : (Math.round(charge * 100) / 100).toFixed(2)
+  return `${shown} ${payCur}`
+})
+
 onMounted(async () => {
   await refresh()
   await maybeFinalizePaypal()
@@ -264,7 +280,7 @@ onMounted(async () => {
             <CreditCard :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.payVia', { amount: Number(topup).toLocaleString() }) }}
           </button>
           <button v-if="billing?.paymentMethods?.paypalEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithPaypal" style="background:#0070ba; border-color:#0070ba">
-            <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : 'Pay with PayPal' }}
+            <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : `Pay with PayPal (≈ ${paypalEstimate})` }}
           </button>
           <button v-if="billing?.paymentMethods?.sepayEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithSepay" style="background:var(--green); border-color:var(--green); color:#0a1f1a">
             <QrCode :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.sepayPayBtn', { amount: Number(topup).toLocaleString() }) }}

@@ -79,7 +79,20 @@ const bottomTabs = [
 ]
 
 const currentName = computed(() => route.name || 'admin-dashboard')
-const pageTitle = computed(() => t(`page.${stripPrefix(currentName.value)}`) || t(`page.${currentName.value}`) || '')
+// t() echoes the key back when a string is missing, so we treat key===translation as
+// "absent" and fall through. Resolve the header title from the sidebar labelKey first
+// (always defined, matches the nav), then the page.* key forms. This avoids showing a
+// raw key like `page.nodes-compare` when the i18n entry is camelCase (`page.nodesCompare`).
+function tt(key) {
+  if (!key) return ''
+  const s = t(key)
+  return s && s !== key ? s : ''
+}
+const pageTitle = computed(() => {
+  const n = currentName.value
+  const navItem = navGroups.flatMap((g) => g.items).find((i) => i.name === n)
+  return tt(navItem?.labelKey) || tt(`page.${stripPrefix(n)}`) || tt(`page.${n}`) || ''
+})
 function stripPrefix(n) {
   if (!n) return ''
   return String(n).replace(/^admin-/, '')

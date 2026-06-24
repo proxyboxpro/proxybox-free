@@ -67,6 +67,8 @@ onMounted(refresh)
           </select>
         </label>
         <label class="input-field"><span>{{ t('admin.pay.paypalCurrency') }}</span><input v-model="billing.paypalCurrency" placeholder="USD" maxlength="8" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.paypalRate') }}</span><input v-model.number="billing.paypalRate" type="number" min="1" step="100" placeholder="25000" /></label>
+        <p style="grid-column:1/-1; font-size:12px; color:var(--muted); margin:-2px 0 4px" v-html="t('admin.pay.paypalRateHelp', { pay: (billing.paypalCurrency || 'USD'), wallet: (billing.currency || 'VND').toUpperCase(), rate: Number(billing.paypalRate || 25000).toLocaleString() })"></p>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.paypalClientId') }}</span><input v-model="billing.paypalClientId" placeholder="A21AAH..." /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.paypalSecret') }}</span><input v-model="billing.paypalSecret" type="password" placeholder="EL2..." /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.paypalReturnUrl') }}</span><input v-model="billing.paypalReturnUrl" placeholder="https://your-domain/customer/billing?paypal=ok" /></label>

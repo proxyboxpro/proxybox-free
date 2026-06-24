@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.8', date: '2026-06-24', tag: 'fix',
+    titleEn: 'PayPal currency conversion — wallet currency ↔ PayPal charge currency',
+    titleVi: 'Chuyển đổi tiền tệ PayPal — tiền tệ ví ↔ tiền tệ charge PayPal',
+    items: [
+      { en: 'Fixed: when PayPal charges a different currency than the wallet (e.g. USD charge into a VND wallet), the payment was credited 1:1, so a $1 top-up became 1₫. PayPal now converts both ways using an admin-set exchange rate — the customer is charged amount ÷ rate and credited the full requested amount in the wallet currency.',
+        vi: 'Đã sửa: khi PayPal charge tiền tệ khác với ví (vd charge USD vào ví VND), thanh toán bị cộng 1:1 nên nạp $1 thành 1₫. Giờ PayPal quy đổi hai chiều theo tỉ giá admin đặt — khách bị charge (số tiền ÷ tỉ giá) và được cộng đúng số tiền yêu cầu theo tiền tệ của ví.' },
+      { en: 'New admin setting under Payment → PayPal: exchange rate (default 25,000, i.e. 1 USD = 25,000 VND). The customer top-up screen shows the live charge amount in the PayPal currency.',
+        vi: 'Thêm cài đặt admin ở Thanh toán → PayPal: tỉ giá (mặc định 25.000, tức 1 USD = 25.000 VND). Màn nạp tiền của khách hiển thị số tiền sẽ bị charge theo tiền tệ PayPal.' },
+    ],
+  },
+  {
     version: '1.2.0', date: '2026-05-19', tag: 'release',
     titleEn: 'PayPal, English-default UI, public API docs',
     titleVi: 'PayPal, mặc định tiếng Anh, public API docs',

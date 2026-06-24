@@ -2635,8 +2635,21 @@ function readRawBody(req) {
 //   paypalReturnUrl  — URL PayPal redirects to after pay (e.g. https://your-domain/customer/billing?paypal=ok)
 //   paypalCancelUrl  — URL PayPal redirects to on cancel
 //   paypalCurrency   — fallback currency if not specified in request (default 'USD')
+//   paypalRate       — wallet-currency units per 1 PayPal-currency unit (default 25000).
+//                      e.g. wallet=VND, paypalCurrency=USD, rate=25000 → $1 credits 25,000₫.
 
 let _paypalTokenCache = { value: '', expiresAt: 0 }
+// Wallet currency (what balances are denominated in, e.g. VND) vs the currency PayPal
+// actually charges the card in (paypalCurrency, e.g. USD). When they differ we must
+// convert in BOTH directions: VND amount → USD charge on create-order, USD payment →
+// VND credit on capture. Rate is admin-set; 25000 is the sane VND/USD default.
+function paypalFxRate() {
+  const r = Number(config.billing?.paypalRate)
+  return r > 0 ? r : 25000
+}
+function walletCurrencyUpper() {
+  return String(config.billing?.currency || 'vnd').toUpperCase()
+}
 function paypalApiHost() {
   return config.billing?.paypalMode === 'live' ? 'api-m.paypal.com' : 'api-m.sandbox.paypal.com'
 }
@@ -6914,6 +6927,7 @@ async function handleApi(req, res, url) {
           paypalReturnUrl: config.billing.paypalReturnUrl || '',
           paypalCancelUrl: config.billing.paypalCancelUrl || '',
           paypalCurrency: config.billing.paypalCurrency || 'USD',
+          paypalRate: Number(config.billing.paypalRate) > 0 ? Number(config.billing.paypalRate) : 25000,
           sepayEnabled: Boolean(config.billing.sepayEnabled),
           sepayApiKey: maskSecret(config.billing.sepayApiKey),
           sepayBankCode: config.billing.sepayBankCode || '',
@@ -6954,6 +6968,7 @@ async function handleApi(req, res, url) {
         if (typeof body.paypalReturnUrl === 'string') config.billing.paypalReturnUrl = body.paypalReturnUrl.trim().slice(0, 500)
         if (typeof body.paypalCancelUrl === 'string') config.billing.paypalCancelUrl = body.paypalCancelUrl.trim().slice(0, 500)
         if (typeof body.paypalCurrency === 'string') config.billing.paypalCurrency = body.paypalCurrency.toUpperCase().slice(0, 8)
+        if (Number.isFinite(Number(body.paypalRate)) && Number(body.paypalRate) > 0) config.billing.paypalRate = Number(body.paypalRate)
         if (typeof body.sepayEnabled === 'boolean') config.billing.sepayEnabled = body.sepayEnabled
         if (typeof body.sepayApiKey === 'string' && body.sepayApiKey && !body.sepayApiKey.startsWith('••••')) {
           config.billing.sepayApiKey = writeSecret(body.sepayApiKey.trim())
@@ -10685,6 +10700,8 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         stripeEnabled: Boolean(config.billing?.stripeSecretKey),
         paypalEnabled: Boolean(config.billing?.paypalEnabled && config.billing?.paypalClientId && config.billing?.paypalSecret),
         paypalCurrency: String(config.billing?.paypalCurrency || 'USD').toUpperCase(),
+        paypalRate: Number(config.billing?.paypalRate) > 0 ? Number(config.billing.paypalRate) : 25000,
+        walletCurrency: walletCurrencyUpper(),
         sepayEnabled: Boolean(config.billing?.sepayEnabled && config.billing?.sepayBankCode && config.billing?.sepayAccountNumber && config.billing?.sepayApiKey),
         testMode: Boolean(config.billing?.testMode)
       }
@@ -10852,13 +10869,22 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       return sendJson(res, 503, { error: 'paypalReturnUrl / paypalCancelUrl must be configured' })
     }
     const body = await readJson(req)
-    const amount = Number(body.amount) || 0
-    if (amount < 1 || amount > 1_000_000) return sendJson(res, 400, { error: 'amount must be 1..1,000,000' })
+    // `amount` is denominated in the WALLET currency (what the customer sees on the
+    // top-up form, e.g. VND) — exactly like Stripe/SePay. It is the amount we will
+    // credit to their wallet on capture, NOT the PayPal charge.
+    const creditAmount = Math.floor(Number(body.amount) || 0)
+    if (creditAmount < 1 || creditAmount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 1..100,000,000' })
+    const walletCur = walletCurrencyUpper()
     const currency = String(body.currency || config.billing.paypalCurrency || 'USD').toUpperCase()
+    const rate = paypalFxRate()
+    // Smart conversion: when PayPal charges a different currency than the wallet, divide
+    // by the rate (VND → USD). When they match, charge the amount as-is.
+    const payAmount = currency === walletCur ? creditAmount : creditAmount / rate
     // PayPal expects amount as decimal string with currency-appropriate fraction digits.
     // USD/EUR/etc use 2 digits, JPY/VND/HUF use 0 digits.
     const zeroDecimal = new Set(['VND', 'JPY', 'KRW', 'HUF', 'CLP', 'PYG', 'XOF'])
-    const value = zeroDecimal.has(currency) ? String(Math.floor(amount)) : Number(amount).toFixed(2)
+    const value = zeroDecimal.has(currency) ? String(Math.max(1, Math.round(payAmount))) : (Math.round(payAmount * 100) / 100).toFixed(2)
+    if (Number(value) <= 0) return sendJson(res, 400, { error: 'amount too small to charge via PayPal' })
     try {
       const order = await paypalApi('POST', '/v2/checkout/orders', {
         intent: 'CAPTURE',
@@ -10866,7 +10892,9 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
           reference_id: `topup-${user.id}-${Date.now()}`,
           description: 'ProxyBox wallet top-up',
           amount: { currency_code: currency, value },
-          custom_id: `${user.id}|${currency}|${value}`
+          // custom_id carries the wallet credit so capture never has to re-derive it:
+          //   userId | payCurrency | payValue | walletCreditAmount | walletCurrency
+          custom_id: `${user.id}|${currency}|${value}|${creditAmount}|${walletCur}`
         }],
         application_context: {
           brand_name: 'ProxyBox',
@@ -10877,7 +10905,7 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         }
       })
       const approve = (order.links || []).find((l) => l.rel === 'approve')
-      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/paypal/create-order', note: `order ${order.id} ${currency} ${value}` })
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/paypal/create-order', note: `order ${order.id} charge ${currency} ${value} → credit ${creditAmount} ${walletCur}` })
       return sendJson(res, 200, { orderId: order.id, approveUrl: approve?.href || '' })
     } catch (e) {
       return sendJson(res, 502, { error: `PayPal: ${e.message}` })
@@ -10904,23 +10932,35 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       const pu = (capture.purchase_units || [])[0]
       const cap = (pu?.payments?.captures || [])[0]
       const customId = String(pu?.payments?.captures?.[0]?.custom_id || pu?.custom_id || '')
-      const [claimedUid, currency, value] = customId.split('|')
+      // New format: userId|payCurrency|payValue|walletCredit|walletCurrency
+      // Legacy format (orders created before the FX fix): userId|currency|value
+      const parts = customId.split('|')
+      const claimedUid = parts[0]
+      const payCurrency = (parts[1] || config.billing.paypalCurrency || 'USD').toUpperCase()
+      const payValue = Number(parts[2]) || 0
       if (claimedUid !== user.id) {
         return sendJson(res, 403, { error: 'order does not belong to this user' })
       }
       if (capture.status !== 'COMPLETED' && cap?.status !== 'COMPLETED') {
         return sendJson(res, 502, { error: `PayPal capture not completed: ${capture.status || cap?.status}` })
       }
-      // Credit wallet with the customId amount (we set this when creating the order).
-      const amount = Number(value) || 0
+      const walletCur = walletCurrencyUpper()
+      // Credit the wallet in WALLET currency. Prefer the explicit credit embedded in
+      // custom_id; for legacy 3-field orders, convert the paid amount via the FX rate.
+      let amount
+      if (parts.length >= 4) {
+        amount = Math.round(Number(parts[3]) || 0)
+      } else {
+        amount = payCurrency === walletCur ? Math.round(payValue) : Math.round(payValue * paypalFxRate())
+      }
       if (amount <= 0) return sendJson(res, 502, { error: 'PayPal capture amount missing' })
-      const note = `PayPal capture ${capture.id || orderId} (${currency} ${value})`
+      const note = `PayPal capture ${capture.id || orderId} (${payCurrency} ${payValue} → ${amount} ${walletCur})`
       const next = recordBillingTx(user.id, 'topup', amount, note)
       if (sqliteDb) {
         try { sqliteDb.prepare('INSERT OR IGNORE INTO paypal_seen (order_id, user_id, ts) VALUES (?, ?, ?)').run(orderId, user.id, new Date().toISOString()) } catch {}
       }
-      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/paypal/capture', note: `credited user=${user.id} +${amount} → ${next} (${currency})` })
-      return sendJson(res, 200, { ok: true, amount, currency, balance: next })
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/paypal/capture', note: `credited user=${user.id} +${amount} ${walletCur} → ${next} (paid ${payCurrency} ${payValue})` })
+      return sendJson(res, 200, { ok: true, amount, currency: walletCur, balance: next })
     } catch (e) {
       return sendJson(res, 502, { error: `PayPal: ${e.message}` })
     }
