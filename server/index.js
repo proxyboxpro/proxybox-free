@@ -31,6 +31,18 @@ let sqliteDb = null
 try {
   const sqlite = await import('node:sqlite')
   sqliteDb = new sqlite.DatabaseSync(process.env.PROXY_SQLITE || path.join(path.dirname(fileURLToPath(import.meta.url)), 'data.db'))
+  // WAL = readers never block the writer and vice-versa. Critical here: every
+  // closed connection inserts a conn_events row while dashboards run big read
+  // queries — under the default rollback journal those serialize (the writer
+  // takes an EXCLUSIVE lock), which stalled the connections/bandwidth pages.
+  // NORMAL is durable under WAL (only a power-loss can lose the last txn, never
+  // an app crash); busy_timeout makes a contended statement wait, not error.
+  try {
+    sqliteDb.exec('PRAGMA journal_mode = WAL')
+    sqliteDb.exec('PRAGMA synchronous = NORMAL')
+    sqliteDb.exec('PRAGMA busy_timeout = 8000')
+    sqliteDb.exec('PRAGMA wal_autocheckpoint = 1000')
+  } catch (e) { console.warn(`[sqlite] pragma tuning skipped: ${e.message}`) }
   sqliteDb.exec(`
     CREATE TABLE IF NOT EXISTS audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1232,14 +1244,22 @@ const proxyHistory = new Map() // id -> { hourKey, samples: [{ts, up, down, bpsI
 // Each call ADDS the per-hour delta (bytes since the previous sample) so a
 // bucket holds the traffic that happened *within* that hour — not a running
 // cumulative snapshot. bps is a rate, so keep the peak observed in the hour.
+// `conns` is the per-hour connection-count delta — lets the bandwidth ranking
+// read counts from this rollup instead of COUNT(*) over the 10M-row event log.
+// `hour` index speeds the admin bandwidth GROUP BY (which filters by hour range).
+if (sqliteDb) {
+  try { sqliteDb.exec('ALTER TABLE history ADD COLUMN conns INTEGER NOT NULL DEFAULT 0') } catch { /* already present */ }
+  try { sqliteDb.exec('CREATE INDEX IF NOT EXISTS history_hour ON history(hour)') } catch { /* noop */ }
+}
 const historyUpsertStmt = sqliteDb ? sqliteDb.prepare(`
-  INSERT INTO history (proxy_id, hour, upload_bytes, download_bytes, bps_in, bps_out)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO history (proxy_id, hour, upload_bytes, download_bytes, bps_in, bps_out, conns)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(proxy_id, hour) DO UPDATE SET
     upload_bytes = upload_bytes + excluded.upload_bytes,
     download_bytes = download_bytes + excluded.download_bytes,
     bps_in = MAX(bps_in, excluded.bps_in),
-    bps_out = MAX(bps_out, excluded.bps_out)
+    bps_out = MAX(bps_out, excluded.bps_out),
+    conns = conns + excluded.conns
 `) : null
 // Per-connection event log (7-day rolling window by default). Each closed
 // relay writes one row — gives admins + customers queryable history for
@@ -1267,44 +1287,54 @@ function pruneConnEvents() {
 pruneConnEvents()
 setInterval(pruneConnEvents, 3600_000).unref()
 
-// ── Accurate rolling-window byte totals (from the per-connection event log) ──
-// conn_events is the authoritative source: one row per closed relay with exact
-// up/down bytes. We sum it over 1h / 24h / 30d windows in a single pass using
-// conditional SUMs. This is what "tổng lưu lượng up/down trong 1h/1 ngày/1
-// tháng" means — cumulative transferred bytes, NOT instantaneous bps.
+// ── Rolling-window byte totals (served from the per-hour `history` rollup) ──
+// We used to SUM the 10M-row conn_events log live over 1h/24h/30d, which took
+// 3–35s and made the connections/usage pages hang. The `history` table is the
+// per-hour cumulative-delta sample (≈600k rows, indexed) — it includes bytes
+// from still-open connections (conn_events only logs CLOSED relays), so totals
+// are both far faster AND more complete. Hour buckets are keyed `YYYY-MM-DDTHH`.
+//   h1  = the current hour bucket, h24 = last 24 hour buckets, d30 = last 30 days.
 // up = client→proxy (upload), down = target→proxy (download).
 const WINDOW_SECS = { h1: 3600, h24: 86_400, d30: 2_592_000 }
-const WINDOW_SELECT = `
+function hourKey(ms) { return new Date(ms).toISOString().slice(0, 13) }
+const HISTORY_WINDOW_SELECT = `
     SELECT
-      COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up1,
-      COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn1,
-      COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up24,
-      COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn24,
-      COALESCE(SUM(up), 0) AS up30,
-      COALESCE(SUM(dn), 0) AS dn30
-    FROM conn_events WHERE `
-const connWindowStmt = sqliteDb ? {
-  proxy: sqliteDb.prepare(`${WINDOW_SELECT} proxy_id = ? AND ts >= ?`),
-  owner: sqliteDb.prepare(`${WINDOW_SELECT} owner_id = ? AND ts >= ?`)
-} : null
+      COALESCE(SUM(CASE WHEN hour = ? THEN upload_bytes ELSE 0 END), 0) AS up1,
+      COALESCE(SUM(CASE WHEN hour = ? THEN download_bytes ELSE 0 END), 0) AS dn1,
+      COALESCE(SUM(CASE WHEN hour >= ? THEN upload_bytes ELSE 0 END), 0) AS up24,
+      COALESCE(SUM(CASE WHEN hour >= ? THEN download_bytes ELSE 0 END), 0) AS dn24,
+      COALESCE(SUM(upload_bytes), 0) AS up30,
+      COALESCE(SUM(download_bytes), 0) AS dn30
+    FROM history WHERE `
+const historyWindowProxyStmt = sqliteDb ? sqliteDb.prepare(`${HISTORY_WINDOW_SELECT} proxy_id = ? AND hour >= ?`) : null
 function emptyWindows() {
   return { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } }
 }
-// scope: { by: 'proxy'|'owner', id: <value> }
+function shapeWindows(r) {
+  return {
+    h1:  { up: Number(r.up1)  || 0, down: Number(r.dn1)  || 0 },
+    h24: { up: Number(r.up24) || 0, down: Number(r.dn24) || 0 },
+    d30: { up: Number(r.up30) || 0, down: Number(r.dn30) || 0 }
+  }
+}
+// scope: { by: 'proxy'|'owner', id: <value> }. Owner scope sums the history of
+// every proxy the owner currently holds (proxy set comes from in-memory config,
+// so no owner_id column is needed on the rollup).
 function connWindowTotals(scope) {
-  if (!connWindowStmt || !scope || !scope.id) return emptyWindows()
-  const stmt = scope.by === 'owner' ? connWindowStmt.owner : connWindowStmt.proxy
+  if (!sqliteDb || !scope || !scope.id) return emptyWindows()
   const now = Date.now()
-  const c1 = now - WINDOW_SECS.h1 * 1000
-  const c24 = now - WINDOW_SECS.h24 * 1000
-  const c30 = now - WINDOW_SECS.d30 * 1000
+  const hCur = hourKey(now)
+  const h24 = hourKey(now - WINDOW_SECS.h24 * 1000)
+  const h30 = hourKey(now - WINDOW_SECS.d30 * 1000)
   try {
-    const r = stmt.get(c1, c1, c24, c24, scope.id, c30)
-    return {
-      h1:  { up: Number(r.up1)  || 0, down: Number(r.dn1)  || 0 },
-      h24: { up: Number(r.up24) || 0, down: Number(r.dn24) || 0 },
-      d30: { up: Number(r.up30) || 0, down: Number(r.dn30) || 0 }
+    if (scope.by === 'owner') {
+      const pids = config.proxies.filter((p) => p.ownerId === scope.id).map((p) => p.id)
+      if (!pids.length) return emptyWindows()
+      const ph = pids.map(() => '?').join(',')
+      const stmt = sqliteDb.prepare(`${HISTORY_WINDOW_SELECT} proxy_id IN (${ph}) AND hour >= ?`)
+      return shapeWindows(stmt.get(hCur, hCur, h24, h24, ...pids, h30))
     }
+    return shapeWindows(historyWindowProxyStmt.get(hCur, hCur, h24, h24, scope.id, h30))
   } catch { return emptyWindows() }
 }
 
@@ -1439,14 +1469,17 @@ function recordHistorySample(id, s) {
   // first delta after a reset is just the post-reset cumulative — never < 0.
   const curUp = Number(s.uploadBytes) || 0
   const curDown = Number(s.downloadBytes) || 0
+  const curConns = Number(s.totalConnections) || 0
   const dUp = Math.max(0, curUp - (Number(s.histLastUp) || 0))
   const dDown = Math.max(0, curDown - (Number(s.histLastDown) || 0))
+  const dConns = Math.max(0, curConns - (Number(s.histLastConns) || 0))
   s.histLastUp = curUp
   s.histLastDown = curDown
+  s.histLastConns = curConns
   const bpsIn = Number(s.bpsIn) || 0
   const bpsOut = Number(s.bpsOut) || 0
   if (historyUpsertStmt) {
-    try { historyUpsertStmt.run(id, hourKey, dUp, dDown, bpsIn, bpsOut) } catch {}
+    try { historyUpsertStmt.run(id, hourKey, dUp, dDown, bpsIn, bpsOut, dConns) } catch {}
   }
   // In-memory fallback (only consulted when SQLite is unavailable): mirror the
   // same per-hour-delta semantics — accumulate into the current hour bucket.
@@ -1465,6 +1498,43 @@ function recordHistorySample(id, s) {
     last.bpsOut = Math.max(last.bpsOut, bpsOut)
   }
 }
+
+// One-time backfill of history.conns for rows that pre-date the column (all 0).
+// node:sqlite is SYNCHRONOUS, so a single GROUP BY over the 10M-row conn_events
+// table would freeze the event loop for ~minute. Instead we process ONE proxy
+// per setImmediate tick (each tick is a small indexed scan of that proxy's rows)
+// so the server stays responsive. Guarded by PRAGMA user_version (>=2 = done).
+function backfillHistoryConns() {
+  if (!sqliteDb) return
+  let ver = 0
+  try { ver = Number(sqliteDb.prepare('PRAGMA user_version').get()?.user_version) || 0 } catch { return }
+  if (ver >= 2) return
+  const pids = (config.proxies || []).map((p) => p.id)
+  if (!pids.length) { setTimeout(backfillHistoryConns, 30_000).unref(); return } // config not loaded yet — retry
+  const countStmt = sqliteDb.prepare(`SELECT strftime('%Y-%m-%dT%H', ts/1000, 'unixepoch') AS hour, COUNT(*) AS c FROM conn_events WHERE proxy_id = ? GROUP BY hour`)
+  const updStmt = sqliteDb.prepare('UPDATE history SET conns = ? WHERE proxy_id = ? AND hour = ? AND conns = 0')
+  let i = 0, filled = 0
+  const step = () => {
+    if (i >= pids.length) {
+      try { sqliteDb.exec('PRAGMA user_version = 2') } catch { /* noop */ }
+      console.log(`[sqlite] migration v2: backfilled history.conns (${filled} buckets across ${pids.length} proxies)`)
+      return
+    }
+    const pid = pids[i++]
+    try {
+      const rows = countStmt.all(pid)
+      if (rows.length) {
+        sqliteDb.exec('BEGIN')
+        for (const r of rows) { const info = updStmt.run(r.c, pid, r.hour); filled += info?.changes || 0 }
+        sqliteDb.exec('COMMIT')
+      }
+    } catch { try { sqliteDb.exec('ROLLBACK') } catch { /* noop */ } }
+    setImmediate(step)
+  }
+  setImmediate(step)
+}
+// Kick off ~20s after boot, once config + listeners are up. Non-blocking.
+setTimeout(backfillHistoryConns, 20_000).unref()
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Raw SMTP+STARTTLS sender (zero npm deps). Sends a plain-text or HTML email
@@ -7170,13 +7240,17 @@ async function handleApi(req, res, url) {
       const winSecs = WINDOW_SECS[winParam] || WINDOW_SECS.h24
       const sinceMs = Date.now() - winSecs * 1000
       try {
+        // Rank from the per-hour `history` rollup, not a SUM/GROUP-BY over the
+        // 10M-row conn_events log (that took up to 35s for the 30d window). srcCount
+        // (distinct client IPs) can't be aggregated from hourly buckets, so it's
+        // dropped here — the byte ranking + conn counts are what this view is for.
         const rows = sqliteDb.prepare(`
           SELECT proxy_id,
-            COALESCE(SUM(up), 0) AS up, COALESCE(SUM(dn), 0) AS dn,
-            COUNT(*) AS conns, COUNT(DISTINCT src) AS srcCount, MAX(ts) AS lastTs
-          FROM conn_events WHERE ts >= ?
+            COALESCE(SUM(upload_bytes), 0) AS up, COALESCE(SUM(download_bytes), 0) AS dn,
+            COALESCE(SUM(conns), 0) AS conns, MAX(hour) AS lastHour
+          FROM history WHERE hour >= ?
           GROUP BY proxy_id ORDER BY (up + dn) DESC LIMIT 1000
-        `).all(sinceMs)
+        `).all(hourKey(sinceMs))
         const proxyById = new Map(config.proxies.map((p) => [p.id, p]))
         const userById = new Map((config.users || []).map((u) => [u.id, u]))
         const nodeById = new Map((config.nodes || []).map((n) => [n.id, n]))
@@ -7202,8 +7276,8 @@ async function handleApi(req, res, url) {
             down: Number(r.dn) || 0,
             total: (Number(r.up) || 0) + (Number(r.dn) || 0),
             conns: Number(r.conns) || 0,
-            srcCount: Number(r.srcCount) || 0,
-            lastTs: Number(r.lastTs) || 0
+            srcCount: 0,
+            lastTs: r.lastHour ? Date.parse(`${r.lastHour}:00:00Z`) || 0 : 0
           }
         })
         return sendJson(res, 200, { window: winParam, sinceMs, totals: { up: tUp, down: tDn, conns: tConns, proxyCount: list.length }, proxies: list })

@@ -17,6 +17,19 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.10', date: '2026-06-24', tag: 'fix',
+    titleEn: 'Connections & bandwidth pages load instantly (no more 1–35s wait)',
+    titleVi: 'Trang Kết nối & Băng thông hiển thị tức thì (hết chờ 1–35s)',
+    items: [
+      { en: 'Window totals (1h/24h/30d) on the Connections/Usage pages now read from the per-hour rollup instead of summing the multi-million-row event log live.',
+        vi: 'Tổng lưu lượng (1h/24h/30d) ở trang Kết nối/Băng thông giờ đọc từ bảng tổng hợp theo giờ thay vì cộng trực tiếp log nhiều triệu dòng.' },
+      { en: 'Admin bandwidth ranking reads from the rollup too (30-day view no longer takes tens of seconds).',
+        vi: 'Bảng xếp hạng băng thông admin cũng đọc từ rollup (chế độ 30 ngày không còn mất hàng chục giây).' },
+      { en: 'Switched SQLite to WAL mode so dashboard reads no longer block (or get blocked by) the constant connection-log writes.',
+        vi: 'Chuyển SQLite sang chế độ WAL để truy vấn đọc dashboard không còn bị chặn bởi việc ghi log kết nối liên tục.' },
+    ],
+  },
+  {
     version: '1.6.9', date: '2026-06-24', tag: 'fix',
     titleEn: 'i18n polish — customer & public UI fully bilingual',
     titleVi: 'Chuẩn hoá i18n — giao diện khách & public song ngữ đầy đủ',
