@@ -73,7 +73,7 @@ onMounted(refresh)
         <div class="body">
           <span class="lbl">{{ t('cust.aff.kpiPerSignup') }}</span>
           <span class="val">{{ Number(data.kickbackPerSignup).toLocaleString() }}</span>
-          <span class="foot"><span class="dot"></span> VND / signup</span>
+          <span class="foot"><span class="dot"></span> {{ t('cust.aff.perSignupUnit') }}</span>
         </div>
       </div>
       <div class="kpi-card-v2">

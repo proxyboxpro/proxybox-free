@@ -17,6 +17,19 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.9', date: '2026-06-24', tag: 'fix',
+    titleEn: 'i18n polish — customer & public UI fully bilingual',
+    titleVi: 'Chuẩn hoá i18n — giao diện khách & public song ngữ đầy đủ',
+    items: [
+      { en: 'Translated ~30 customer/public labels that were stuck in English in Vietnamese mode (theme, proxy tools, volume discount, free credit, affiliate share, API docs, product categories).',
+        vi: 'Dịch ~30 nhãn khách/public bị kẹt tiếng Anh khi ở chế độ tiếng Việt (theme, công cụ proxy, giảm giá số lượng, tín dụng miễn phí, chia sẻ affiliate, tài liệu API, danh mục sản phẩm).' },
+      { en: 'Wired hardcoded labels through i18n in Connections, Dashboard, Affiliate, Nodes and Node-detail views (table headers, KPI cards, node stats, token actions, no-payment notice) so they switch language correctly.',
+        vi: 'Đưa các nhãn hardcode qua i18n ở các trang Kết nối, Dashboard, Affiliate, Nodes và chi tiết Node (tiêu đề bảng, thẻ KPI, thống kê node, thao tác token, thông báo chưa có thanh toán) để đổi ngôn ngữ đúng.' },
+      { en: 'Fixed admin page headers showing raw keys (e.g. page.nodes-compare).',
+        vi: 'Sửa tiêu đề trang admin hiển thị key thô (vd page.nodes-compare).' },
+    ],
+  },
+  {
     version: '1.6.8', date: '2026-06-24', tag: 'fix',
     titleEn: 'PayPal currency conversion — wallet currency ↔ PayPal charge currency',
     titleVi: 'Chuyển đổi tiền tệ PayPal — tiền tệ ví ↔ tiền tệ charge PayPal',

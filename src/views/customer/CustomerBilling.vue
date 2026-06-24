@@ -266,7 +266,7 @@ onMounted(async () => {
               <span v-if="billing?.paymentMethods?.stripeEnabled" style="display:inline-flex; align-items:center; gap:6px"><CreditCard :size="14" style="color:var(--pxl)" /> Stripe (Card / Apple / Google Pay)</span>
               <span v-if="billing?.paymentMethods?.paypalEnabled" style="display:inline-flex; align-items:center; gap:6px"><CircleDollarSign :size="14" style="color:#1546a0" /> PayPal ({{ billing.paymentMethods.paypalCurrency || 'USD' }})</span>
               <span v-if="billing?.paymentMethods?.sepayEnabled" style="display:inline-flex; align-items:center; gap:6px"><Landmark :size="14" style="color:var(--green)" /> {{ t('cust.billing.sepayMethodLabel') }}</span>
-              <span v-if="!billing?.paymentMethods?.stripeEnabled && !billing?.paymentMethods?.paypalEnabled && !billing?.paymentMethods?.sepayEnabled" style="font-size:11.5px; color:var(--muted)">No payment method enabled — contact admin.</span>
+              <span v-if="!billing?.paymentMethods?.stripeEnabled && !billing?.paymentMethods?.paypalEnabled && !billing?.paymentMethods?.sepayEnabled" style="font-size:11.5px; color:var(--muted)">{{ t('cust.billing.noPayment') }}</span>
             </div>
           </div>
         </div>

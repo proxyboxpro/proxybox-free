@@ -290,7 +290,7 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
         </template>
         <template v-else-if="p.kind === 'hub'">
           <strong style="color: #22d3ee">{{ t('cust.dash.vpsOwn') }}</strong>
-          <small>billed per hour</small>
+          <small>{{ t('cust.dash.billedHourly') }}</small>
         </template>
         <template v-else>
           <strong style="color: #fbbf24">FREE</strong>

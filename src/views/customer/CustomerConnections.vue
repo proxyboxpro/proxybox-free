@@ -176,13 +176,13 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
       <div v-if="sessions.length" class="cc-table">
         <div class="cc-table-head">
-          <span>Proxy</span>
-          <span>Destination</span>
-          <span>Protocol</span>
-          <span class="right">Port</span>
-          <span class="right">Bytes</span>
-          <span class="right">Duration</span>
-          <span class="right">Time</span>
+          <span>{{ t('cust.conn.colProxy') }}</span>
+          <span>{{ t('cust.conn.colDest') }}</span>
+          <span>{{ t('cust.conn.colProtocol') }}</span>
+          <span class="right">{{ t('cust.conn.colPort') }}</span>
+          <span class="right">{{ t('cust.conn.colBytes') }}</span>
+          <span class="right">{{ t('cust.conn.colDuration') }}</span>
+          <span class="right">{{ t('cust.conn.colTime') }}</span>
         </div>
         <div v-for="s in sessions" :key="s.id" class="cc-table-row">
           <span class="mono">{{ s.proxyBindIp }}:{{ s.proxyPort }}</span>

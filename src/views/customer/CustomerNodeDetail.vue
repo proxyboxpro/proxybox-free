@@ -165,7 +165,7 @@ const ipv6PrefixHint = computed(() => {
       </p>
     </div>
     <button class="ghost-button" type="button" @click="loadAll" :disabled="busy">
-      <RefreshCw :size="13" /> Refresh
+      <RefreshCw :size="13" /> {{ t('cust.refresh') }}
     </button>
   </div>
 
@@ -178,28 +178,28 @@ const ipv6PrefixHint = computed(() => {
       <article>
         <span class="ico" style="background:rgba(34,197,94,0.12);color:#22c55e"><Network :size="14" /></span>
         <div>
-          <span class="lbl">Proxies</span>
+          <span class="lbl">{{ t('cust.nodeDetail.statProxies') }}</span>
           <strong>{{ totals.active }}<small>/{{ totals.count }}</small></strong>
         </div>
       </article>
       <article>
         <span class="ico" style="background:rgba(59,130,246,0.12);color:#60a5fa"><Activity :size="14" /></span>
         <div>
-          <span class="lbl">Live conns</span>
+          <span class="lbl">{{ t('cust.nodeDetail.statConns') }}</span>
           <strong>{{ formatNumber(totals.conns) }}</strong>
         </div>
       </article>
       <article>
         <span class="ico" style="background:rgba(6,182,212,0.12);color:#22d3ee"><Wifi :size="14" /></span>
         <div>
-          <span class="lbl">Bandwidth</span>
+          <span class="lbl">{{ t('cust.nodeDetail.statBandwidth') }}</span>
           <strong>{{ formatBytes(totals.bw) }}</strong>
         </div>
       </article>
       <article>
         <span class="ico" style="background:rgba(139,92,246,0.12);color:#a78bfa"><Cpu :size="14" /></span>
         <div>
-          <span class="lbl">Agent</span>
+          <span class="lbl">{{ t('cust.nodeDetail.statAgent') }}</span>
           <strong style="font-size:14px">v{{ node.version || '—' }}</strong>
         </div>
       </article>
@@ -270,7 +270,7 @@ const ipv6PrefixHint = computed(() => {
                 <button v-if="p.type === 'IPv6'" class="ghost-button mini" type="button" :title="t('cust.nodeDetail.tipRotateIp')" @click="rotateProxy(p)">
                   <RotateCcw :size="11" />
                 </button>
-                <button class="ghost-button mini" type="button" title="Health check" @click="checkProxy(p)">
+                <button class="ghost-button mini" type="button" :title="t('cust.nodeDetail.healthCheck')" @click="checkProxy(p)">
                   <ShieldCheck :size="11" />
                 </button>
                 <button class="ghost-button mini danger" type="button" :title="t('cust.nodeDetail.del')" @click="deleteProxy(p)">
@@ -303,11 +303,11 @@ const ipv6PrefixHint = computed(() => {
           </header>
           <dl class="kv-grid">
             <div><dt>Host</dt><dd class="cell-mono">{{ node.host }}</dd></div>
-            <div><dt>Family</dt><dd>{{ (node.family || 'dual').toUpperCase() }}</dd></div>
+            <div><dt>{{ t('nodes.family') }}</dt><dd>{{ (node.family || 'dual').toUpperCase() }}</dd></div>
             <div><dt>Zone</dt><dd>{{ node.zone || node.region || '—' }}</dd></div>
             <div><dt>Tag</dt><dd>{{ node.tag || 'byon' }}</dd></div>
             <div><dt>Agent</dt><dd class="cell-mono">v{{ node.version || '—' }}</dd></div>
-            <div><dt>Last seen</dt><dd class="cell-mono">{{ node.lastSeenAt?.slice(11,19) || '—' }}</dd></div>
+            <div><dt>{{ t('cust.nodeDetail.dtLastSeen') }}</dt><dd class="cell-mono">{{ node.lastSeenAt?.slice(11,19) || '—' }}</dd></div>
           </dl>
           <details v-if="node.network" class="net-details">
             <summary>Network <ChevronDown :size="12" /></summary>

@@ -88,7 +88,7 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
       <p class="sub" v-html="t('cust.nodes.subtitle')"></p>
     </div>
     <router-link to="/api-docs" class="ghost-button">
-      <Terminal :size="13" /> API docs
+      <Terminal :size="13" /> {{ t('cust.user.apiDocs') }}
     </router-link>
   </div>
 
@@ -125,28 +125,28 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
     <article>
       <span class="kpi-ico" style="background:rgba(139,92,246,0.12);color:#a78bfa"><Server :size="14" /></span>
       <div>
-        <span class="lbl">Nodes</span>
+        <span class="lbl">{{ t('cust.nodes.kpiNodes') }}</span>
         <strong>{{ nodes.length }}</strong>
       </div>
     </article>
     <article>
       <span class="kpi-ico" style="background:rgba(34,197,94,0.12);color:#22c55e"><Network :size="14" /></span>
       <div>
-        <span class="lbl">Proxies (BYON)</span>
+        <span class="lbl">{{ t('cust.nodes.kpiProxies') }}</span>
         <strong>{{ totals.active }}<small>/{{ totals.proxies }}</small></strong>
       </div>
     </article>
     <article>
       <span class="kpi-ico" style="background:rgba(59,130,246,0.12);color:#60a5fa"><Activity :size="14" /></span>
       <div>
-        <span class="lbl">Live conns</span>
+        <span class="lbl">{{ t('cust.nodes.kpiConns') }}</span>
         <strong>{{ formatNumber(totals.conns) }}</strong>
       </div>
     </article>
     <article>
       <span class="kpi-ico" style="background:rgba(6,182,212,0.12);color:#22d3ee"><Wifi :size="14" /></span>
       <div>
-        <span class="lbl">Bandwidth</span>
+        <span class="lbl">{{ t('cust.nodes.kpiBandwidth') }}</span>
         <strong>{{ formatBytes(totals.bw) }}</strong>
       </div>
     </article>
@@ -165,10 +165,10 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
           <button class="ghost-button mini" type="button" @click="copyCmd(token.token, 'tok')">
             <Copy :size="11" /> {{ copiedKey === 'tok' ? '✓' : 'Copy' }}
           </button>
-          <button class="ghost-button mini" type="button" @click="generateToken" title="Rotate token">
+          <button class="ghost-button mini" type="button" @click="generateToken" :title="t('cust.nodes.rotateToken')">
             <RefreshCw :size="11" />
           </button>
-          <button class="ghost-button mini" type="button" @click="revokeToken" title="Revoke token">
+          <button class="ghost-button mini" type="button" @click="revokeToken" :title="t('cust.nodes.revokeToken')">
             <Trash2 :size="11" />
           </button>
         </template>
@@ -242,15 +242,15 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
         <p class="host cell-mono">{{ n.host }}</p>
         <div class="metrics">
           <div>
-            <small>Proxies</small>
+            <small>{{ t('cust.nodeDetail.statProxies') }}</small>
             <strong>{{ n.activeProxies }}<small>/{{ n.proxyCount }}</small></strong>
           </div>
           <div>
-            <small>Live conns</small>
+            <small>{{ t('cust.nodeDetail.statConns') }}</small>
             <strong style="color:var(--green)">{{ formatNumber(n.activeConns) }}</strong>
           </div>
           <div>
-            <small>Bandwidth</small>
+            <small>{{ t('cust.nodeDetail.statBandwidth') }}</small>
             <strong>{{ formatBytes((n.uploadBytes || 0) + (n.downloadBytes || 0)) }}</strong>
           </div>
         </div>
