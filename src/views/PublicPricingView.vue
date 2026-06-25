@@ -378,8 +378,8 @@ onMounted(refresh)
               <div class="feature-card">
                 <span class="ico"><ShieldCheck :size="18" /></span>
                 <div>
-                  <div class="lbl">{{ locale === 'vi' ? '100% IP real' : '100% real IPs' }}</div>
-                  <div class="desc-sub">{{ locale === 'vi' ? 'Không phải IP datacenter giả mạo' : 'Not datacenter IPs' }}</div>
+                  <div class="lbl">{{ locale === 'vi' ? 'IP datacenter riêng' : 'Private datacenter IPs' }}</div>
+                  <div class="desc-sub">{{ locale === 'vi' ? 'Datacenter riêng từng cổng, không dùng chung' : 'Dedicated datacenter IP per port, not shared' }}</div>
                 </div>
               </div>
               <div class="feature-card">
