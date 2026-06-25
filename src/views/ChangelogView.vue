@@ -17,6 +17,15 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.14', date: '2026-06-25', tag: 'fix',
+    titleEn: 'Leaner telemetry storage',
+    titleVi: 'Lưu telemetry gọn hơn',
+    items: [
+      { en: 'SLA uptime stored as an hourly rollup instead of one row per health check (~12× fewer rows + now pruned). Connection event log retention cut 30d → 14d. Keeps the SQLite file from growing unbounded on busy nodes.',
+        vi: 'Uptime SLA lưu dạng tổng hợp theo giờ thay vì 1 dòng mỗi lần check (~12× ít dòng + có dọn). Log kết nối giảm 30 ngày → 14 ngày. Tránh file SQLite phình vô hạn trên node nhiều traffic.' },
+    ],
+  },
+  {
     version: '1.6.13', date: '2026-06-25', tag: 'fix',
     titleEn: 'In-order proxy list paginated; tool tabs use a proxy dropdown',
     titleVi: 'Danh sách proxy trong đơn có phân trang; tab công cụ dùng dropdown chọn proxy',

@@ -1270,7 +1270,10 @@ const historyUpsertStmt = sqliteDb ? sqliteDb.prepare(`
 // Per-connection event log (7-day rolling window by default). Each closed
 // relay writes one row — gives admins + customers queryable history for
 // "top destinations", "traffic by source IP", and audit/billing.
-const CONN_EVENTS_RETENTION_DAYS = 30
+// 14d (was 30d): rolling-window byte totals now come from the per-hour `history`
+// rollup, so conn_events only needs to back recent session/top-host/by-source
+// detail. Halves the largest table (+ its 4 indexes).
+const CONN_EVENTS_RETENTION_DAYS = 14
 // Defensive migration: add src_port to legacy databases that pre-date this
 // column. Errors when column already exists, which is fine.
 if (sqliteDb) {
@@ -1289,8 +1292,9 @@ function pruneConnEvents() {
     if (info && info.changes > 0) console.log(`[conn_events] pruned ${info.changes} row(s) older than ${CONN_EVENTS_RETENTION_DAYS}d`)
   } catch { /* noop */ }
 }
-// Prune once on boot, then hourly.
-pruneConnEvents()
+// Prune shortly after boot (deferred so a one-time large delete after a
+// retention change can't block startup), then hourly.
+setTimeout(pruneConnEvents, 15_000).unref()
 setInterval(pruneConnEvents, 3600_000).unref()
 
 // ── Rolling-window byte totals (served from the per-hour `history` rollup) ──
@@ -4920,22 +4924,43 @@ function connectViaUpstream(upstreamUrl, host, port, proxy) {
 
 // â”€â”€ SLA tracking: rolling 30d uptime per proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Backed by SQLite when available so it survives restarts.
+// SLA uptime is stored as an HOURLY ROLLUP, not one row per 5-min health tick.
+// The old per-tick `sla_tick` table grew unbounded (~322k rows/day across 1000+
+// proxies, never pruned). `sla_hourly` keeps ok_count/total_count per
+// (proxy_id, hour): same uptime %, ~12× fewer rows, and bounded by pruning.
 if (sqliteDb) {
-  try { sqliteDb.exec(`CREATE TABLE IF NOT EXISTS sla_tick (proxy_id TEXT NOT NULL, ts TEXT NOT NULL, ok INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS sla_proxy_ts ON sla_tick(proxy_id, ts DESC)`) } catch {}
+  try {
+    sqliteDb.exec('CREATE TABLE IF NOT EXISTS sla_hourly (proxy_id TEXT NOT NULL, hour TEXT NOT NULL, ok_count INTEGER NOT NULL DEFAULT 0, total_count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (proxy_id, hour))')
+    sqliteDb.exec('DROP TABLE IF EXISTS sla_tick')   // retire the old unbounded per-tick log (idempotent)
+  } catch {}
 }
-const slaInsert = sqliteDb ? sqliteDb.prepare('INSERT INTO sla_tick (proxy_id, ts, ok) VALUES (?, ?, ?)') : null
+const slaUpsert = sqliteDb ? sqliteDb.prepare(`
+  INSERT INTO sla_hourly (proxy_id, hour, ok_count, total_count) VALUES (?, ?, ?, 1)
+  ON CONFLICT(proxy_id, hour) DO UPDATE SET ok_count = ok_count + excluded.ok_count, total_count = total_count + 1
+`) : null
 function updateSlaTick(proxyId, ok) {
-  if (!slaInsert) return
-  try { slaInsert.run(proxyId, new Date().toISOString(), ok ? 1 : 0) } catch {}
+  if (!slaUpsert) return
+  try { slaUpsert.run(proxyId, new Date().toISOString().slice(0, 13), ok ? 1 : 0) } catch {}
 }
 function slaPercent(proxyId, days = 30) {
   if (!sqliteDb) return null
   try {
-    const since = new Date(Date.now() - days * 86400_000).toISOString()
-    const r = sqliteDb.prepare('SELECT AVG(ok)*100 AS pct, COUNT(*) AS n FROM sla_tick WHERE proxy_id = ? AND ts >= ?').get(proxyId, since)
-    return r && r.n > 0 ? { pct: Number(r.pct.toFixed(2)), samples: r.n } : { pct: 100, samples: 0 }
+    const sinceHour = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 13)
+    const r = sqliteDb.prepare('SELECT SUM(ok_count) AS ok, SUM(total_count) AS n FROM sla_hourly WHERE proxy_id = ? AND hour >= ?').get(proxyId, sinceHour)
+    const n = Number(r?.n) || 0
+    return n > 0 ? { pct: Number((Number(r.ok) * 100 / n).toFixed(2)), samples: n } : { pct: 100, samples: 0 }
   } catch { return null }
 }
+// Prune SLA rollup beyond retention (SLA windows are ≤30d) — keeps it bounded.
+const SLA_RETENTION_DAYS = 35
+function pruneSlaHourly() {
+  if (!sqliteDb) return
+  try {
+    const cutoff = new Date(Date.now() - SLA_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 13)
+    sqliteDb.prepare('DELETE FROM sla_hourly WHERE hour < ?').run(cutoff)
+  } catch { /* noop */ }
+}
+setInterval(pruneSlaHourly, 6 * 3600_000).unref()
 
 // â”€â”€ Continuous health sweep â€” probe each active proxy through its own listener
 // every 5 minutes. Mirrors what real managed proxy services run server-side.
