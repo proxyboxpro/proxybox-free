@@ -48,12 +48,6 @@ async function loadSummary() {
   try { summary.value = await apiFetch('/api/v1/user/proxies/connections/summary') }
   catch (e) { err.value = e.message }
 }
-async function loadProxies() {
-  try {
-    const list = await apiFetch('/api/v1/user/proxies')
-    proxies.value = (Array.isArray(list) ? list : list?.items || []).filter((p) => p.status !== 'expired')
-  } catch (e) { err.value = e.message }
-}
 async function loadSessions() {
   loading.value = true
   try {
@@ -70,7 +64,7 @@ async function loadSessions() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadSummary(), loadProxies(), loadSessions()])
+  await Promise.all([loadSummary(), loadSessions()])
 }
 
 onMounted(() => {
@@ -83,7 +77,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 <template>
   <section class="page-stack">
     <div class="toolbar">
-      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> {{ t('cust.conn.live') }} · {{ proxies.length }} proxy</span>
+      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> {{ t('cust.conn.live') }} · {{ summary.proxies || 0 }} proxy</span>
       <div class="spacer"></div>
       <button class="ghost-button" type="button" :disabled="loading" @click="refreshAll">
         <RefreshCw :size="12" /> refresh
@@ -157,10 +151,6 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
           <Search :size="14" />
           <input v-model="sessionFilters.host" type="search" :placeholder="t('cust.conn.filterHost')" @input="loadSessions" />
         </div>
-        <select v-model="sessionFilters.proxyId" class="cc-select" @change="loadSessions">
-          <option value="">{{ t('cust.conn.allProxies') }}</option>
-          <option v-for="p in proxies" :key="p.id" :value="p.id">{{ p.ip || p.bindIp }}:{{ p.port }}</option>
-        </select>
         <select v-model="sessionFilters.kind" class="cc-select" @change="loadSessions">
           <option value="">{{ t('cust.conn.allProtocols') }}</option>
           <option value="http">HTTP</option>

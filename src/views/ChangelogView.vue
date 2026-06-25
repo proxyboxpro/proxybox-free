@@ -17,6 +17,19 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.11', date: '2026-06-25', tag: 'fix',
+    titleEn: 'Usage/bandwidth page + connections load fast for large accounts',
+    titleVi: 'Trang Usage/băng thông + Kết nối tải nhanh cho tài khoản nhiều proxy',
+    items: [
+      { en: 'Customer Usage/Bandwidth summary now reads the per-hour rollup scoped by owner instead of summing the raw event log per-proxy over 30 days (was ~12s for a 1000-proxy account).',
+        vi: 'Trang Usage/Băng thông của khách giờ đọc bảng tổng hợp theo giờ (lọc theo chủ) thay vì cộng log thô theo từng proxy suốt 30 ngày (trước ~12s với tài khoản 1000 proxy).' },
+      { en: 'Connections page no longer downloads the full proxy list just to fill a filter dropdown — paints immediately on refresh.',
+        vi: 'Trang Kết nối không còn tải toàn bộ danh sách proxy chỉ để đổ vào dropdown lọc — hiện ngay khi F5.' },
+      { en: 'Admin node-detail / compare / owner-drilldown bandwidth now read the rollup too.',
+        vi: 'Băng thông ở trang admin node-detail / so sánh / drilldown theo chủ cũng đọc rollup.' },
+    ],
+  },
+  {
     version: '1.6.10', date: '2026-06-24', tag: 'fix',
     titleEn: 'Connections & bandwidth pages load instantly (no more 1–35s wait)',
     titleVi: 'Trang Kết nối & Băng thông hiển thị tức thì (hết chờ 1–35s)',

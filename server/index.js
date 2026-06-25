@@ -7484,10 +7484,10 @@ async function handleApi(req, res, url) {
       const bytesByProxy = new Map()
       if (sqliteDb) {
         try {
-          const cutoff = Date.now() - 30 * 86_400_000
+          const sinceHour = hourKey(Date.now() - 30 * 86_400_000)
           const ids = ownerProxies.map((p) => p.id)
           const ph = ids.map(() => '?').join(',')
-          const rows = sqliteDb.prepare(`SELECT proxy_id, SUM(up) AS up, SUM(dn) AS dn FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ? GROUP BY proxy_id`).all(...ids, cutoff)
+          const rows = sqliteDb.prepare(`SELECT proxy_id, SUM(upload_bytes) AS up, SUM(download_bytes) AS dn FROM history WHERE proxy_id IN (${ph}) AND owner_id = ? AND hour >= ? GROUP BY proxy_id`).all(...ids, oid, sinceHour)
           for (const r of rows) bytesByProxy.set(r.proxy_id, { up: Number(r.up) || 0, down: Number(r.dn) || 0 })
         } catch { /* leave empty */ }
       }
@@ -7521,9 +7521,9 @@ async function handleApi(req, res, url) {
         let bandwidth30d = { up: 0, down: 0 }
         if (sqliteDb && proxiesOnNode.length) {
           try {
-            const cutoff = Date.now() - 30 * 86_400_000
+            const sinceHour = hourKey(Date.now() - 30 * 86_400_000)
             const ph = proxiesOnNode.map(() => '?').join(',')
-            const r = sqliteDb.prepare(`SELECT COALESCE(SUM(up),0) up, COALESCE(SUM(dn),0) dn FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ?`).get(...proxiesOnNode.map((p) => p.id), cutoff)
+            const r = sqliteDb.prepare(`SELECT COALESCE(SUM(upload_bytes),0) up, COALESCE(SUM(download_bytes),0) dn FROM history WHERE proxy_id IN (${ph}) AND hour >= ?`).get(...proxiesOnNode.map((p) => p.id), sinceHour)
             bandwidth30d = { up: Number(r.up) || 0, down: Number(r.dn) || 0 }
           } catch { /* leave zero */ }
         }
@@ -9076,11 +9076,11 @@ async function handleApi(req, res, url) {
       // cheaper than per-owner lookups.
       if (sqliteDb && ownerMap.size) {
         try {
-          const cutoff = Date.now() - 30 * 86_400_000
+          const sinceHour = hourKey(Date.now() - 30 * 86_400_000)
           const proxyIds = proxiesOnNode.map((p) => p.id)
           if (proxyIds.length) {
             const ph = proxyIds.map(() => '?').join(',')
-            const rows = sqliteDb.prepare(`SELECT owner_id, SUM(up) AS up, SUM(dn) AS dn FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ? GROUP BY owner_id`).all(...proxyIds, cutoff)
+            const rows = sqliteDb.prepare(`SELECT owner_id, SUM(upload_bytes) AS up, SUM(download_bytes) AS dn FROM history WHERE proxy_id IN (${ph}) AND hour >= ? GROUP BY owner_id`).all(...proxyIds, sinceHour)
             for (const r of rows) {
               const e = ownerMap.get(r.owner_id)
               if (e) { e.bytes30dUp = Number(r.up) || 0; e.bytes30dDown = Number(r.dn) || 0 }
@@ -9110,19 +9110,19 @@ async function handleApi(req, res, url) {
       if (sqliteDb && proxiesOnNode.length) {
         try {
           const now = Date.now()
-          const c1 = now - 3600 * 1000
-          const c24 = now - 86_400 * 1000
-          const c30 = now - 2_592_000 * 1000
+          const hCur = hourKey(now)
+          const h24 = hourKey(now - 86_400 * 1000)
+          const h30 = hourKey(now - 2_592_000 * 1000)
           const ph = proxiesOnNode.map(() => '?').join(',')
           const r = sqliteDb.prepare(`
             SELECT
-              COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up1,
-              COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn1,
-              COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up24,
-              COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn24,
-              COALESCE(SUM(up), 0) AS up30, COALESCE(SUM(dn), 0) AS dn30
-            FROM conn_events WHERE proxy_id IN (${ph}) AND ts >= ?
-          `).get(c1, c1, c24, c24, ...proxiesOnNode.map((p) => p.id), c30)
+              COALESCE(SUM(CASE WHEN hour = ? THEN upload_bytes ELSE 0 END), 0) AS up1,
+              COALESCE(SUM(CASE WHEN hour = ? THEN download_bytes ELSE 0 END), 0) AS dn1,
+              COALESCE(SUM(CASE WHEN hour >= ? THEN upload_bytes ELSE 0 END), 0) AS up24,
+              COALESCE(SUM(CASE WHEN hour >= ? THEN download_bytes ELSE 0 END), 0) AS dn24,
+              COALESCE(SUM(upload_bytes), 0) AS up30, COALESCE(SUM(download_bytes), 0) AS dn30
+            FROM history WHERE proxy_id IN (${ph}) AND hour >= ?
+          `).get(hCur, hCur, h24, h24, ...proxiesOnNode.map((p) => p.id), h30)
           windowsBandwidth = {
             h1:  { up: Number(r.up1)  || 0, down: Number(r.dn1)  || 0 },
             h24: { up: Number(r.up24) || 0, down: Number(r.dn24) || 0 },
@@ -10622,16 +10622,17 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
   // Customer bandwidth dashboard summary â€” aggregates total upload/download
   // per-proxy + hourly trend last 24h. Powers the CustomerUsage view.
   if (req.method === 'GET' && sub === 'usage/summary') {
-    const ownedIds = config.proxies.filter((p) => p.ownerId === user.id).map((p) => p.id)
+    const myProxies = config.proxies.filter((p) => p.ownerId === user.id)
+    const ownedIds = myProxies.map((p) => p.id)
     if (ownedIds.length === 0) return sendJson(res, 200, { totals: { upload: 0, download: 0, conns: 0 }, windows: emptyWindows(), perProxy: [], hourly: [] })
     let perProxy = []
     let hourly = []
     let totalUp = 0; let totalDn = 0; let totalConns = 0
     // Per-proxy stats from in-memory stats Map (more current than SQLite history).
-    for (const id of ownedIds) {
+    // Iterate myProxies directly (a prior `config.proxies.find()` per id was O(n²)).
+    for (const p of myProxies) {
+      const id = p.id
       const s = stats.get(id)
-      const p = config.proxies.find((x) => x.id === id)
-      if (!p) continue
       const up = Number(s?.uploadBytes || 0)
       const dn = Number(s?.downloadBytes || 0)
       const month = Number(s?.monthBytes || 0)
@@ -10650,13 +10651,12 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     if (sqliteDb) {
       try {
         const since = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 13)
-        const placeholders = ownedIds.map(() => '?').join(',')
         hourly = sqliteDb.prepare(`
           SELECT hour, SUM(upload_bytes) AS uploadBytes, SUM(download_bytes) AS downloadBytes,
                  SUM(bps_in) AS bpsIn, SUM(bps_out) AS bpsOut
-          FROM history WHERE proxy_id IN (${placeholders}) AND hour >= ?
+          FROM history WHERE owner_id = ? AND hour >= ?
           GROUP BY hour ORDER BY hour
-        `).all(...ownedIds, since)
+        `).all(user.id, since)
       } catch { /* leave empty */ }
     }
     // Accurate per-proxy transferred bytes over 24h / 30d windows, summed from
@@ -10665,21 +10665,21 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     if (sqliteDb && ownedIds.length) {
       try {
         const now = Date.now()
-        const c24 = now - 86_400_000
-        const c30 = now - 2_592_000_000
-        const ph = ownedIds.map(() => '?').join(',')
-        // owner_id scope is essential: proxy ports get recycled between
-        // customers, so without it a recycled port would surface a previous
-        // owner's traffic (data leak + quota inflation).
+        const h24 = hourKey(now - 86_400_000)
+        const h30 = hourKey(now - 2_592_000_000)
+        // Per-proxy window bytes from the per-hour `history` rollup scoped by
+        // owner_id — NOT a SUM over the multi-million-row conn_events log (that
+        // GROUP BY took ~12s for a 1000-proxy owner). owner_id scoping also stops
+        // a recycled port leaking a previous owner's traffic.
         const rows = sqliteDb.prepare(`
           SELECT proxy_id,
-            COALESCE(SUM(CASE WHEN ts >= ? THEN up ELSE 0 END), 0) AS up24,
-            COALESCE(SUM(CASE WHEN ts >= ? THEN dn ELSE 0 END), 0) AS dn24,
-            COALESCE(SUM(up), 0) AS up30,
-            COALESCE(SUM(dn), 0) AS dn30
-          FROM conn_events WHERE proxy_id IN (${ph}) AND owner_id = ? AND ts >= ?
+            COALESCE(SUM(CASE WHEN hour >= ? THEN upload_bytes ELSE 0 END), 0) AS up24,
+            COALESCE(SUM(CASE WHEN hour >= ? THEN download_bytes ELSE 0 END), 0) AS dn24,
+            COALESCE(SUM(upload_bytes), 0) AS up30,
+            COALESCE(SUM(download_bytes), 0) AS dn30
+          FROM history WHERE owner_id = ? AND hour >= ?
           GROUP BY proxy_id
-        `).all(c24, c24, ...ownedIds, user.id, c30)
+        `).all(h24, h24, user.id, h30)
         const byId = new Map(rows.map((r) => [r.proxy_id, r]))
         for (const e of perProxy) {
           const r = byId.get(e.id)
