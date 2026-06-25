@@ -9543,6 +9543,40 @@ async function handleUserV1(req, res, url) {
     return sendJson(res, 200, { ok: true })
   }
 
+  // Lightweight per-order group summaries (no per-proxy creds/URLs) so the
+  // proxies page can render collapsed group cards instantly without pulling the
+  // full proxy list — see GET proxies `?orderId=` for the lazy per-group fetch.
+  if (req.method === 'GET' && sub === 'proxies/groups') {
+    const now = Date.now()
+    const map = new Map()
+    let cTotal = 0, cActive = 0, cExpiring = 0, cExpired = 0
+    const accumulate = (p, sharedFrom) => {
+      cTotal++
+      if (p.status === 'active') cActive++
+      if (p.status === 'expired') cExpired++
+      const exp = p.expiresAt ? new Date(p.expiresAt).getTime() : 0
+      const isExpiring = exp && (exp - now < 86_400_000 * 3) && p.status === 'active'
+      if (isExpiring) cExpiring++
+      const gid = sharedFrom ? `shared-${p.id}` : (p.orderId || `single-${p.id}`)
+      let g = map.get(gid)
+      if (!g) {
+        g = { id: gid, orderId: p.orderId || null, synthetic: !p.orderId && !sharedFrom, shared: !!sharedFrom, sharedFrom: sharedFrom || null, type: p.type, family: p.family, zone: p.zone || '', createdAt: p.createdAt, expiresAt: p.expiresAt, total: 0, active: 0, expiring: 0, expired: 0 }
+        map.set(gid, g)
+      }
+      g.total++
+      if (p.status === 'active') g.active++
+      if (p.status === 'expired') g.expired++
+      if (isExpiring) g.expiring++
+      if (p.expiresAt && (!g.expiresAt || new Date(p.expiresAt) < new Date(g.expiresAt))) g.expiresAt = p.expiresAt
+      if (p.createdAt && (!g.createdAt || new Date(p.createdAt) < new Date(g.createdAt))) g.createdAt = p.createdAt
+    }
+    for (const p of config.proxies) if (p.ownerId === user.id) accumulate(p, null)
+    for (const o of config.users.filter((u) => Array.isArray(u.sharedWith) && u.sharedWith.includes(user.id))) {
+      for (const p of config.proxies) if (p.ownerId === o.id) accumulate(p, o.email)
+    }
+    const groups = [...map.values()].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    return sendJson(res, 200, { groups, counts: { total: cTotal, active: cActive, expiring: cExpiring, expired: cExpired } })
+  }
   if (req.method === 'GET' && sub === 'proxies') {
     const mapProxy = (p, sharedFrom) => {
       const pub = publicProxy(p)
@@ -9556,12 +9590,17 @@ async function handleUserV1(req, res, url) {
         ...(sharedFrom ? { shared: true, sharedFrom } : {})
       }
     }
-    const owned = config.proxies.filter((p) => p.ownerId === user.id).map((p) => mapProxy(p, null))
+    // Optional `?orderId=` scopes the response to a single group so the page can
+    // lazy-load each group's proxies on expand instead of fetching all upfront
+    // (a 1000+ proxy account was ~1.5MB / multi-second on every open).
+    const wantGroup = url.searchParams.get('orderId') || ''
+    const inGroup = (p, sharedFrom) => !wantGroup || (sharedFrom ? `shared-${p.id}` : (p.orderId || `single-${p.id}`)) === wantGroup
+    const owned = config.proxies.filter((p) => p.ownerId === user.id && inGroup(p, null)).map((p) => mapProxy(p, null))
     // Read-only proxies shared with this user by other owners (team view). Mutations
     // stay owner-only — those endpoints already gate on ownerId === user.id.
     const shared = []
     for (const o of config.users.filter((u) => Array.isArray(u.sharedWith) && u.sharedWith.includes(user.id))) {
-      for (const p of config.proxies.filter((p) => p.ownerId === o.id)) shared.push(mapProxy(p, o.email))
+      for (const p of config.proxies.filter((p) => p.ownerId === o.id && inGroup(p, o.email))) shared.push(mapProxy(p, o.email))
     }
     return sendJson(res, 200, [...owned, ...shared])
   }

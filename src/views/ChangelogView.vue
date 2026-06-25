@@ -17,6 +17,19 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.12', date: '2026-06-25', tag: 'fix',
+    titleEn: 'Proxies & Usage pages paginated — instant load for large accounts',
+    titleVi: 'Trang Proxy & Usage có phân trang — tải tức thì cho tài khoản lớn',
+    items: [
+      { en: 'The Proxies page now loads lightweight per-order group summaries instantly, then fetches each group\'s proxies on expand (server-side /proxies/groups + ?orderId=), instead of downloading every proxy upfront.',
+        vi: 'Trang Proxy giờ tải tóm tắt nhóm theo đơn (nhẹ) tức thì, rồi lấy proxy của từng nhóm khi mở rộng (server-side /proxies/groups + ?orderId=), thay vì tải toàn bộ proxy ngay từ đầu.' },
+      { en: 'Usage page: per-proxy table paginated at 10 rows/page.',
+        vi: 'Trang Usage: bảng từng-proxy phân trang 10 dòng/trang.' },
+      { en: 'Per-group quick-stats sample up to 30 proxies instead of one request per proxy.',
+        vi: 'Quick-stats của nhóm lấy mẫu tối đa 30 proxy thay vì 1 request mỗi proxy.' },
+    ],
+  },
+  {
     version: '1.6.11', date: '2026-06-25', tag: 'fix',
     titleEn: 'Usage/bandwidth page + connections load fast for large accounts',
     titleVi: 'Trang Usage/băng thông + Kết nối tải nhanh cho tài khoản nhiều proxy',

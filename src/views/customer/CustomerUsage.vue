@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
 import {
   Activity, ArrowDown, ArrowUp, BarChart3, Layers, RefreshCw, Search, Wifi
@@ -15,6 +15,8 @@ const data = ref(null)
 const err = ref('')
 const search = ref('')
 const ppWin = ref('30d')   // per-proxy table window: '24h' | '30d'
+const ppPage = ref(0)      // per-proxy table page (10 rows/page — big accounts have 1000s)
+const PP_PAGE_SIZE = 10
 
 async function refresh() {
   err.value = ''
@@ -150,6 +152,11 @@ const rows = computed(() => {
     .sort((a, b) => b.total - a.total)
     .map((p) => ({ ...p, share: Math.min(100, Math.round((p.total / max) * 100)) }))
 })
+// Paginate the per-proxy table at 10/page — a 1000+ proxy account would otherwise
+// render every row at once. Search/window changes reset to the first page.
+const ppPageCount = computed(() => Math.max(1, Math.ceil(rows.value.length / PP_PAGE_SIZE)))
+const pagedRows = computed(() => rows.value.slice(ppPage.value * PP_PAGE_SIZE, ppPage.value * PP_PAGE_SIZE + PP_PAGE_SIZE))
+watch([search, ppWin, () => rows.value.length], () => { ppPage.value = 0 })
 
 onMounted(refresh)
 </script>
@@ -328,7 +335,7 @@ onMounted(refresh)
       <span>{{ t('cust.usage.share') }}</span>
     </div>
 
-    <div v-for="p in rows" :key="p.id" class="dt2-row" style="grid-template-columns: 1.2fr 1.2fr 1fr 0.9fr 0.9fr 1fr 1.4fr">
+    <div v-for="p in pagedRows" :key="p.id" class="dt2-row" style="grid-template-columns: 1.2fr 1.2fr 1fr 0.9fr 0.9fr 1fr 1.4fr">
       <span class="name">{{ p.name || p.id }}</span>
       <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
       <span class="country"><CountryFlag :code="countryFromZone(p.zone)" :size="18" /> {{ p.zone || 'auto' }}</span>
@@ -342,10 +349,20 @@ onMounted(refresh)
     </div>
 
     <p v-if="!rows.length" class="empty-text" style="padding:30px">{{ t('cust.usage.empty') }}</p>
+
+    <div v-if="ppPageCount > 1" class="pp-pager">
+      <button class="ghost-button" type="button" :disabled="ppPage === 0" @click="ppPage = 0">«</button>
+      <button class="ghost-button" type="button" :disabled="ppPage === 0" @click="ppPage = Math.max(0, ppPage - 1)">‹</button>
+      <span class="pp-pager-info">{{ ppPage + 1 }} / {{ ppPageCount }}</span>
+      <button class="ghost-button" type="button" :disabled="ppPage + 1 >= ppPageCount" @click="ppPage = Math.min(ppPageCount - 1, ppPage + 1)">›</button>
+      <button class="ghost-button" type="button" :disabled="ppPage + 1 >= ppPageCount" @click="ppPage = ppPageCount - 1">»</button>
+    </div>
   </section>
 </template>
 
 <style scoped>
+.pp-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px; }
+.pp-pager-info { font-size: 12.5px; color: var(--muted); min-width: 60px; text-align: center; font-family: var(--mono); }
 .bw-windows-wrap { padding: 16px 18px; margin-bottom: 14px; }
 .bw-windows-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
 .bw-windows-head h2 { margin: 0; color: var(--text); font-size: 15px; }

@@ -17,7 +17,11 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
-const list = ref([])
+const list = ref([])                   // proxies of groups that have been expanded/loaded
+const groupSummaries = ref([])         // lightweight per-order summaries (counts only)
+const summaryCounts = ref({ total: 0, active: 0, expiring: 0, expired: 0 })
+const loadedGroups = ref(new Set())    // group ids whose proxies are in `list`
+function groupIdOf(p) { return p.shared ? `shared-${p.id}` : (p.orderId || `single-${p.id}`) }
 const search = ref('')
 const filterType = ref('all')         // 'all' | 'ipv4' | 'ipv6'
 const filterStatus = ref('all')        // 'all' | 'active' | 'expiring' | 'expired'
@@ -63,10 +67,44 @@ const batchResults = reactive({})               // composite key -> result
 const batchBusy = reactive({})                  // composite key -> boolean
 const bulkTagDraft = reactive({})               // groupId -> draft tag string
 
+// Load lightweight group summaries only (instant even for 1000+ proxy accounts).
+// Each group's proxies are fetched lazily on expand via loadGroup(). Re-loads any
+// group that was already expanded so a manual refresh keeps it populated.
 async function refresh() {
   err.value = ''
-  try { list.value = await apiFetch('/api/v1/user/proxies') }
-  catch (e) { err.value = e.message }
+  try {
+    const data = await apiFetch('/api/v1/user/proxies/groups')
+    groupSummaries.value = data?.groups || []
+    summaryCounts.value = data?.counts || { total: 0, active: 0, expiring: 0, expired: 0 }
+    list.value = []
+    loadedGroups.value = new Set()
+    // Page paints NOW from the lightweight summaries; hydrate each group's
+    // proxies in the background (one fetch per group, sequential = gentle) so
+    // every per-group action keeps working. Expanding a group loads it
+    // immediately via loadGroup() regardless of how far the prefetch has got.
+    prefetchAllGroups()
+  } catch (e) { err.value = e.message }
+}
+let prefetchToken = 0
+async function prefetchAllGroups() {
+  const mine = ++prefetchToken
+  for (const g of groupSummaries.value) {
+    if (mine !== prefetchToken) return   // superseded by a newer refresh
+    await loadGroup(g)
+  }
+}
+// Fetch one group's proxies (full creds/URLs) and merge into `list`. No-op if
+// already loaded. Accepts a group object or a raw group id.
+async function loadGroup(g) {
+  const gid = typeof g === 'string' ? g : g?.id
+  if (!gid || loadedGroups.value.has(gid)) return
+  try {
+    const rows = await apiFetch(`/api/v1/user/proxies?orderId=${encodeURIComponent(gid)}`)
+    const arr = Array.isArray(rows) ? rows : (rows?.items || [])
+    const have = new Set(list.value.map((p) => p.id))
+    list.value = [...list.value, ...arr.filter((p) => !have.has(p.id))]
+    loadedGroups.value = new Set([...loadedGroups.value, gid])
+  } catch (e) { err.value = e.message }
 }
 
 // Detail-mode: when /proxies/order/:orderId is the active route, the view
@@ -112,31 +150,22 @@ function fmtCountdown(at) {
 // ── Grouping ────────────────────────────────────────────────────────────
 // Each group = one order (proxy.orderId). Proxies without orderId fall into
 // a synthetic "single" group keyed by proxy.id so they still render.
+// Groups come from the server summaries (always present, even when collapsed).
+// Each group's `proxies` are attached from `list` once the group is loaded;
+// `total`/`active`/`expiring`/`expired` are summary counts for header + status.
 const groups = computed(() => {
-  const map = new Map()
+  const byGroup = new Map()
   for (const p of list.value) {
-    const gid = p.orderId || `single-${p.id}`
-    if (!map.has(gid)) {
-      map.set(gid, {
-        id: gid,
-        orderId: p.orderId || null,
-        synthetic: !p.orderId,
-        type: p.type,
-        family: p.family,
-        zone: p.zone || '',
-        country: zoneToCC(p.zone),
-        createdAt: p.createdAt,
-        expiresAt: p.expiresAt,
-        proxies: []
-      })
-    }
-    const g = map.get(gid)
-    g.proxies.push(p)
-    // Use earliest expiry as group expiry, earliest createdAt as group creation
-    if (p.expiresAt && (!g.expiresAt || new Date(p.expiresAt) < new Date(g.expiresAt))) g.expiresAt = p.expiresAt
-    if (p.createdAt && (!g.createdAt || new Date(p.createdAt) < new Date(g.createdAt))) g.createdAt = p.createdAt
+    const gid = groupIdOf(p)
+    if (!byGroup.has(gid)) byGroup.set(gid, [])
+    byGroup.get(gid).push(p)
   }
-  return [...map.values()].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+  return groupSummaries.value.map((s) => ({
+    ...s,
+    country: zoneToCC(s.zone),
+    proxies: byGroup.get(s.id) || [],
+    loaded: loadedGroups.value.has(s.id)
+  }))
 })
 
 function zoneToCC(z) {
@@ -152,22 +181,20 @@ function zoneToCC(z) {
   if (z.startsWith('kr')) return 'KR'
   return null
 }
+// Status from server summary counts (works whether or not the group is loaded).
 function groupStatus(g) {
-  if (g.proxies.every((p) => p.status === 'expired')) return 'expired'
-  if (g.proxies.some((p) => p.expiresAt && new Date(p.expiresAt).getTime() - Date.now() < 86_400_000 * 3) && g.proxies.some((p) => p.status === 'active')) return 'expiring'
-  if (g.proxies.every((p) => p.status === 'active')) return 'active'
+  const total = g.total ?? g.proxies.length
+  if (total === 0) return 'active'
+  if ((g.expired ?? 0) === total) return 'expired'
+  if ((g.expiring ?? 0) > 0 && (g.active ?? 0) > 0) return 'expiring'
+  if ((g.active ?? 0) === total) return 'active'
   return 'mixed'
 }
 function statusLabel(s) {
   return ({ active: t('cust.proxies.statusActive'), expiring: t('cust.proxies.statusExpiring'), expired: t('cust.proxies.statusExpired'), mixed: t('cust.proxies.statusMixed') })[s] || s
 }
 
-const counts = computed(() => ({
-  total: list.value.length,
-  active: list.value.filter((p) => p.status === 'active').length,
-  expiring: list.value.filter((p) => p.expiresAt && new Date(p.expiresAt).getTime() - Date.now() < 86_400_000 * 3 && p.status === 'active').length,
-  expired: list.value.filter((p) => p.status === 'expired').length
-}))
+const counts = computed(() => summaryCounts.value)
 
 const filteredGroups = computed(() => groups.value.filter((g) => {
   if (filterType.value !== 'all' && (g.type || '').toLowerCase() !== filterType.value) return false
@@ -437,15 +464,16 @@ function toggleProxySel(id) {
   if (next.has(id)) next.delete(id); else next.add(id)
   selected.value = next
 }
-function toggleGroupSel(g) {
-  const ids = g.proxies.map((p) => p.id)
-  const allOn = ids.every((id) => selected.value.has(id))
+async function toggleGroupSel(g) {
+  await loadGroup(g)   // need the proxy ids — fetch them if the group isn't loaded yet
+  const ids = list.value.filter((p) => groupIdOf(p) === g.id).map((p) => p.id)
+  const allOn = ids.length > 0 && ids.every((id) => selected.value.has(id))
   const next = new Set(selected.value)
   for (const id of ids) { if (allOn) next.delete(id); else next.add(id) }
   selected.value = next
 }
 function isGroupAllSelected(g) {
-  return g.proxies.length > 0 && g.proxies.every((p) => selected.value.has(p.id))
+  return g.loaded && g.proxies.length > 0 && g.proxies.every((p) => selected.value.has(p.id))
 }
 function clearSelection() { selected.value = new Set() }
 const selectedProxies = computed(() => list.value.filter((p) => selected.value.has(p.id)))
@@ -627,14 +655,20 @@ function sparkPath(values, w = 80, h = 18) {
 async function loadGroupStats(g) {
   if (statsData[g.id]) return
   try {
+    // Sample at most 30 proxies — a per-proxy SLA + history fan-out over a
+    // 500-proxy group would fire ~1000 requests on expand. These are average
+    // "quick stats", so a sample is representative (bandwidth is sample-scaled).
+    const sample = g.proxies.slice(0, 30)
+    const scale = sample.length ? g.proxies.length / sample.length : 1
     const [slas, hists] = await Promise.all([
-      Promise.all(g.proxies.map((p) => apiFetch(`/api/v1/user/proxies/${p.id}/sla?days=7`).catch(() => ({ pct: null })))),
-      Promise.all(g.proxies.map((p) => apiFetch(`/api/v1/user/proxies/${p.id}/history?hours=720`).catch(() => ({ samples: [] }))))
+      Promise.all(sample.map((p) => apiFetch(`/api/v1/user/proxies/${p.id}/sla?days=7`).catch(() => ({ pct: null })))),
+      Promise.all(sample.map((p) => apiFetch(`/api/v1/user/proxies/${p.id}/history?hours=720`).catch(() => ({ samples: [] }))))
     ])
     const validPcts = slas.map((s) => s.pct).filter((x) => x !== null && x !== undefined)
     const uptime = validPcts.length ? (validPcts.reduce((a, b) => a + b, 0) / validPcts.length) : null
     let bw = 0
     for (const h of hists) for (const s of (h.samples || [])) bw += Number(s.uploadBytes || 0) + Number(s.downloadBytes || 0)
+    bw = Math.round(bw * scale)   // scale the sampled sum back up to the whole group
     const latencies = g.proxies.map((p) => Number(p.latency || 0)).filter((x) => x > 0)
     const avgLatency = latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null
     statsData[g.id] = { uptime, bandwidth: bw, latency: avgLatency }
@@ -648,11 +682,13 @@ function fmtBytes(b) {
 }
 
 // Lazy-load spark + stats when a group is expanded.
-function toggleGroupExpanded(g) {
+async function toggleGroupExpanded(g) {
   toggleGroup(g.id)
   if (isExpanded(g.id)) {
-    loadGroupStats(g)
-    for (const p of g.proxies) loadSpark(p.id)
+    await loadGroup(g)                      // lazy-fetch this group's proxies
+    const fresh = groups.value.find((x) => x.id === g.id) || g
+    loadGroupStats(fresh)
+    for (const p of fresh.proxies) loadSpark(p.id)
   }
 }
 
@@ -1113,12 +1149,14 @@ async function saveWhitelistNote(g, ip, note) {
 
 async function ensureDetailExpanded() {
   if (!isDetailMode.value) return
-  // Find the matching group, then trigger eager load of stats + sparklines.
+  // Find the matching group, then trigger eager load of proxies + stats + sparklines.
   const g = groups.value.find((x) => x.orderId === orderIdParam.value)
   if (!g) return
   expanded.value = new Set([g.id])
-  await loadGroupStats(g)
-  for (const p of g.proxies) loadSpark(p.id)
+  await loadGroup(g)
+  const fresh = groups.value.find((x) => x.id === g.id) || g
+  await loadGroupStats(fresh)
+  for (const p of fresh.proxies) loadSpark(p.id)
 }
 watch(groups, ensureDetailExpanded)
 
@@ -1303,7 +1341,7 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
       </span>
       <span class="tag" :class="'tag-fam-' + (g.type || 'ipv4').toLowerCase()">{{ g.type }}</span>
       <span class="group-count">
-        <Layers :size="13" /> {{ g.proxies.length }} {{ t('cust.buy.proxyUnit') }}
+        <Layers :size="13" /> {{ g.total ?? g.proxies.length }} {{ t('cust.buy.proxyUnit') }}
       </span>
       <span class="group-zone">
         <CountryFlag v-if="g.country" :code="g.country" :size="14" />
