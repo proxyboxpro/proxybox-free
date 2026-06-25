@@ -76,7 +76,7 @@ function httpsRequest({ method = 'GET', url, body = null, headers = {} } = {}) {
   })
 }
 
-export function setupOauthRoutes({ getConfig, createOrLinkUser, createSession, audit, clientIp, isFeatureEnabled }) {
+export function setupOauthRoutes({ getConfig, createOrLinkUser, createSession, audit, clientIp, isFeatureEnabled, brandRedirectBase }) {
   return {
     // GET /api/auth/oauth/:provider/start
     async handleStart(req, res, url, provider) {
@@ -86,7 +86,11 @@ export function setupOauthRoutes({ getConfig, createOrLinkUser, createSession, a
       const def = PROVIDERS[provider]
       if (!def) return sendStatus(res, 404, 'unknown oauth provider')
       const state = crypto.randomBytes(16).toString('hex')
-      pending.set(state, { provider, createdAt: Date.now(), returnUrl: url.searchParams.get('returnUrl') || '/dashboard' })
+      // Capture the brand host the flow started from so the final redirect can
+      // return the user to the same domain (the provider callback only ever
+      // lands on the single registered callbackUrl).
+      const startHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim()
+      pending.set(state, { provider, createdAt: Date.now(), startHost })
       cleanupPending()
       const authUrl = new URL(def.authUrl)
       authUrl.searchParams.set('client_id', cfg.clientId)
@@ -164,7 +168,11 @@ export function setupOauthRoutes({ getConfig, createOrLinkUser, createSession, a
         const dest = user.role === 'customer' ? 'customer-dashboard' : 'dashboard'
         // Redirect to /login (where AuthView is mounted) carrying token + dest.
         // AuthView's onMounted hook saves the token then router-pushes to dest.
-        res.writeHead(302, { 'Location': `/login?oauth_token=${encodeURIComponent(sessionToken)}&dest=${dest}` })
+        // Prefix the brand origin (when resolved) so a vcore.vn login returns to
+        // vcore.vn instead of the callbackUrl domain; falls back to a relative
+        // path (single-domain installs) when no resolver is supplied.
+        const base = typeof brandRedirectBase === 'function' ? (brandRedirectBase(tracked.startHost) || '') : ''
+        res.writeHead(302, { 'Location': `${base}/login?oauth_token=${encodeURIComponent(sessionToken)}&dest=${dest}` })
         res.end()
       } catch (e) {
         return sendStatus(res, 500, `oauth error: ${e.message}`)
