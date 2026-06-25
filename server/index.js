@@ -12938,7 +12938,7 @@ function agentClaimInstallScript(token, base, presetFamily) {
   return `#!/usr/bin/env bash
 set -euo pipefail
 # ProxyBox fleet installer — zero-touch claim
-CONTROL="${base}"
+CONTROL="${base.replace(/\/$/, '')}"
 TOKEN="${token}"
 ${presetLine}APP_DIR=/opt/proxybox-agent
 BIN="$APP_DIR/proxybox-agent"
@@ -12971,7 +12971,11 @@ apt-get install -y -qq ca-certificates curl jq >/dev/null
 
 HOST=$(hostname -s 2>/dev/null || hostname || echo host)
 IPV4=$(curl -fsSL --max-time 6 -4 https://api64.ipify.org 2>/dev/null || echo "")
+# Fallback for nodes that can't reach ipify (e.g. v6-only egress): read the
+# locally-assigned address off the route table so the claim reports a usable IP.
+[ -n "$IPV4" ] || IPV4=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}' | head -1 || true)
 IPV6=$(curl -fsSL --max-time 6 -6 https://api64.ipify.org 2>/dev/null || echo "")
+[ -n "$IPV6" ] || IPV6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | grep -oE 'src [0-9a-f:]+' | awk '{print $2}' | head -1 || true)
 if [ "$FAMILY" = "ipv4" ] && [ -z "$IPV4" ]; then echo "[install] FAMILY=ipv4 but no public IPv4 detected"; exit 1; fi
 if [ "$FAMILY" = "ipv6" ] && [ -z "$IPV6" ]; then echo "[install] FAMILY=ipv6 but no public IPv6 detected"; exit 1; fi
 
@@ -12993,9 +12997,20 @@ fi
 
 echo "[install] claiming node host=$HOST family=$FAMILY ipv4=$IPV4 ipv6=$IPV6 v6prefix=/$PROXYHUB_IPV6_PREFIX_LEN"
 PAYLOAD=$(printf '{"token":"%s","hostname":"%s","publicIp":"%s","publicIp6":"%s","family":"%s"}' "$TOKEN" "$HOST" "$IPV4" "$IPV6" "$FAMILY")
-CLAIM=$(curl -fsSL --max-time 20 -H 'Content-Type: application/json' -X POST -d "$PAYLOAD" "$CONTROL/api/agent/claim")
-[ -n "$CLAIM" ] || { echo "[install] empty claim response"; exit 1; }
-NODE_ID=$(echo "$CLAIM" | jq -r .nodeId)
+# Validate the claim body is JSON carrying a nodeId before parsing. A reverse
+# proxy / SPA fallback can answer with an HTML 200 that would otherwise abort
+# the installer ("parse error: Invalid numeric literal") under set -e and leave
+# the node stuck. Retry transient non-JSON responses instead of dying.
+CLAIM=""
+for attempt in 1 2 3 4 5 6 7 8; do
+  CLAIM=$(curl -fsSL --max-time 20 -H 'Content-Type: application/json' -X POST -d "$PAYLOAD" "$CONTROL/api/agent/claim" 2>/dev/null || echo "")
+  if [ -n "$CLAIM" ] && printf '%s' "$CLAIM" | jq -e .nodeId >/dev/null 2>&1; then break; fi
+  echo "[install] claim attempt $attempt did not return JSON (panel restarting?); retrying in 8s..."
+  CLAIM=""
+  sleep 8
+done
+[ -n "$CLAIM" ] || { echo "[install] claim failed: control plane never returned a JSON enrollment payload — re-run shortly."; exit 1; }
+NODE_ID=$(printf '%s' "$CLAIM" | jq -r .nodeId)
 [ "$NODE_ID" != "null" ] && [ -n "$NODE_ID" ] || { echo "[install] claim failed: $CLAIM"; exit 1; }
 
 install -d -m 0755 "$APP_DIR"
