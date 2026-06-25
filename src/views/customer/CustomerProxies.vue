@@ -22,6 +22,17 @@ const groupSummaries = ref([])         // lightweight per-order summaries (count
 const summaryCounts = ref({ total: 0, active: 0, expiring: 0, expired: 0 })
 const loadedGroups = ref(new Set())    // group ids whose proxies are in `list`
 function groupIdOf(p) { return p.shared ? `shared-${p.id}` : (p.orderId || `single-${p.id}`) }
+// Per-group pagination of the in-group proxy list (10 rows/page) — a 500-proxy
+// order would otherwise render every row at once. Keyed by group id.
+const PROXY_PAGE_SIZE = 10
+const proxyPage = reactive({})
+function proxyPageOf(gid) { return proxyPage[gid] || 0 }
+function proxyPageCount(g) { return Math.max(1, Math.ceil((g.proxies?.length || 0) / PROXY_PAGE_SIZE)) }
+function pagedProxiesOf(g) { const pg = proxyPage[g.id] || 0; return (g.proxies || []).slice(pg * PROXY_PAGE_SIZE, pg * PROXY_PAGE_SIZE + PROXY_PAGE_SIZE) }
+function setProxyPage(gid, pg) { proxyPage[gid] = Math.max(0, pg) }
+// Tool tabs (test/speed/blacklist/ip-info/ping) pick ONE proxy via a dropdown
+// (not a chip per proxy — a 500-proxy order rendered 500 chips).
+function onPickIpInfo(g, pid) { const p = (g.proxies || []).find((x) => x.id === pid); if (p) pickIpInfo(g, p) }
 const search = ref('')
 const filterType = ref('all')         // 'all' | 'ipv4' | 'ipv6'
 const filterStatus = ref('all')        // 'all' | 'active' | 'expiring' | 'expired'
@@ -1511,12 +1522,12 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
 
         <!-- ── LIST tab (default): proxy table ── -->
         <template v-if="activeTab(g.id) === 'list'">
-          <template v-for="(p, idx) in g.proxies" :key="p.id">
+          <template v-for="(p, idx) in pagedProxiesOf(g)" :key="p.id">
             <div class="gt-row" :class="{ 'is-selected': isSelected(p.id), 'is-expanded': expandedProxies.has(p.id) }">
               <button type="button" class="cbx" :class="{ checked: isSelected(p.id) }" @click="toggleProxySel(p.id)">
                 <Check :size="11" />
               </button>
-              <span class="cell-mono pc-idx">#{{ idx + 1 }}</span>
+              <span class="cell-mono pc-idx">#{{ proxyPageOf(g.id) * 10 + idx + 1 }}</span>
               <span class="gt-row-label">
                 <template v-if="labelEditing === p.id">
                   <input v-model="labelDraft" maxlength="64" :placeholder="t('cust.proxies.labelPh')" @keydown.enter="saveLabel(p)" @keydown.esc="cancelLabelEdit" />
@@ -1630,6 +1641,13 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
               </div>
             </div>
           </template>
+          <div v-if="proxyPageCount(g) > 1" class="px-pager">
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, 0)">«</button>
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, proxyPageOf(g.id) - 1)">‹</button>
+            <span class="px-pager-info">{{ proxyPageOf(g.id) + 1 }} / {{ proxyPageCount(g) }}</span>
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageOf(g.id) + 1)">›</button>
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageCount(g) - 1)">»</button>
+          </div>
         </template>
 
         <!-- ── APPS tab: subscription URLs for Clash / Shadowrocket / Surge / v2rayN ── -->
@@ -1677,17 +1695,12 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
         <!-- ── IP INFO tab: pick one IP, show full key-value table ── -->
         <template v-else-if="activeTab(g.id) === 'ip-info'">
           <p class="gt-hint">{{ t('cust.proxies.ipInfoHint') }}</p>
-          <!-- Chip selector: one per proxy -->
-          <div class="ipinfo-picker">
-            <button
-              v-for="p in g.proxies" :key="p.id"
-              type="button"
-              :class="['ipinfo-chip', { active: ipInfoSelected[g.id] === p.id }]"
-              @click="pickIpInfo(g, p)"
-            >
-              <span v-if="p.label" class="label-text" style="font-size:10.5px; padding:1px 6px">{{ p.label }}</span>
-              <span class="cell-mono">{{ p.ip || p.bindIp }}</span>
-            </button>
+          <!-- Proxy picker: dropdown (one order can hold 500 proxies) -->
+          <div class="tool-proxy-pick">
+            <select class="filter-select" :value="ipInfoSelected[g.id] || ''" @change="onPickIpInfo(g, $event.target.value)">
+              <option value="" disabled>{{ t('cust.proxies.singlePickHint') }}</option>
+              <option v-for="p in g.proxies" :key="p.id" :value="p.id">{{ p.label ? p.label + ' · ' : '' }}{{ p.ip || p.bindIp }}:{{ portOf(p) }}</option>
+            </select>
           </div>
 
           <!-- Result table for the picked proxy -->
@@ -1748,16 +1761,10 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
             <!-- Proxy picker -->
             <div class="st-row">
               <label class="st-lbl">{{ t('cust.proxies.stProxy') }}</label>
-              <div class="ipinfo-picker" style="margin:0; padding:0; border:none">
-                <button
-                  v-for="p in g.proxies" :key="p.id"
-                  type="button"
-                  :class="['ipinfo-chip', { active: speedTestProxy[g.id] === p.id }]"
-                  @click="speedTestProxy[g.id] = p.id"
-                >
-                  <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-                </button>
-              </div>
+              <select class="filter-select" :value="speedTestProxy[g.id] || ''" @change="speedTestProxy[g.id] = $event.target.value">
+                <option value="" disabled>{{ t('cust.proxies.singlePickHint') }}</option>
+                <option v-for="p in g.proxies" :key="p.id" :value="p.id">{{ p.label ? p.label + ' · ' : '' }}{{ p.ip || p.bindIp }}:{{ portOf(p) }}</option>
+              </select>
             </div>
             <!-- Country + ISP -->
             <div class="st-row">
@@ -1834,17 +1841,12 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
         <!-- ── Single-IP tool tabs (test / blacklist / ping) ── -->
         <template v-else-if="['test','blacklist','ping'].includes(activeTab(g.id))">
           <p class="gt-hint">{{ t('cust.proxies.singlePickHint') }}</p>
-          <!-- Proxy chip picker -->
-          <div class="ipinfo-picker">
-            <button
-              v-for="p in g.proxies" :key="p.id"
-              type="button"
-              :class="['ipinfo-chip', { active: pickedProxy(g, activeTab(g.id)) === p.id }]"
-              @click="setPickedProxy(g, activeTab(g.id), p.id)"
-            >
-              <span v-if="p.label" class="label-text" style="font-size:10.5px; padding:1px 6px">{{ p.label }}</span>
-              <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-            </button>
+          <!-- Proxy picker: dropdown (one order can hold 500 proxies) -->
+          <div class="tool-proxy-pick">
+            <select class="filter-select" :value="pickedProxy(g, activeTab(g.id)) || ''" @change="setPickedProxy(g, activeTab(g.id), $event.target.value)">
+              <option value="" disabled>{{ t('cust.proxies.singlePickHint') }}</option>
+              <option v-for="p in g.proxies" :key="p.id" :value="p.id">{{ p.label ? p.label + ' · ' : '' }}{{ p.ip || p.bindIp }}:{{ portOf(p) }}</option>
+            </select>
           </div>
 
           <!-- Run button -->
@@ -1944,10 +1946,17 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
         <!-- ── EDIT CREDENTIALS tab ── -->
         <template v-else-if="activeTab(g.id) === 'creds'">
           <p class="gt-hint">{{ t('cust.proxies.tabCredsHint') }}</p>
-          <div v-for="p in g.proxies" :key="p.id" class="gt-cred-row">
+          <div v-for="p in pagedProxiesOf(g)" :key="p.id" class="gt-cred-row">
             <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
             <span class="cell-mono creds">{{ p.username }}:{{ p.password }}</span>
             <button class="pc-btn" type="button" @click="openCredsEdit(p)"><KeyRound :size="12" /> {{ t('cust.proxies.editCreds') }}</button>
+          </div>
+          <div v-if="proxyPageCount(g) > 1" class="px-pager">
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, 0)">«</button>
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, proxyPageOf(g.id) - 1)">‹</button>
+            <span class="px-pager-info">{{ proxyPageOf(g.id) + 1 }} / {{ proxyPageCount(g) }}</span>
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageOf(g.id) + 1)">›</button>
+            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageCount(g) - 1)">»</button>
           </div>
         </template>
 
@@ -2194,6 +2203,10 @@ onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
 </template>
 
 <style scoped>
+.px-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 8px 4px; }
+.px-pager-info { font-size: 12.5px; color: var(--muted); min-width: 58px; text-align: center; font-family: var(--mono); }
+.tool-proxy-pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.tool-proxy-pick select { flex: 1; min-width: 220px; max-width: 420px; }
 .sub { color: var(--muted); margin: 2px 0 14px; }
 .success-text { color: var(--green); font-size: 13px; margin: 4px 0 10px; }
 

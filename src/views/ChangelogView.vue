@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.13', date: '2026-06-25', tag: 'fix',
+    titleEn: 'In-order proxy list paginated; tool tabs use a proxy dropdown',
+    titleVi: 'Danh sách proxy trong đơn có phân trang; tab công cụ dùng dropdown chọn proxy',
+    items: [
+      { en: 'The proxy list inside an order is now paginated at 10 rows/page; the Copy/Export credential list paginates the same way.',
+        vi: 'Danh sách proxy bên trong một đơn giờ phân trang 10 dòng/trang; danh sách credential ở tab Copy/Xuất cũng phân trang tương tự.' },
+      { en: 'Tool tabs (Test / Speed test / Blacklist / IP info / Ping) pick a proxy from a dropdown instead of a chip per proxy.',
+        vi: 'Các tab công cụ (Test / Kiểm tra tốc độ / Blacklist / Thông tin IP / Ping) chọn proxy bằng dropdown thay vì một chip cho mỗi proxy.' },
+    ],
+  },
+  {
     version: '1.6.12', date: '2026-06-25', tag: 'fix',
     titleEn: 'Proxies & Usage pages paginated — instant load for large accounts',
     titleVi: 'Trang Proxy & Usage có phân trang — tải tức thì cho tài khoản lớn',
