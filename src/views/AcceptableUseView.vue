@@ -144,21 +144,21 @@ const doc = computed(() => aup[locale.value] || aup.vi)
   padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
   background: var(--surface-2);
 }
-.ph-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.ph-top { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .ph-top strong { color: var(--text); font-size: 14px; }
 .prohibited .ref {
   font-family: var(--mono); font-size: 11px; color: var(--dim);
-  font-style: normal; white-space: nowrap;
+  font-style: normal; line-height: 1.5; overflow-wrap: anywhere; word-break: break-word;
 }
 .prohibited span { display: block; margin-top: 5px; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
 
 .legal-table { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden; }
 .lt-row { display: grid; grid-template-columns: 0.9fr 1.4fr; gap: 14px; padding: 12px 14px; }
 .lt-row:not(:last-child) { border-bottom: 1px solid var(--border-soft); }
-.lt-inst { display: flex; flex-direction: column; gap: 4px; }
+.lt-inst { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .lt-inst strong { color: var(--text); font-size: 13.5px; }
-.lt-inst code { font-family: var(--mono); font-size: 11.5px; color: var(--blue); }
-.lt-req { color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+.lt-inst code { font-family: var(--mono); font-size: 11.5px; color: var(--blue); overflow-wrap: anywhere; }
+.lt-req { color: var(--muted); font-size: 13.5px; line-height: 1.6; min-width: 0; overflow-wrap: anywhere; }
 
 .bullet { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
 .bullet li { color: var(--muted); font-size: 14px; line-height: 1.6; }
