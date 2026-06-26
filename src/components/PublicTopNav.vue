@@ -47,7 +47,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <RouterLink to="/api-docs">{{ t('landing.nav.api') }}</RouterLink>
       <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink>
       <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink>
-      <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
     </nav>
 
     <div class="ptn-actions">
@@ -80,7 +79,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <RouterLink to="/api-docs">{{ t('landing.nav.api') }}</RouterLink>
         <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink>
         <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink>
-        <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
         <div class="ptn-drawer-foot">
           <RouterLink class="ptn-btn ghost" to="/login">{{ t('landing.nav.login') }}</RouterLink>
           <RouterLink class="ptn-btn primary" to="/register">

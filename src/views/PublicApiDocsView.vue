@@ -319,8 +319,7 @@ onMounted(() => {
         </span>
         <span>
           <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink> ·
-          <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink> ·
-          <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
+          <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink>
         </span>
       </footer>
     </section>

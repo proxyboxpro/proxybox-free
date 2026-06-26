@@ -420,7 +420,6 @@ const useCases = computed(() => ([
         <RouterLink to="/api-docs">{{ t('landing.foot.apiDocs') }}</RouterLink>
         <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink>
         <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink>
-        <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
       </div>
       <div class="foot-col">
         <h5>{{ t('landing.foot.host') }}</h5>

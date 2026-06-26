@@ -991,7 +991,6 @@ export default {
   'page.forgotPassword':  'Forgot password',
   'page.resetPassword':   'Reset password',
   'page.verifyEmail':     'Verify email',
-  'page.status':          'System status',
   'page.faq':             'FAQ',
 
   // Nodes
@@ -1411,16 +1410,6 @@ export default {
   'auth.verify.missing': 'Invalid link — missing token.',
 
   // ── Status page ─────────────────────────────────────────────────
-  'status.pageTitle': 'ProxyBox Service Status',
-  'status.pageHelp': 'Auto-refreshes every 30 seconds.',
-  'status.loading': 'Loading...',
-  'status.unreachable': 'Could not reach control plane.',
-  'status.maintenance': 'Maintenance in progress',
-  'status.allSystems': 'All systems operational',
-  'status.uptime': 'Uptime',
-  'status.nodesOnline': 'Nodes online',
-  'status.activeProxies': 'Active proxies',
-  'status.announcements': 'Recent announcements',
 
   // ── FAQ ─────────────────────────────────────────────────────────
   'faq.title': 'Frequently asked questions',
@@ -1692,7 +1681,6 @@ export default {
   'landing.nav.faq':            'FAQ',
   'landing.nav.pricing':        'Pricing',
   'landing.nav.changelog':      'Changelog',
-  'landing.nav.status':         'Status',
   'landing.nav.login':          'Sign in',
   'landing.nav.register':       'Get started',
   'landing.hero.eyebrow':       'Open-source · Self-host · MIT licence',

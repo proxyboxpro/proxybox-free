@@ -261,8 +261,7 @@ onBeforeUnmount(() => {
         </span>
         <span>
           <RouterLink to="/api-docs">{{ t('landing.nav.api') }}</RouterLink> ·
-          <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink> ·
-          <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
+          <RouterLink to="/changelog">{{ t('landing.nav.changelog') }}</RouterLink>
         </span>
       </footer>
     </section>

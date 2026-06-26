@@ -232,7 +232,6 @@ const items = computed(() => releases.map((r) => ({
         ·
         <RouterLink to="/api-docs">{{ t('landing.nav.api') }}</RouterLink>
         ·
-        <RouterLink to="/status">{{ t('landing.nav.status') }}</RouterLink>
       </span>
     </footer>
   </div>

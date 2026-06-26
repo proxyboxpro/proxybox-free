@@ -118,4 +118,3 @@ export async function adminAnalyticsChurn() { return apiFetch('/api/admin/analyt
 export async function adminRevenueBreakdown() { return apiFetch('/api/admin/revenue/breakdown') }
 
 // ── Public ──────────────────────────────────────────────────────────────────
-export async function publicStatus() { return apiFetch('/api/public/status') }

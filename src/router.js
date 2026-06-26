@@ -67,7 +67,6 @@ const router = createRouter({
     { path: '/forgot-password', name: 'forgot-password', component: () => import('./views/ForgotPasswordView.vue'), meta: { public: true, anonOnly: true } },
     { path: '/reset-password',  name: 'reset-password',  component: () => import('./views/ResetPasswordView.vue'),  meta: { public: true } },
     { path: '/verify-email',    name: 'verify-email',    component: () => import('./views/VerifyEmailView.vue'),    meta: { public: true } },
-    { path: '/status',          name: 'status',          component: () => import('./views/StatusView.vue'),         meta: { public: true } },
     { path: '/faq',             name: 'faq',             component: () => import('./views/FaqView.vue'),            meta: { public: true } },
     { path: '/api-docs',        name: 'public-api-docs', component: () => import('./views/PublicApiDocsView.vue'),  meta: { public: true } },
     { path: '/pricing',         name: 'public-pricing',  component: () => import('./views/PublicPricingView.vue'),  meta: { public: true } },
@@ -191,7 +190,6 @@ const ROUTE_TITLE_KEYS = {
   'forgot-password': 'page.forgotPassword',
   'reset-password': 'page.resetPassword',
   'verify-email': 'page.verifyEmail',
-  status: 'page.status',
   faq: 'page.faq',
   // Admin
   'admin-dashboard':         'page.dashboard',
@@ -272,7 +270,7 @@ router.afterEach((to) => {
 router.beforeEach((to) => {
   // anonOnly: login/register-style routes — bounce logged-in users to their dashboard.
   if (to.meta.anonOnly && token.value) return roleRedirect()
-  // public: anyone can view (status, faq, verify-email, reset-password) — no redirect.
+  // public: anyone can view (faq, verify-email, reset-password) — no redirect.
   if (to.meta.public) return true
   // Everything else requires a session.
   if (!token.value) return { name: 'login' }

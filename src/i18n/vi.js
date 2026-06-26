@@ -1011,7 +1011,6 @@ export default {
   'page.forgotPassword':  'Quên mật khẩu',
   'page.resetPassword':   'Đặt lại mật khẩu',
   'page.verifyEmail':     'Xác minh email',
-  'page.status':          'Trạng thái hệ thống',
   'page.faq':             'Câu hỏi thường gặp',
 
   // Nodes (used by admin views)
@@ -1432,16 +1431,6 @@ export default {
   'auth.verify.missing': 'Link không hợp lệ — thiếu token.',
 
   // ── Status page ─────────────────────────────────────────────────
-  'status.pageTitle': 'Trạng thái dịch vụ ProxyBox',
-  'status.pageHelp': 'Cập nhật tự động mỗi 30 giây.',
-  'status.loading': 'Đang tải...',
-  'status.unreachable': 'Không kết nối được control plane.',
-  'status.maintenance': 'Hệ thống đang bảo trì',
-  'status.allSystems': 'Tất cả hệ thống hoạt động bình thường',
-  'status.uptime': 'Uptime',
-  'status.nodesOnline': 'Node online',
-  'status.activeProxies': 'Proxy đang chạy',
-  'status.announcements': 'Thông báo gần đây',
 
   // ── FAQ ─────────────────────────────────────────────────────────
   'faq.title': 'Câu hỏi thường gặp',
@@ -1712,7 +1701,6 @@ export default {
   'landing.nav.faq':            'FAQ',
   'landing.nav.pricing':        'Bảng giá',
   'landing.nav.changelog':      'Changelog',
-  'landing.nav.status':         'Status',
   'landing.nav.login':          'Đăng nhập',
   'landing.nav.register':       'Đăng ký',
   'landing.hero.eyebrow':       'Mã nguồn mở · Self-host · MIT',
