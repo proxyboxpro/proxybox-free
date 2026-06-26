@@ -19,6 +19,7 @@ const form = reactive({
   password: '',
   name: '',
   agree: false,
+  agreeAge: false,
   totpCode: ''
 })
 const totpRequired = ref(false)
@@ -61,7 +62,8 @@ async function submit() {
   try {
     let user
     if (authMode.value === 'register') {
-      if (!form.agree) throw new Error(t('auth.agree'))
+      if (!form.agree) throw new Error(t('auth.agreeRequired'))
+      if (!form.agreeAge) throw new Error(t('auth.ageRequired'))
       user = await register(form.name, form.email, form.password, true)
     } else {
       user = await login(form.email, form.password, form.totpCode || undefined)
@@ -152,7 +154,13 @@ function gotoForgot() { router.push({ name: 'forgot-password' }) }
 
         <label v-if="authMode === 'register'" class="check-line">
           <input v-model="form.agree" type="checkbox" />
-          {{ t('auth.agree') }}
+          <span>{{ t('auth.agreePrefix') }}
+            <a href="/acceptable-use" target="_blank" rel="noopener" @click.stop>{{ t('auth.agreeLink') }}</a>.
+          </span>
+        </label>
+        <label v-if="authMode === 'register'" class="check-line">
+          <input v-model="form.agreeAge" type="checkbox" />
+          <span>{{ t('auth.agreeAge') }}</span>
         </label>
 
         <p v-if="errorText" class="error-text">{{ errorText }}</p>

@@ -71,6 +71,7 @@ const router = createRouter({
     { path: '/api-docs',        name: 'public-api-docs', component: () => import('./views/PublicApiDocsView.vue'),  meta: { public: true } },
     { path: '/pricing',         name: 'public-pricing',  component: () => import('./views/PublicPricingView.vue'),  meta: { public: true } },
     { path: '/changelog',       name: 'changelog',       component: () => import('./views/ChangelogView.vue'),      meta: { public: true } },
+    { path: '/acceptable-use',  name: 'acceptable-use',  component: () => import('./views/AcceptableUseView.vue'),  meta: { public: true } },
 
     // ─── ADMIN CONSOLE ───────────────────────────────────────────────
     { path: '/admin', component: AppLayout, meta: { admin: true }, children: [

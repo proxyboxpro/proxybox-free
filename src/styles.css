@@ -582,6 +582,9 @@ pre code { font-family: var(--mono); font-size: 11.5px; color: var(--text); whit
 .input-field input[type="number"], .input-field input[placeholder*="port"], .input-field input[placeholder*="IP"], .input-field input[placeholder*="103"], .input-field input[placeholder*="key"] { font-family: var(--mono); }
 .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px; }
 .check-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.check-line input[type="checkbox"] { margin-top: 1px; flex-shrink: 0; }
+.check-line a { color: var(--green); text-decoration: none; font-weight: 600; }
+.check-line a:hover { text-decoration: underline; }
 .password-wrap {
   display: flex; align-items: center; border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding-right: 8px; background: var(--surface-2);
