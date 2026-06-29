@@ -5431,6 +5431,16 @@ function createSession(user) {
   return token
 }
 
+// User ids are minted as `u-<base36 Date.now()>`, so legacy users without a
+// stored createdAt can still be dated by decoding the id. Returns an ISO string
+// when the embedded timestamp is plausible (2020–2100), else '' .
+function userCreatedAtFromId(id) {
+  const m = /^u-([0-9a-z]+)$/.exec(String(id || ''))
+  if (!m) return ''
+  const ms = parseInt(m[1], 36)
+  return Number.isFinite(ms) && ms > 1_577_836_800_000 && ms < 4_102_444_800_000 ? new Date(ms).toISOString() : ''
+}
+
 function sessionFromRequest(req) {
   const header = req.headers['authorization'] || ''
   if (header.toLowerCase().startsWith('bearer ')) {
@@ -8133,7 +8143,10 @@ async function handleApi(req, res, url) {
         suspended: !!u.suspended,
         notes: u.notes || '',
         tags: u.tags || [],
-        tosAcceptedAt: u.tosAcceptedAt || null
+        tosAcceptedAt: u.tosAcceptedAt || null,
+        // Registration time for newest-first sorting. New users carry createdAt;
+        // legacy ones don't, so derive it from the id (u-<base36 Date.now()>).
+        createdAt: u.createdAt || userCreatedAtFromId(u.id)
       }))
       return sendJson(res, 200, rows)
     }
@@ -8504,6 +8517,32 @@ async function handleApi(req, res, url) {
       for (const [tk, s] of sessions) if (s.userId === target.id) { sessions.delete(tk); n += 1 }
       audit({ actor: actorOf(req), ip: clientIp(req), method: 'DELETE', path: url.pathname, note: `revoked ${n} sessions` })
       return sendJson(res, 200, { ok: true, revoked: n })
+    }
+    // ── admin: impersonate ("login as") a user ─────────────────────────────
+    // Mints a real session for the target user and hands the token back to the
+    // admin SPA, which swaps it in (stashing the admin token client-side so the
+    // admin can return). Every use is audited. Self / suspended are refused.
+    const imp = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/impersonate$/)
+    if (imp && req.method === 'POST') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const target = config.users.find((u) => u.id === imp[1])
+      if (!target) return sendJson(res, 404, { error: 'user not found' })
+      const callerSession = sessionFromRequest(req)
+      if (callerSession && callerSession.userId === target.id) return sendJson(res, 400, { error: 'cannot impersonate yourself' })
+      if (target.suspended) return sendJson(res, 409, { error: 'user is suspended — unsuspend first to impersonate' })
+      const token = createSession(target)
+      audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname, note: `impersonate ${target.email}` })
+      return sendJson(res, 200, {
+        token,
+        user: {
+          id: target.id,
+          name: target.name,
+          email: target.email,
+          role: target.role || 'customer',
+          totpEnabled: !!target.totp,
+          emailVerified: !!target.emailVerified
+        }
+      })
     }
     // â”€â”€ admin: force password reset on a user â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const forceReset = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/force-reset$/)

@@ -2,9 +2,22 @@ import { ref } from 'vue'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 const TOKEN_KEY = 'proxyhub.token'
+// While impersonating a customer, the admin's own token + identity are stashed
+// here so a banner can offer "return to admin" and restore the session.
+const ADMIN_TOKEN_KEY = 'proxyhub.admin_token'
+const ADMIN_USER_KEY = 'proxyhub.admin_user'
 
 export const token = ref(localStorage.getItem(TOKEN_KEY) || '')
 export const currentUser = ref(null)
+
+function loadAdminBackup() {
+  const t = localStorage.getItem(ADMIN_TOKEN_KEY)
+  if (!t) return null
+  try { return { token: t, user: JSON.parse(localStorage.getItem(ADMIN_USER_KEY) || 'null') } }
+  catch { return { token: t, user: null } }
+}
+// Non-null while an admin is impersonating someone. Drives the banner.
+export const adminBackup = ref(loadAdminBackup())
 
 export class ApiError extends Error {
   constructor(message, status, data) {
@@ -75,8 +88,15 @@ export async function logout() {
 
 export async function fetchMe() {
   if (!token.value) return null
+  // Admin sessions resolve via /api/auth/me. Customer sessions are blocked there
+  // by the admin-only gate, so fall back to the v1 user namespace — this also
+  // populates currentUser (with role) while an admin is impersonating a customer.
   try {
     const me = await apiFetch('/api/auth/me')
+    if (me?.email) { currentUser.value = me; return currentUser.value }
+  } catch { /* fall through to the customer namespace */ }
+  try {
+    const me = await apiFetch('/api/v1/user/auth/me')
     currentUser.value = me?.email ? me : null
     return currentUser.value
   } catch {
@@ -103,6 +123,32 @@ export async function listNotifications() { return apiFetch('/api/v1/user/notifi
 export async function markNotificationRead(id) { return apiFetch(`/api/v1/user/notifications/${id}/read`, { method: 'POST' }) }
 export async function markAllNotificationsRead() { return apiFetch('/api/v1/user/notifications/read-all', { method: 'POST' }) }
 export async function clearNotifications() { return apiFetch('/api/v1/user/notifications', { method: 'DELETE' }) }
+
+// ── Admin impersonation ("login as user") ──────────────────────────────────
+// Mints a customer session server-side, stashes the admin's own token/identity
+// locally, then swaps the active token to the customer's. stopImpersonation()
+// restores the admin session.
+export async function adminImpersonate(userId) {
+  const data = await apiFetch(`/api/admin/users/${userId}/impersonate`, { method: 'POST' })
+  localStorage.setItem(ADMIN_TOKEN_KEY, token.value || '')
+  localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(currentUser.value || null))
+  adminBackup.value = { token: token.value || '', user: currentUser.value || null }
+  setToken(data.token)
+  currentUser.value = data.user
+  return data.user
+}
+export function stopImpersonation() {
+  const b = adminBackup.value
+  localStorage.removeItem(ADMIN_TOKEN_KEY)
+  localStorage.removeItem(ADMIN_USER_KEY)
+  adminBackup.value = null
+  if (b && b.token) {
+    setToken(b.token)
+    currentUser.value = b.user
+    return true
+  }
+  return false
+}
 
 // ── Admin user management extensions ───────────────────────────────────────
 export async function adminListUserSessions(userId) { return apiFetch(`/api/admin/users/${userId}/sessions`) }

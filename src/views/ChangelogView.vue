@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.27', date: '2026-06-29', tag: 'feature',
+    titleEn: 'Admin can log in as a user; users list paginated + newest-first',
+    titleVi: 'Admin đăng nhập vào tài khoản khách; danh sách user phân trang + mới nhất lên đầu',
+    items: [
+      { en: 'New "Login" action on /admin/users mints a session for the customer and switches the admin into their portal. A persistent banner shows who you are impersonating and returns you to admin in one click. Every impersonation is audited.',
+        vi: 'Nút "Login" mới ở /admin/users tạo phiên cho khách và đưa admin vào giao diện của họ. Một thanh cảnh báo luôn hiện cho biết đang đăng nhập hộ ai và cho quay lại admin bằng một cú nhấp. Mọi lần đăng nhập hộ đều được ghi audit.' },
+      { en: 'The users list is now paginated at 25 per page and sorted newest-registered first, with a registration date shown under each email.',
+        vi: 'Danh sách user giờ phân trang 25 user/trang và sắp xếp mới đăng ký lên đầu, kèm ngày đăng ký dưới mỗi email.' },
+    ],
+  },
+  {
     version: '1.6.14', date: '2026-06-25', tag: 'fix',
     titleEn: 'Leaner telemetry storage',
     titleVi: 'Lưu telemetry gọn hơn',

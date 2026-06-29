@@ -1,7 +1,7 @@
 <script setup>
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { apiFetch, currentUser, adminDeleteUser } from '../../api'
+import { apiFetch, currentUser, adminDeleteUser, adminImpersonate } from '../../api'
 
 const router = useRouter()
 const users = ref([])
@@ -32,6 +32,33 @@ const filtered = computed(() => users.value.filter((u) => {
   return true
 }))
 
+// Registration time. New users carry createdAt; legacy ones are dated by
+// decoding the id (u-<base36 Date.now()>). Used for newest-first sorting.
+function regTime(u) {
+  if (u.createdAt) { const t = Date.parse(u.createdAt); if (t) return t }
+  const m = /^u-([0-9a-z]+)$/.exec(u.id || '')
+  if (m) { const t = parseInt(m[1], 36); if (t > 1577836800000 && t < 4102444800000) return t }
+  return 0
+}
+function regLabel(u) {
+  const t = regTime(u)
+  if (!t) return ''
+  return new Date(t).toISOString().slice(0, 10)
+}
+
+// Newest-registered users on top.
+const sorted = computed(() => filtered.value.slice().sort((a, b) => regTime(b) - regTime(a)))
+
+// Pagination — 25 users per page.
+const pageSize = 25
+const page = ref(1)
+const totalPages = computed(() => Math.max(1, Math.ceil(sorted.value.length / pageSize)))
+const paged = computed(() => sorted.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+// Any filter/search change resets to the first page; keep page in range when the list shrinks.
+watch([search, filterRole, filterStatus, filterTag], () => { page.value = 1 })
+watch(totalPages, (n) => { if (page.value > n) page.value = n })
+function goPage(p) { page.value = Math.min(Math.max(1, p), totalPages.value) }
+
 // Aggregate all tags for the filter dropdown
 const allTags = computed(() => {
   const set = new Set()
@@ -49,6 +76,14 @@ const stats = computed(() => ({
 }))
 
 function view(u) { router.push({ name: 'admin-user-detail', params: { userId: u.id } }) }
+async function loginAsUser(u) {
+  if (!confirm(`Đăng nhập vào tài khoản "${u.email}"?\nBạn sẽ chuyển sang giao diện khách hàng. Một thanh cảnh báo sẽ cho phép quay lại admin.`)) return
+  try {
+    await adminImpersonate(u.id)
+    // Full reload into the customer portal so all admin-scoped stores reset.
+    window.location.assign('/dashboard')
+  } catch (e) { err.value = e.message }
+}
 async function suspend(u, action) {
   try { await apiFetch(`/api/admin/users/${u.id}/${action}`, { method: 'POST' }); flash.value = `${u.email} ${action}ed.`; await refresh() }
   catch (e) { err.value = e.message }
@@ -121,12 +156,12 @@ onMounted(refresh)
       <input v-model="search" class="search-input" type="search" placeholder="Search email, name, id, ref, tag, note..." />
     </div>
 
-    <div v-if="filtered.length" class="surface" style="margin-top:14px">
+    <div v-if="sorted.length" class="surface" style="margin-top:14px">
       <div class="data-table">
-        <div class="table-row" style="grid-template-columns: 2fr 1fr 1fr 1fr 2fr; font-weight:600; background:var(--surface-2)">
+        <div class="table-row" style="grid-template-columns: 2fr 1fr 1fr 1fr 2.4fr; font-weight:600; background:var(--surface-2)">
           <span>Email</span><span>Role</span><span>Balance</span><span>Proxies</span><span>Actions</span>
         </div>
-        <div v-for="u in filtered" :key="u.id" class="table-row" style="grid-template-columns: 2fr 1fr 1fr 1fr 2fr">
+        <div v-for="u in paged" :key="u.id" class="table-row" style="grid-template-columns: 2fr 1fr 1fr 1fr 2.4fr">
           <span class="cell-mono" style="font-size:12.5px">
             {{ u.email }}
             <span v-if="u.totpEnabled" class="tag" style="margin-left:6px;background:rgba(34,197,94,0.16);color:#22c55e">2FA</span>
@@ -135,11 +170,13 @@ onMounted(refresh)
             <span v-if="!u.emailVerified" class="tag" style="margin-left:6px;background:rgba(148,163,184,0.16);color:var(--muted)" title="Email not verified">UNVERIFIED</span>
             <span v-for="t in (u.tags || [])" :key="t" class="tag" style="margin-left:4px;background:rgba(59,130,246,0.12);color:#60a5fa">{{ t }}</span>
             <span v-if="u.notes" class="tag" style="margin-left:6px;background:rgba(245,158,11,0.1);color:#f59e0b" :title="u.notes">📝</span>
+            <span v-if="regLabel(u)" style="display:block;font-size:11px;color:var(--muted);margin-top:2px">ĐK: {{ regLabel(u) }}</span>
           </span>
           <span><span class="tag">{{ u.role }}</span></span>
           <span class="cell-mono" style="font-size:12.5px">{{ Number(u.balance).toLocaleString() }}</span>
           <span style="font-size:12.5px">{{ u.ownedProxies }}</span>
           <span class="action-row">
+            <button v-if="(u.email || '').toLowerCase() !== selfEmail && !u.suspended" class="ghost-button" type="button" style="padding:2px 8px;color:var(--green);border-color:rgba(34,197,94,0.4)" @click="loginAsUser(u)" title="Đăng nhập vào tài khoản này">Login</button>
             <button class="ghost-button" type="button" style="padding:2px 8px" @click="view(u)">Chi tiết</button>
             <button class="ghost-button" type="button" style="padding:2px 8px" @click="credit(u)">Nạp/trừ</button>
             <button v-if="!u.suspended" class="ghost-button" type="button" style="padding:2px 8px" @click="suspend(u, 'suspend')">Khoá</button>
@@ -148,7 +185,29 @@ onMounted(refresh)
           </span>
         </div>
       </div>
+      <div v-if="totalPages > 1" class="pager">
+        <button class="ghost-button" type="button" :disabled="page <= 1" @click="goPage(1)">«</button>
+        <button class="ghost-button" type="button" :disabled="page <= 1" @click="goPage(page - 1)">‹ Trước</button>
+        <span class="pager-info">Trang {{ page }} / {{ totalPages }} · {{ sorted.length }} user</span>
+        <button class="ghost-button" type="button" :disabled="page >= totalPages" @click="goPage(page + 1)">Sau ›</button>
+        <button class="ghost-button" type="button" :disabled="page >= totalPages" @click="goPage(totalPages)">»</button>
+      </div>
     </div>
     <p v-else class="empty-text" style="margin-top:14px">Không user nào match filter.</p>
   </section>
 </template>
+
+<style scoped>
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.pager .ghost-button { padding: 4px 10px; }
+.pager .ghost-button:disabled { opacity: 0.4; cursor: default; }
+.pager-info { font-size: 12.5px; color: var(--muted); margin: 0 6px; }
+</style>
