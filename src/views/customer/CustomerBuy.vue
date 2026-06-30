@@ -737,7 +737,9 @@ onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans(
   overflow: hidden;
 }
 .zone-card.selected .z-flag { background: rgba(255,255,255,0.06); }
-.z-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+/* padding-right reserves the .z-check badge's column (right:8 + 18px wide) so
+   the truncated zone name never renders under the selected tick. */
+.z-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; padding-right: 20px; }
 .z-text strong {
   color:var(--text); font-size: 13.5px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

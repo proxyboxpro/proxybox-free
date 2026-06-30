@@ -2164,7 +2164,9 @@ pre code { font-family: var(--mono); font-size: 11.5px; color: var(--text); whit
 .product-card.selected {
   border-color: var(--pxl); box-shadow: 0 0 0 1px var(--pxl), 0 0 28px rgba(63,185,80,.25);
 }
-.product-card .head { display: flex; align-items: center; gap: 12px; }
+/* padding-right reserves the .check-mark badge's column (right:12 + 22px wide)
+   so the title never renders under the selected tick. */
+.product-card .head { display: flex; align-items: center; gap: 12px; padding-right: 24px; }
 .product-card .icon-box {
   width: 46px; height: 46px; border-radius: 12px;
   display: grid; place-items: center; color: #fff;
