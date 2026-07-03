@@ -11091,7 +11091,16 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     const creditAmount = Math.floor(Number(body.amount) || 0)
     if (creditAmount < 1 || creditAmount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 1..100,000,000' })
     const walletCur = walletCurrencyUpper()
-    const currency = String(body.currency || config.billing.paypalCurrency || 'USD').toUpperCase()
+    const configuredPayCur = String(config.billing.paypalCurrency || 'USD').toUpperCase()
+    // SECURITY: paypalFxRate() is a SINGLE wallet<->paypalCurrency rate. If the
+    // client could name any currency, they'd charge a cheap zero-decimal one
+    // (KRW/HUF/JPY…) at that rate while we credit the full wallet amount — pay
+    // ~$0.7, get ~$1000. Allow ONLY the wallet currency (1:1) or the admin pay
+    // currency the rate is actually for.
+    const currency = String(body.currency || configuredPayCur).toUpperCase()
+    if (currency !== walletCur && currency !== configuredPayCur) {
+      return sendJson(res, 400, { error: 'unsupported currency' })
+    }
     const rate = paypalFxRate()
     // Smart conversion: when PayPal charges a different currency than the wallet, divide
     // by the rate (VND → USD). When they match, charge the amount as-is.
@@ -11168,6 +11177,15 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         amount = Math.round(Number(parts[3]) || 0)
       } else {
         amount = payCurrency === walletCur ? Math.round(payValue) : Math.round(payValue * paypalFxRate())
+      }
+      // SECURITY (defense-in-depth): never credit more than PayPal ACTUALLY
+      // captured, converted to wallet currency. custom_id is set at create-order,
+      // so trusting parts[3] alone would let any create-order flaw mint balance.
+      const capCur = String(cap?.amount?.currency_code || payCurrency).toUpperCase()
+      const capVal = Number(cap?.amount?.value) || 0
+      if (capVal > 0) {
+        const capturedWallet = capCur === walletCur ? Math.round(capVal) : Math.round(capVal * paypalFxRate())
+        if (capturedWallet > 0) amount = Math.min(amount, capturedWallet)
       }
       if (amount <= 0) return sendJson(res, 502, { error: 'PayPal capture amount missing' })
       const note = `PayPal capture ${capture.id || orderId} (${payCurrency} ${payValue} → ${amount} ${walletCur})`
