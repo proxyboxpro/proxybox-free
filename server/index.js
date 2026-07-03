@@ -349,7 +349,7 @@ for (const proxy of config.proxies) {
   if ((proxy.nodeId || 'local') === 'local') startProxy(proxy)
 }
 
-sweepExpired()
+sweepExpired().catch((e) => console.warn('[sweep-expired]', e.message))
 // Hub expiry sweeper — runs every 5 min. Hubs past expiresAt with no auto-
 // extend get destroyed: Virtualizor deletes the VM, then the node row is
 // removed. Resolves the VZ instance PER-HUB (each hub may live on a
@@ -778,7 +778,7 @@ setInterval(() => {
   const now = Date.now()
   const expIntervalMs = Math.max(60, Number(config.operations?.sweepExpiredIntervalMin || 5) * 60) * 1000
   const rotIntervalMs = Math.max(10, Number(config.operations?.sweepAutoRotateIntervalSec || 60)) * 1000
-  if (now - _lastExpiredSweepAt >= expIntervalMs) { _lastExpiredSweepAt = now; sweepExpired() }
+  if (now - _lastExpiredSweepAt >= expIntervalMs) { _lastExpiredSweepAt = now; sweepExpired().catch((e) => console.warn('[sweep-expired]', e.message)) }
   if (now - _lastAutoRotateSweepAt >= rotIntervalMs) { _lastAutoRotateSweepAt = now; sweepAutoRotate() }
 }, SWEEP_BASE_TICK_MS).unref()
 // Customer self-service: auto-renew proxies near expiry if user opted in.
@@ -2870,6 +2870,23 @@ function commitScopedCredit(plan) {
     const g = (config.creditGrants || []).find((x) => x.id === p.id)
     if (g) g.remaining = Math.max(0, Number(g.remaining) - p.take)
   }
+}
+// Per-user checkout serialization. previewScopedCredit (read grants) and
+// commitScopedCredit (deduct) — plus the wallet balance-check → recordBillingTx —
+// are separated by `await`s (provisioning, upstream, saveConfig). Two concurrent
+// requests from ONE user could both pass the check before either commits, then
+// both provision → double-spend a grant / overdraw the wallet. Node is
+// single-threaded but `await` yields, so we chain a user's money-critical
+// sections to run one-at-a-time. The returned release() MUST run in a `finally`
+// so a thrown/returned handler never deadlocks that user's future checkouts.
+const _checkoutLocks = new Map()
+async function acquireUserCheckoutLock(userId) {
+  const key = String(userId || '')
+  while (_checkoutLocks.get(key)) { try { await _checkoutLocks.get(key) } catch { /* prior section errored — proceed */ } }
+  let release
+  const p = new Promise((r) => { release = r })
+  _checkoutLocks.set(key, p)
+  return () => { if (_checkoutLocks.get(key) === p) _checkoutLocks.delete(key); release() }
 }
 // Re-credit a cancelled order's prorated free-credit share as a fresh grant
 // (same product group + original expiry). If that expiry has already passed the
@@ -7880,8 +7897,10 @@ async function handleApi(req, res, url) {
       }
       order.status = 'cancelled'
       // Refund only the wallet-paid share (see customer cancel) — don't convert
-      // scoped free-credit into withdrawable wallet cash.
+      // scoped free-credit into withdrawable wallet cash. Cap at order value so
+      // live-price/extend inflation can't refund more than was paid.
       const totalVal = Number(order.amount) || 0
+      refund = Math.min(refund, totalVal)
       const walletShare = order.walletCharge != null ? Number(order.walletCharge) : totalVal
       const refundWallet = totalVal > 0 ? Math.round(refund * walletShare / totalVal) : 0
       const creditRefund = totalVal > 0 ? Math.round(refund * (Number(order.creditApplied) || 0) / totalVal) : 0
@@ -10152,6 +10171,8 @@ async function handleUserV1(req, res, url) {
     return sendJson(res, 200, out)
   }
   if (req.method === 'POST' && sub === 'hubs/buy') {
+    const _relHub = await acquireUserCheckoutLock(user.id)
+    try {
     const body = await readJson(req)
     const planId = String(body.planId || '')
     const plan = (config.hubPlans || []).find((p) => p.id === planId && p.enabled !== false)
@@ -10333,6 +10354,7 @@ async function handleUserV1(req, res, url) {
       balance: balance - totalCost,
       hint: 'VM đang khởi tạo — agent sẽ tự đăng ký trong 1-3 phút. Refresh trang /my-nodes để theo dõi.'
     })
+    } finally { _relHub() }
   }
   if (req.method === 'GET' && sub === 'hubs') {
     const hubs = (config.nodes || []).filter((n) => n.ownerId === user.id && n.hub).map((n) => {
@@ -10456,6 +10478,8 @@ async function handleUserV1(req, res, url) {
   // Only sells by-the-hour. No daily/monthly packages. Zone filter restricts to
   // nodes in the requested geographic zone (e.g. "vn-hcm", "us-east").
   if (req.method === 'POST' && sub === 'orders') {
+    const _relOrder = await acquireUserCheckoutLock(user.id)
+    try {
     if (!config.pricing) config.pricing = defaultPricing()
     migratePricingToHourly()
     if (!config.zones) config.zones = defaultZones()
@@ -10543,6 +10567,7 @@ async function handleUserV1(req, res, url) {
     }).catch(() => {})
     if (user.webhookUrl) sendCustomerWebhook(user.webhookUrl, { event: 'order.created', orderId, amount: totalCost, quantity, type, hours }).catch(() => {})
     return sendJson(res, 201, { order, proxies: created, balance: newBalance })
+    } finally { _relOrder() }
   }
 
   // Toggle auto-renew on an owned order
@@ -10585,6 +10610,11 @@ async function handleUserV1(req, res, url) {
     // share as a fresh grant. Never let promo credit become withdrawable wallet cash.
     // Old orders (no walletCharge field) fall back to full amount = unchanged.
     const totalVal = Number(order.amount) || 0
+    // SECURITY: `refund` is prorated from LIVE pricing × remaining hours, and an
+    // `extend` bumps expiresAt without updating order.amount — either can push
+    // `refund` above what was actually paid. Cap at the order's recorded value so
+    // a cancel can never mint wallet money (no-op for a normal prorated refund).
+    refund = Math.min(refund, totalVal)
     const walletShare = order.walletCharge != null ? Number(order.walletCharge) : totalVal
     const refundWallet = totalVal > 0 ? Math.round(refund * walletShare / totalVal) : 0
     const creditRefund = totalVal > 0 ? Math.round(refund * (Number(order.creditApplied) || 0) / totalVal) : 0
@@ -13500,7 +13530,7 @@ function notifyProxyExpiry(proxy) {
   return true
 }
 
-function sweepExpired() {
+async function sweepExpired() {
   // Hourly precision: compare expiresAt (ISO datetime) when set, fall back to
   // expires (YYYY-MM-DD) for legacy proxies created before hourly migration.
   const now = Date.now()
@@ -13523,6 +13553,8 @@ function sweepExpired() {
     const cost = perHour * renewHours
     // Spend matching scoped free-credit first; wallet covers the remainder.
     const rgrp = String(proxy.type).toLowerCase() === 'ipv6' ? 'ipv6' : 'ipv4'
+    const _relRenew = await acquireUserCheckoutLock(proxy.ownerId)
+    try {
     const rc = previewScopedCredit(proxy.ownerId, rgrp, cost)
     const walletCost = cost - rc.applied
     const balance = userBalance(proxy.ownerId)
@@ -13536,6 +13568,7 @@ function sweepExpired() {
       renewed += 1
       changed = true
     }
+    } finally { _relRenew() }
   }
   // Pass 2: enter grace, then truly expire. Industry-standard grace = 1h so
   // customer can renew without losing the IP. During grace the listener is still
