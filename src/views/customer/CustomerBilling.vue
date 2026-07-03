@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowDownLeft, ArrowUpRight, ChevronRight, CircleDollarSign, CreditCard,
@@ -187,6 +187,12 @@ const filteredTx = computed(() => txs.value.filter((tx) => {
   }
   return true
 }))
+const TX_PAGE = 12
+const txPage = ref(1)
+const txPageCount = computed(() => Math.max(1, Math.ceil(filteredTx.value.length / TX_PAGE)))
+const pagedTx = computed(() => { const s = (txPage.value - 1) * TX_PAGE; return filteredTx.value.slice(s, s + TX_PAGE) })
+function setTxPage(p) { txPage.value = Math.min(txPageCount.value, Math.max(1, p)) }
+watch(filteredTx, () => { txPage.value = 1 })
 
 const presets = [50000, 100000, 200000, 500000, 1000000, 2000000]
 
@@ -381,7 +387,7 @@ onMounted(async () => {
           <span>{{ t('cust.orders.col.amount') }}</span>
           <span>{{ t('cust.billing.txBalance') }}</span>
         </div>
-        <div v-for="(tx, i) in filteredTx" :key="i" class="dt2-row" style="grid-template-columns: 1.2fr 0.8fr 1.5fr 0.9fr 0.9fr">
+        <div v-for="(tx, i) in pagedTx" :key="i" class="dt2-row" style="grid-template-columns: 1.2fr 0.8fr 1.5fr 0.9fr 0.9fr">
           <span class="cell-mono">{{ fmtTs(tx.ts) }}</span>
           <span><span :class="['tag-soft', tx.type === 'topup' ? 'active' : (tx.type === 'order' ? 'datacenter' : (tx.type === 'refund' ? 'mobile' : 'isp'))]">{{ tx.type }}</span></span>
           <span style="color:var(--text); font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ tx.note || '—' }}</span>
@@ -389,6 +395,11 @@ onMounted(async () => {
           <span class="cell-mono">{{ Number(tx.balanceAfter).toLocaleString() }}</span>
         </div>
         <p v-if="!filteredTx.length" class="empty-text" style="padding:30px">{{ t('cust.billing.txEmpty') }}</p>
+        <div v-if="txPageCount > 1" class="px-pager">
+          <button class="ghost-button" type="button" :disabled="txPage === 1" @click="setTxPage(txPage - 1)">‹</button>
+          <span class="px-pager-info">{{ txPage }} / {{ txPageCount }}</span>
+          <button class="ghost-button" type="button" :disabled="txPage >= txPageCount" @click="setTxPage(txPage + 1)">›</button>
+        </div>
       </section>
     </div>
 
@@ -448,4 +459,7 @@ onMounted(async () => {
 .sepay-success { padding:32px 18px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:10px }
 .sepay-success h4 { margin:0; font-size:18px; color:var(--green) }
 .sepay-success p { margin:0; color:var(--muted); font-size:13px }
+.px-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 8px 2px; }
+.px-pager .ghost-button { min-width: 34px; justify-content: center; }
+.px-pager-info { font-size: 12.5px; color: var(--muted); min-width: 50px; text-align: center; font-family: var(--mono); }
 </style>
