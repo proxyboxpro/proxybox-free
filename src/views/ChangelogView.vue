@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.34', date: '2026-08-19', tag: 'feature',
+    titleEn: 'USDT modal: QR scanning for the Binance app + on-chain wallets; top-up defaults to the minimum',
+    titleVi: 'Modal USDT: quét QR bằng app Binance + ví on-chain; ô nạp mặc định bằng mức tối thiểu',
+    items: [
+      { en: 'The USDT deposit modal now renders a QR code locally (vendored MIT encoder, no third-party QR service). Two modes: plain-address QR for the Binance app scanner, and an EIP-681 QR that prefills the USDT contract, BSC chain and exact amount in on-chain wallets (Trust, MetaMask, SafePal…).',
+        vi: 'Modal nạp USDT giờ render QR ngay tại máy (thư viện MIT vendored, không gọi dịch vụ QR bên thứ ba). Hai chế độ: QR địa chỉ thuần cho trình quét của app Binance, và QR EIP-681 điền sẵn contract USDT, mạng BSC và đúng số tiền cho ví on-chain (Trust, MetaMask, SafePal…).' },
+      { en: 'The top-up amount field now defaults to the highest minimum among enabled gateways, so the pre-filled amount is always accepted.',
+        vi: 'Ô số tiền nạp giờ mặc định bằng mức tối thiểu cao nhất của các cổng đang bật, nên số tiền điền sẵn luôn hợp lệ.' },
+    ],
+  },
+  {
     version: '1.6.33', date: '2026-08-19', tag: 'feature',
     titleEn: 'USDT top-ups via Binance (BEP20), minimum 5 USDT',
     titleVi: 'Nạp tiền bằng USDT qua Binance (BEP20), tối thiểu 5 USDT',

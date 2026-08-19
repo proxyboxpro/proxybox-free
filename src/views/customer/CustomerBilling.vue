@@ -7,6 +7,7 @@ import {
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import qrcode from '../../lib/qrcode'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -29,6 +30,7 @@ const grants = ref([])   // active scoped free-credit grants
 
 async function refresh() {
   err.value = ''
+  const firstLoad = !billing.value
   try {
     billing.value = await apiFetch('/api/v1/user/billing')
     const r = await apiFetch('/api/v1/user/billing/transactions?limit=100')
@@ -36,6 +38,23 @@ async function refresh() {
     pricing.value = await apiFetch('/api/v1/user/pricing')
     orders.value = await apiFetch('/api/v1/user/orders')
     grants.value = await apiFetch('/api/v1/user/credit-grants').catch(() => [])
+    // Default the top-up field to the highest minimum among enabled gateways
+    // so the pre-filled amount is accepted by every pay button as-is.
+    if (firstLoad) {
+      const pm = billing.value?.paymentMethods || {}
+      const mins = []
+      if (pm.binanceEnabled && Number(pm.binanceMin) > 0) {
+        const rate = Number(pm.binanceRate) > 0 ? Number(pm.binanceRate) : 25000
+        mins.push(Math.ceil(Number(pm.binanceMin) * rate))
+      }
+      if (pm.paypalEnabled && Number(pm.paypalMin) > 0) {
+        const payCur = (pm.paypalCurrency || 'USD').toUpperCase()
+        const walletCur = (pm.walletCurrency || 'VND').toUpperCase()
+        const rate = Number(pm.paypalRate) > 0 ? Number(pm.paypalRate) : 25000
+        mins.push(Math.ceil(Number(pm.paypalMin) * (payCur === walletCur ? 1 : rate)))
+      }
+      if (mins.length) topup.value = Math.max(...mins)
+    }
   } catch (e) { err.value = e.message }
 }
 function promoGroupLabel(g) {
@@ -125,6 +144,34 @@ const usdtPaid = ref(null)          // status payload once matched
 const usdtLeft = ref('')
 let usdtPollTimer = null
 let usdtTickTimer = null
+// QR tab: 'binance' = plain address (the Binance app scanner prefills the
+// address in its Send flow), 'wallet' = EIP-681 URI (on-chain wallets prefill
+// contract + chain + exact amount).
+const qrTab = ref('binance')
+const usdtQrPayload = computed(() => {
+  const d2 = usdtData.value
+  if (!d2) return ''
+  if (qrTab.value === 'wallet' && d2.contract && d2.chainId) {
+    const dec = Number(d2.tokenDecimals) >= 4 ? Number(d2.tokenDecimals) : 18
+    // usdtAmount has exactly 4 decimals → integer token units without float drift.
+    const units = (BigInt(Math.round(Number(d2.usdtAmount) * 10000)) * (10n ** BigInt(dec - 4))).toString()
+    return `ethereum:${d2.contract}@${d2.chainId}/transfer?address=${d2.address}&uint256=${units}`
+  }
+  return d2.address
+})
+const usdtQrSvg = computed(() => {
+  const payload = usdtQrPayload.value
+  if (!payload) return { path: '', size: 0 }
+  const qr = qrcode(0, 'M')
+  qr.addData(payload)
+  qr.make()
+  const n = qr.getModuleCount()
+  let path = ''
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) if (qr.isDark(r, c)) path += `M${c} ${r}h1v1h-1z`
+  }
+  return { path, size: n }
+})
 const usdtEstimate = computed(() => {
   const pm = billing.value?.paymentMethods
   if (!pm) return ''
@@ -442,7 +489,17 @@ onMounted(async () => {
             <p>{{ t('cust.billing.usdtPaidDesc', { amount: Number(usdtPaid.creditAmount).toLocaleString() }) }}</p>
             <button class="primary-action" type="button" @click="closeUsdt">{{ t('common.close') }}</button>
           </div>
-          <div v-else class="sepay-modal-body" style="grid-template-columns:1fr">
+          <div v-else class="sepay-modal-body">
+            <div style="display:flex; flex-direction:column; gap:8px; align-items:center">
+              <div class="sepay-qr-wrap">
+                <svg class="sepay-qr" :viewBox="`-2 -2 ${usdtQrSvg.size + 4} ${usdtQrSvg.size + 4}`" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg" role="img"><path :d="usdtQrSvg.path" fill="#000" /></svg>
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center">
+                <button class="ghost-button" type="button" style="padding:4px 8px; font-size:11px" :style="qrTab === 'binance' ? { borderColor: '#26a17b', color: '#26a17b' } : null" @click="qrTab = 'binance'">{{ t('cust.billing.usdtQrTabBinance') }}</button>
+                <button v-if="usdtData.contract" class="ghost-button" type="button" style="padding:4px 8px; font-size:11px" :style="qrTab === 'wallet' ? { borderColor: '#26a17b', color: '#26a17b' } : null" @click="qrTab = 'wallet'">{{ t('cust.billing.usdtQrTabWallet') }}</button>
+              </div>
+              <p style="font-size:11px; color:var(--muted); max-width:236px; margin:0; line-height:1.45; text-align:center">{{ qrTab === 'binance' ? t('cust.billing.usdtQrHintBinance') : t('cust.billing.usdtQrHintWallet') }}</p>
+            </div>
             <div class="sepay-info">
               <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtNetwork') }}</span><strong class="cell-mono" style="color:var(--yellow)">{{ usdtData.coin }} · {{ usdtData.network }}</strong></div>
               <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtAddress') }}</span><strong class="cell-mono" style="word-break:break-all">{{ usdtData.address }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyUsdtAddress">{{ t('cust.billing.copy') }}</button></strong></div>

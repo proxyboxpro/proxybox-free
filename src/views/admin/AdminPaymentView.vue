@@ -90,6 +90,7 @@ onMounted(refresh)
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.binanceApiSecret') }}</span><input v-model="billing.binanceApiSecret" type="password" placeholder="••••" /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.binanceDepositAddress') }}</span><input v-model="billing.binanceDepositAddress" placeholder="0x…" /></label>
         <label class="input-field"><span>{{ t('admin.pay.binanceNetwork') }}</span><input v-model="billing.binanceNetwork" placeholder="BSC" maxlength="16" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.binanceContract') }}</span><input v-model="billing.binanceContract" placeholder="0x55d398326f99059ff775485246999027b3197955" /></label>
         <label class="input-field"><span>{{ t('admin.pay.binanceRate') }}</span><input v-model.number="billing.binanceRate" type="number" min="1" step="100" placeholder="25000" /></label>
         <label class="input-field"><span>{{ t('admin.pay.binanceMin') }}</span><input v-model.number="billing.binanceMin" type="number" min="0" step="1" placeholder="5" /></label>
       </div>

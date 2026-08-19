@@ -2854,6 +2854,23 @@ function binanceNetworkCode() {
 function binanceCoinCode() {
   return String(config.billing?.binanceCoin || 'USDT').toUpperCase()
 }
+// Token metadata for the EIP-681 QR ("wallet" tab): lets on-chain wallets
+// (Trust, MetaMask, …) prefill contract + chain + amount. Defaults cover the
+// canonical BSC (BEP20) USDT contract, 18 decimals.
+function binanceContractAddr() {
+  const c = String(config.billing?.binanceContract || '').trim()
+  if (/^0x[0-9a-fA-F]{40}$/.test(c)) return c
+  return binanceNetworkCode() === 'BSC' ? '0x55d398326f99059ff775485246999027b3197955' : ''
+}
+function binanceChainId() {
+  const n = Number(config.billing?.binanceChainId)
+  if (Number.isInteger(n) && n > 0) return n
+  return binanceNetworkCode() === 'BSC' ? 56 : 0
+}
+function binanceTokenDecimals() {
+  const n = Number(config.billing?.binanceTokenDecimals)
+  return Number.isInteger(n) && n >= 0 && n <= 36 ? n : 18
+}
 // Amounts are the correlation key, so both sides (intent + deposit history)
 // are normalized to a fixed 4-decimal string before comparison.
 function normalizeUsdt(v) {
@@ -7229,6 +7246,7 @@ async function handleApi(req, res, url) {
           binanceApiSecret: maskSecret(config.billing.binanceApiSecret),
           binanceDepositAddress: config.billing.binanceDepositAddress || '',
           binanceNetwork: binanceNetworkCode(),
+          binanceContract: binanceContractAddr(),
           binanceRate: binanceRate(),
           binanceMin: binanceMinTopup()
         })
@@ -7287,6 +7305,11 @@ async function handleApi(req, res, url) {
         }
         if (typeof body.binanceDepositAddress === 'string') config.billing.binanceDepositAddress = body.binanceDepositAddress.trim().slice(0, 128)
         if (typeof body.binanceNetwork === 'string') config.billing.binanceNetwork = body.binanceNetwork.trim().toUpperCase().slice(0, 16)
+        if (typeof body.binanceContract === 'string' && (body.binanceContract.trim() === '' || /^0x[0-9a-fA-F]{40}$/.test(body.binanceContract.trim()))) {
+          config.billing.binanceContract = body.binanceContract.trim()
+        }
+        if (Number.isFinite(Number(body.binanceChainId)) && Number(body.binanceChainId) >= 0) config.billing.binanceChainId = Math.floor(Number(body.binanceChainId))
+        if (Number.isFinite(Number(body.binanceTokenDecimals)) && Number(body.binanceTokenDecimals) >= 0 && Number(body.binanceTokenDecimals) <= 36) config.billing.binanceTokenDecimals = Math.floor(Number(body.binanceTokenDecimals))
         if (Number.isFinite(Number(body.binanceRate)) && Number(body.binanceRate) > 0) config.billing.binanceRate = Number(body.binanceRate)
         if (Number.isFinite(Number(body.binanceMin)) && Number(body.binanceMin) >= 0) config.billing.binanceMin = Number(body.binanceMin)
         // Reset cached token when credentials change
@@ -11320,6 +11343,9 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       network: binanceNetworkCode() === 'BSC' ? 'BEP20 (BNB Smart Chain)' : binanceNetworkCode(),
       usdtAmount: intent.usdt_amount,
       creditAmount: Number(intent.credit_amount),
+      contract: binanceContractAddr(),
+      chainId: binanceChainId(),
+      tokenDecimals: binanceTokenDecimals(),
       expiresAt: new Date(Date.parse(intent.created_ts) + BINANCE_INTENT_TTL_MS).toISOString()
     })
   }
