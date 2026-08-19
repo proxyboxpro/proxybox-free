@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  ArrowDownLeft, ArrowUpRight, ChevronRight, CircleDollarSign, CreditCard,
+  ArrowDownLeft, ArrowUpRight, Check, ChevronRight, CircleDollarSign, CreditCard,
   FileText, Gift, Landmark, Plus, QrCode, RefreshCw, Search, Tag, Wallet, X
 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
@@ -226,6 +226,43 @@ function stopUsdtTimers() {
   if (usdtTickTimer) { clearInterval(usdtTickTimer); usdtTickTimer = null }
 }
 function closeUsdt() { usdtOpen.value = false; stopUsdtTimers() }
+async function markUsdtSent() {
+  if (!usdtData.value?.id || busy.value) return
+  busy.value = true
+  try {
+    usdtData.value = await apiFetch('/api/v1/user/billing/binance/mark-sent', { method: 'POST', body: { id: usdtData.value.id } })
+    flash.value = t('cust.billing.usdtSentFlash')
+    await refresh()
+  } catch (e) { err.value = e.message } finally { busy.value = false }
+}
+function reopenUsdt() {
+  const pend = billing.value?.binancePending
+  if (!pend) return
+  usdtData.value = pend
+  usdtPaid.value = null
+  usdtOpen.value = true
+  startUsdtTimers()
+}
+// Reload-proof: while an open intent exists and the modal is closed, keep a
+// slow background poll so the awaiting banner flips to success on its own.
+let usdtBgTimer = null
+watch([() => billing.value?.binancePending?.id, usdtOpen], ([pid, open]) => {
+  if (usdtBgTimer) { clearInterval(usdtBgTimer); usdtBgTimer = null }
+  if (!pid || open) return
+  usdtBgTimer = setInterval(async () => {
+    try {
+      const s = await apiFetch(`/api/v1/user/billing/binance/status?id=${encodeURIComponent(pid)}`)
+      if (s.status === 'paid') {
+        clearInterval(usdtBgTimer); usdtBgTimer = null
+        flash.value = t('cust.billing.usdtHit', { amount: Number(s.creditAmount).toLocaleString() })
+        await refresh()
+      } else if (s.status === 'expired' || s.status === 'cancelled') {
+        clearInterval(usdtBgTimer); usdtBgTimer = null
+        await refresh()
+      }
+    } catch { /* keep polling */ }
+  }, 30_000)
+}, { immediate: true })
 async function copyUsdtAddress() {
   if (!usdtData.value?.address) return
   try { await navigator.clipboard.writeText(usdtData.value.address); flash.value = t('cust.billing.copied') } catch {}
@@ -408,6 +445,14 @@ onMounted(async () => {
         <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><Plus :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.billing.topupTitle') }}</h2>
         <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.billing.topupDesc') }}</p>
 
+        <div v-if="billing?.binancePending" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 14px; margin-bottom:12px; background:var(--pxl-card-2); border:1px solid rgba(38,161,123,0.4); border-radius:var(--radius-sm); max-width:560px">
+          <RefreshCw :size="13" class="spin" style="color:#26a17b; flex-shrink:0" />
+          <div style="flex:1; min-width:200px">
+            <div style="font-size:13px; color:var(--text)">{{ t('cust.billing.usdtPendingTitle') }}</div>
+            <div style="font-size:11.5px; color:var(--muted)"><span class="cell-mono">{{ billing.binancePending.usdtAmount }} USDT</span> → +{{ Number(billing.binancePending.creditAmount).toLocaleString() }} {{ billing.paymentMethods?.walletCurrency || 'VND' }} · {{ billing.binancePending.status === 'sent' ? t('cust.billing.usdtPendingSent') : t('cust.billing.usdtPendingWaiting') }}</div>
+          </div>
+          <button class="ghost-button" type="button" style="padding:4px 10px; font-size:11.5px" @click="reopenUsdt">{{ t('cust.billing.usdtPendingView') }}</button>
+        </div>
         <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap:14px; max-width:560px; margin-bottom:8px">
           <label class="input-field">
             <span>{{ t('cust.billing.amount') }} ({{ (pricing?.currency || 'VND').toUpperCase() }})</span>
@@ -508,6 +553,10 @@ onMounted(async () => {
               <div class="sepay-row" v-if="usdtLeft"><span class="lbl">{{ t('cust.billing.usdtExpires') }}</span><strong class="cell-mono">{{ usdtLeft }}</strong></div>
               <p class="sepay-hint">{{ t('cust.billing.usdtHint') }}</p>
               <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.usdtPolling') }}</p>
+              <button v-if="usdtData.status === 'pending'" class="primary-action" type="button" :disabled="busy" @click="markUsdtSent" style="margin-top:10px; background:#26a17b; border-color:#26a17b">
+                <Check :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.usdtSentBtn') }}
+              </button>
+              <p v-else-if="usdtData.status === 'sent'" class="sepay-hint" style="color:var(--yellow); margin-top:8px">{{ t('cust.billing.usdtSentNote') }}</p>
             </div>
           </div>
         </div>

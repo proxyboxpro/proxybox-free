@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.35', date: '2026-08-19', tag: 'feature',
+    titleEn: 'USDT: "I have sent the payment" button + reload-proof awaiting banner',
+    titleVi: 'USDT: nút "Tôi đã chuyển tiền" + banner chờ xác nhận sống sót qua reload',
+    items: [
+      { en: 'The USDT modal gets an "I have sent the payment" button: the top-up switches to an awaiting-confirmation state that is kept for 24 hours (instead of 2) so congested chains or slow Binance crediting cannot orphan a real payment.',
+        vi: 'Modal USDT có nút "Tôi đã chuyển tiền": lượt nạp chuyển sang trạng thái chờ xác nhận và được giữ 24 giờ (thay vì 2) — mạng nghẽn hay Binance cộng chậm cũng không mất lượt nạp.' },
+      { en: 'The awaiting state survives page reloads: a banner on the Billing page shows the open top-up with a reopen button, keeps polling in the background, and flips to success by itself once the deposit is confirmed.',
+        vi: 'Trạng thái chờ sống sót qua reload: banner ở trang Nạp tiền hiển thị lượt nạp đang mở kèm nút xem chi tiết, tự poll nền và tự báo thành công khi giao dịch được xác nhận.' },
+    ],
+  },
+  {
     version: '1.6.34', date: '2026-08-19', tag: 'feature',
     titleEn: 'USDT modal: QR scanning for the Binance app + on-chain wallets; top-up defaults to the minimum',
     titleVi: 'Modal USDT: quét QR bằng app Binance + ví on-chain; ô nạp mặc định bằng mức tối thiểu',
