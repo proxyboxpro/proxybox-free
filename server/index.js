@@ -2720,6 +2720,9 @@ function readRawBody(req) {
 //   paypalCurrency   — fallback currency if not specified in request (default 'USD')
 //   paypalRate       — wallet-currency units per 1 PayPal-currency unit (default 25000).
 //                      e.g. wallet=VND, paypalCurrency=USD, rate=25000 → $1 credits 25,000₫.
+//   paypalMin        — minimum top-up, denominated in paypalCurrency (default 5).
+//   paypalFeePct     — PayPal processing fee %, passed on to the payer (default 4.4).
+//   paypalFeeFixed   — PayPal fixed fee in paypalCurrency, passed on to the payer (default 0.30).
 
 let _paypalTokenCache = { value: '', expiresAt: 0 }
 // Wallet currency (what balances are denominated in, e.g. VND) vs the currency PayPal
@@ -2729,6 +2732,20 @@ let _paypalTokenCache = { value: '', expiresAt: 0 }
 function paypalFxRate() {
   const r = Number(config.billing?.paypalRate)
   return r > 0 ? r : 25000
+}
+function paypalMinTopup() {
+  const m = Number(config.billing?.paypalMin)
+  return Number.isFinite(m) && m >= 0 ? m : 5
+}
+// PayPal's cut is charged ON TOP of the wallet credit (payer bears the fee):
+// gross = (net + fixed) / (1 - pct) so the captured net still covers the credit.
+function paypalFeePctCfg() {
+  const p = Number(config.billing?.paypalFeePct)
+  return Number.isFinite(p) && p >= 0 && p < 100 ? p : 4.4
+}
+function paypalFeeFixedCfg() {
+  const f = Number(config.billing?.paypalFeeFixed)
+  return Number.isFinite(f) && f >= 0 ? f : 0.3
 }
 function walletCurrencyUpper() {
   return String(config.billing?.currency || 'vnd').toUpperCase()
@@ -7059,6 +7076,9 @@ async function handleApi(req, res, url) {
           paypalCancelUrl: config.billing.paypalCancelUrl || '',
           paypalCurrency: config.billing.paypalCurrency || 'USD',
           paypalRate: Number(config.billing.paypalRate) > 0 ? Number(config.billing.paypalRate) : 25000,
+          paypalMin: paypalMinTopup(),
+          paypalFeePct: paypalFeePctCfg(),
+          paypalFeeFixed: paypalFeeFixedCfg(),
           sepayEnabled: Boolean(config.billing.sepayEnabled),
           sepayApiKey: maskSecret(config.billing.sepayApiKey),
           sepayBankCode: config.billing.sepayBankCode || '',
@@ -7100,6 +7120,9 @@ async function handleApi(req, res, url) {
         if (typeof body.paypalCancelUrl === 'string') config.billing.paypalCancelUrl = body.paypalCancelUrl.trim().slice(0, 500)
         if (typeof body.paypalCurrency === 'string') config.billing.paypalCurrency = body.paypalCurrency.toUpperCase().slice(0, 8)
         if (Number.isFinite(Number(body.paypalRate)) && Number(body.paypalRate) > 0) config.billing.paypalRate = Number(body.paypalRate)
+        if (Number.isFinite(Number(body.paypalMin)) && Number(body.paypalMin) >= 0) config.billing.paypalMin = Number(body.paypalMin)
+        if (Number.isFinite(Number(body.paypalFeePct)) && Number(body.paypalFeePct) >= 0 && Number(body.paypalFeePct) < 100) config.billing.paypalFeePct = Number(body.paypalFeePct)
+        if (Number.isFinite(Number(body.paypalFeeFixed)) && Number(body.paypalFeeFixed) >= 0) config.billing.paypalFeeFixed = Number(body.paypalFeeFixed)
         if (typeof body.sepayEnabled === 'boolean') config.billing.sepayEnabled = body.sepayEnabled
         if (typeof body.sepayApiKey === 'string' && body.sepayApiKey && !body.sepayApiKey.startsWith('••••')) {
           config.billing.sepayApiKey = writeSecret(body.sepayApiKey.trim())
@@ -10917,6 +10940,9 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         paypalEnabled: Boolean(config.billing?.paypalEnabled && config.billing?.paypalClientId && config.billing?.paypalSecret),
         paypalCurrency: String(config.billing?.paypalCurrency || 'USD').toUpperCase(),
         paypalRate: Number(config.billing?.paypalRate) > 0 ? Number(config.billing.paypalRate) : 25000,
+        paypalMin: paypalMinTopup(),
+        paypalFeePct: paypalFeePctCfg(),
+        paypalFeeFixed: paypalFeeFixedCfg(),
         walletCurrency: walletCurrencyUpper(),
         sepayEnabled: Boolean(config.billing?.sepayEnabled && config.billing?.sepayBankCode && config.billing?.sepayAccountNumber && config.billing?.sepayApiKey),
         testMode: Boolean(config.billing?.testMode)
@@ -11102,13 +11128,26 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       return sendJson(res, 400, { error: 'unsupported currency' })
     }
     const rate = paypalFxRate()
+    // Minimum top-up is denominated in the admin pay currency (e.g. 5 USD),
+    // checked against the wallet credit regardless of which currency is charged.
+    const minTopup = paypalMinTopup()
+    const creditInPayCur = walletCur === configuredPayCur ? creditAmount : creditAmount / rate
+    if (minTopup > 0 && creditInPayCur + 1e-9 < minTopup) {
+      return sendJson(res, 400, { error: `minimum PayPal top-up is ${minTopup} ${configuredPayCur}` })
+    }
     // Smart conversion: when PayPal charges a different currency than the wallet, divide
     // by the rate (VND → USD). When they match, charge the amount as-is.
     const payAmount = currency === walletCur ? creditAmount : creditAmount / rate
+    // Payer bears the PayPal fee: gross-up the charge so the net PayPal pays out
+    // still covers the wallet credit. Fixed fee is denominated in paypalCurrency,
+    // so convert it when the charge currency is the wallet currency instead.
+    const feePct = paypalFeePctCfg() / 100
+    const feeFixed = currency === configuredPayCur ? paypalFeeFixedCfg() : paypalFeeFixedCfg() * rate
+    const grossPay = (payAmount + feeFixed) / (1 - feePct)
     // PayPal expects amount as decimal string with currency-appropriate fraction digits.
     // USD/EUR/etc use 2 digits, JPY/VND/HUF use 0 digits.
     const zeroDecimal = new Set(['VND', 'JPY', 'KRW', 'HUF', 'CLP', 'PYG', 'XOF'])
-    const value = zeroDecimal.has(currency) ? String(Math.max(1, Math.round(payAmount))) : (Math.round(payAmount * 100) / 100).toFixed(2)
+    const value = zeroDecimal.has(currency) ? String(Math.max(1, Math.round(grossPay))) : (Math.round(grossPay * 100) / 100).toFixed(2)
     if (Number(value) <= 0) return sendJson(res, 400, { error: 'amount too small to charge via PayPal' })
     try {
       const order = await paypalApi('POST', '/v2/checkout/orders', {

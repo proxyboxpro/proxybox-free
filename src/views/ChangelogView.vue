@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.32', date: '2026-08-19', tag: 'feature',
+    titleEn: 'PayPal: minimum top-up + gateway fee borne by the payer',
+    titleVi: 'PayPal: nạp tối thiểu + phí cổng do người nạp chịu',
+    items: [
+      { en: 'PayPal top-ups now enforce an admin-configurable minimum (default 5 USD) and gross-up the charge so the PayPal fee (default 4.4% + $0.30) is paid by the payer — the wallet is still credited the exact top-up amount.',
+        vi: 'Nạp qua PayPal giờ có mức tối thiểu do admin cấu hình (mặc định 5 USD) và cộng phí cổng (mặc định 4.4% + $0.30) vào số tiền thanh toán — người nạp chịu phí, ví vẫn được cộng đúng số nạp.' },
+      { en: 'The customer billing page shows the minimum, the fee policy, and a live charge estimate including the fee; admins tune all three knobs at /admin/payment.',
+        vi: 'Trang nạp tiền hiển thị mức tối thiểu, chính sách phí và ước tính số tiền charge gồm phí; admin chỉnh cả ba thông số ở /admin/payment.' },
+    ],
+  },
+  {
     version: '1.6.27', date: '2026-06-29', tag: 'feature',
     titleEn: 'Admin can log in as a user; users list paginated + newest-first',
     titleVi: 'Admin đăng nhập vào tài khoản khách; danh sách user phân trang + mới nhất lên đầu',

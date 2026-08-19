@@ -132,6 +132,21 @@ async function payWithPaypal() {
   busy.value = true; err.value = ''; flash.value = ''
   try {
     const amount = Math.max(1, Number(topup.value) || 0)
+    // Client-side mirror of the server's minimum gate so the customer gets a
+    // localized message instead of a raw 400.
+    const pm = billing.value?.paymentMethods || {}
+    const min = Number(pm.paypalMin) || 0
+    if (min > 0) {
+      const payCur = (pm.paypalCurrency || 'USD').toUpperCase()
+      const walletCur = (pm.walletCurrency || 'VND').toUpperCase()
+      const rate = Number(pm.paypalRate) > 0 ? Number(pm.paypalRate) : 25000
+      const minWallet = payCur === walletCur ? min : min * rate
+      if (amount + 1e-9 < minWallet) {
+        err.value = t('cust.billing.paypalMinErr', { min, cur: payCur, wallet: Math.ceil(minWallet).toLocaleString(), walletCur })
+        busy.value = false
+        return
+      }
+    }
     const r = await apiFetch('/api/v1/user/billing/paypal/create-order', { method: 'POST', body: { amount } })
     if (r.approveUrl) {
       // Remember the order so on return we can finalize via capture.
@@ -197,7 +212,9 @@ watch(filteredTx, () => { txPage.value = 1 })
 const presets = [50000, 100000, 200000, 500000, 1000000, 2000000]
 
 // PayPal charges in a foreign currency (e.g. USD) while the wallet is VND. Show the
-// customer what they'll actually be charged, converted via the admin-set rate.
+// customer what they'll actually be charged: wallet amount converted via the
+// admin-set rate, then grossed-up with the PayPal fee the payer bears
+// (mirrors the server's (net + fixed) / (1 - pct) formula).
 const paypalEstimate = computed(() => {
   const pm = billing.value?.paymentMethods
   if (!pm) return ''
@@ -205,11 +222,25 @@ const paypalEstimate = computed(() => {
   const walletCur = (pm.walletCurrency || pricing.value?.currency || 'VND').toUpperCase()
   const rate = Number(pm.paypalRate) > 0 ? Number(pm.paypalRate) : 25000
   const amount = Math.max(1, Number(topup.value) || 0)
-  if (payCur === walletCur) return `${amount.toLocaleString()} ${walletCur}`
+  const feePct = (Number(pm.paypalFeePct) || 0) / 100
+  const feeFixed = Number(pm.paypalFeeFixed) || 0
+  const net = payCur === walletCur ? amount : amount / rate
+  const gross = feePct < 1 ? (net + feeFixed) / (1 - feePct) : net + feeFixed
   const zeroDecimal = new Set(['VND', 'JPY', 'KRW', 'HUF'])
-  const charge = amount / rate
-  const shown = zeroDecimal.has(payCur) ? Math.round(charge).toLocaleString() : (Math.round(charge * 100) / 100).toFixed(2)
+  const shown = zeroDecimal.has(payCur) ? Math.round(gross).toLocaleString() : (Math.round(gross * 100) / 100).toFixed(2)
   return `${shown} ${payCur}`
+})
+// "Min $5 · fee borne by payer" note under the PayPal button.
+const paypalTermsNote = computed(() => {
+  const pm = billing.value?.paymentMethods
+  if (!pm) return ''
+  const payCur = (pm.paypalCurrency || 'USD').toUpperCase()
+  return t('cust.billing.paypalFeeNote', {
+    min: Number(pm.paypalMin) || 0,
+    cur: payCur,
+    pct: Number(pm.paypalFeePct) || 0,
+    fixed: Number(pm.paypalFeeFixed) || 0
+  })
 })
 
 onMounted(async () => {
@@ -292,6 +323,7 @@ onMounted(async () => {
             <QrCode :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.sepayPayBtn', { amount: Number(topup).toLocaleString() }) }}
           </button>
         </div>
+        <p v-if="billing?.paymentMethods?.paypalEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ paypalTermsNote }}</p>
       </section>
 
       <!-- SePay QR modal — shown after clicking Pay via VN bank transfer -->
