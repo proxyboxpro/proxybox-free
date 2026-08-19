@@ -82,6 +82,21 @@ onMounted(refresh)
     </section>
 
     <section v-if="billing" class="surface">
+      <div class="section-head"><h2>{{ t('admin.pay.binanceTitle') }}</h2></div>
+      <p style="font-size:13px; color:var(--muted)" v-html="t('admin.pay.binanceHelp')"></p>
+      <div class="form-grid">
+        <label class="check-line" style="grid-column:1/-1"><input v-model="billing.binanceEnabled" type="checkbox" /><span>{{ t('admin.pay.binanceEnable') }}</span></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.binanceApiKey') }}</span><input v-model="billing.binanceApiKey" type="password" placeholder="••••" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.binanceApiSecret') }}</span><input v-model="billing.binanceApiSecret" type="password" placeholder="••••" /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.binanceDepositAddress') }}</span><input v-model="billing.binanceDepositAddress" placeholder="0x…" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.binanceNetwork') }}</span><input v-model="billing.binanceNetwork" placeholder="BSC" maxlength="16" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.binanceRate') }}</span><input v-model.number="billing.binanceRate" type="number" min="1" step="100" placeholder="25000" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.binanceMin') }}</span><input v-model.number="billing.binanceMin" type="number" min="0" step="1" placeholder="5" /></label>
+      </div>
+      <button class="primary-action small" type="button" @click="saveBilling">{{ t('admin.pay.saveBinance') }}</button>
+    </section>
+
+    <section v-if="billing" class="surface">
       <div class="section-head"><h2>{{ t('admin.pay.sepayTitle') }}</h2></div>
       <p style="font-size:13px; color:var(--muted)" v-html="t('admin.pay.sepayHelp')"></p>
       <div class="form-grid">

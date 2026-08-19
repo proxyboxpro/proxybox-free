@@ -118,6 +118,75 @@ function closeSepay() {
   sepayOpen.value = false
   if (sepayPollTimer) { clearInterval(sepayPollTimer); sepayPollTimer = null }
 }
+// ─── USDT via Binance deposit address (BEP20) ──────────────────────
+const usdtOpen = ref(false)
+const usdtData = ref(null)          // { id, address, coin, network, usdtAmount, creditAmount, expiresAt }
+const usdtPaid = ref(null)          // status payload once matched
+const usdtLeft = ref('')
+let usdtPollTimer = null
+let usdtTickTimer = null
+const usdtEstimate = computed(() => {
+  const pm = billing.value?.paymentMethods
+  if (!pm) return ''
+  const rate = Number(pm.binanceRate) > 0 ? Number(pm.binanceRate) : 25000
+  return (Math.max(1, Number(topup.value) || 0) / rate).toFixed(2)
+})
+async function payWithUsdt() {
+  if (busy.value) return
+  busy.value = true; err.value = ''; flash.value = ''
+  try {
+    const amount = Math.floor(Number(topup.value) || 0)
+    const pm = billing.value?.paymentMethods || {}
+    const min = Number(pm.binanceMin) || 0
+    const rate = Number(pm.binanceRate) > 0 ? Number(pm.binanceRate) : 25000
+    if (min > 0 && amount / rate + 1e-9 < min) {
+      err.value = t('cust.billing.usdtMinErr', { min, wallet: Math.ceil(min * rate).toLocaleString(), walletCur: (pm.walletCurrency || 'VND') })
+      busy.value = false
+      return
+    }
+    const r = await apiFetch('/api/v1/user/billing/binance/create', { method: 'POST', body: { amount } })
+    usdtData.value = r
+    usdtPaid.value = null
+    usdtOpen.value = true
+    startUsdtTimers()
+  } catch (e) { err.value = e.message } finally { busy.value = false }
+}
+function startUsdtTimers() {
+  stopUsdtTimers()
+  usdtPollTimer = setInterval(async () => {
+    try {
+      const s = await apiFetch(`/api/v1/user/billing/binance/status?id=${encodeURIComponent(usdtData.value.id)}`)
+      if (s.status === 'paid') {
+        usdtPaid.value = s
+        stopUsdtTimers()
+        flash.value = t('cust.billing.usdtHit', { amount: Number(s.creditAmount).toLocaleString() })
+        await refresh()
+      } else if (s.status === 'expired' || s.status === 'cancelled') {
+        stopUsdtTimers()
+      }
+    } catch { /* keep polling */ }
+  }, 10_000)
+  usdtTickTimer = setInterval(() => {
+    const end = Date.parse(usdtData.value?.expiresAt || '') || 0
+    const left = Math.max(0, end - Date.now())
+    const m = Math.floor(left / 60000); const s2 = Math.floor((left % 60000) / 1000)
+    usdtLeft.value = `${m}:${String(s2).padStart(2, '0')}`
+    if (!left) stopUsdtTimers()
+  }, 1000)
+}
+function stopUsdtTimers() {
+  if (usdtPollTimer) { clearInterval(usdtPollTimer); usdtPollTimer = null }
+  if (usdtTickTimer) { clearInterval(usdtTickTimer); usdtTickTimer = null }
+}
+function closeUsdt() { usdtOpen.value = false; stopUsdtTimers() }
+async function copyUsdtAddress() {
+  if (!usdtData.value?.address) return
+  try { await navigator.clipboard.writeText(usdtData.value.address); flash.value = t('cust.billing.copied') } catch {}
+}
+async function copyUsdtAmount() {
+  if (!usdtData.value?.usdtAmount) return
+  try { await navigator.clipboard.writeText(usdtData.value.usdtAmount); flash.value = t('cust.billing.copied') } catch {}
+}
 async function copyMemo() {
   if (!sepayData.value?.memo) return
   try { await navigator.clipboard.writeText(sepayData.value.memo); flash.value = t('cust.billing.copied') } catch {}
@@ -303,6 +372,7 @@ onMounted(async () => {
               <span v-if="billing?.paymentMethods?.stripeEnabled" style="display:inline-flex; align-items:center; gap:6px"><CreditCard :size="14" style="color:var(--pxl)" /> Stripe (Card / Apple / Google Pay)</span>
               <span v-if="billing?.paymentMethods?.paypalEnabled" style="display:inline-flex; align-items:center; gap:6px"><CircleDollarSign :size="14" style="color:#1546a0" /> PayPal ({{ billing.paymentMethods.paypalCurrency || 'USD' }})</span>
               <span v-if="billing?.paymentMethods?.sepayEnabled" style="display:inline-flex; align-items:center; gap:6px"><Landmark :size="14" style="color:var(--green)" /> {{ t('cust.billing.sepayMethodLabel') }}</span>
+              <span v-if="billing?.paymentMethods?.binanceEnabled" style="display:inline-flex; align-items:center; gap:6px"><Wallet :size="14" style="color:#26a17b" /> {{ t('cust.billing.usdtMethodLabel') }}</span>
               <span v-if="!billing?.paymentMethods?.stripeEnabled && !billing?.paymentMethods?.paypalEnabled && !billing?.paymentMethods?.sepayEnabled" style="font-size:11.5px; color:var(--muted)">{{ t('cust.billing.noPayment') }}</span>
             </div>
           </div>
@@ -321,6 +391,9 @@ onMounted(async () => {
           </button>
           <button v-if="billing?.paymentMethods?.sepayEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithSepay" style="background:var(--green); border-color:var(--green); color:#0a1f1a">
             <QrCode :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.sepayPayBtn', { amount: Number(topup).toLocaleString() }) }}
+          </button>
+          <button v-if="billing?.paymentMethods?.binanceEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithUsdt" style="background:#26a17b; border-color:#26a17b">
+            <Wallet :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.usdtPayBtn', { usdt: usdtEstimate }) }}
           </button>
         </div>
         <p v-if="billing?.paymentMethods?.paypalEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ paypalTermsNote }}</p>
@@ -351,6 +424,33 @@ onMounted(async () => {
               <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayMemo') }}</span><strong class="cell-mono" style="color:var(--yellow)">{{ sepayData.memo }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyMemo">{{ t('cust.billing.copy') }}</button></strong></div>
               <p class="sepay-hint">{{ sepayData.instructions }}</p>
               <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.sepayPolling') }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- USDT (BEP20) deposit modal — company Binance deposit address -->
+      <div v-if="usdtOpen" class="sepay-modal-overlay" @click.self="closeUsdt">
+        <div class="sepay-modal">
+          <div class="sepay-modal-head">
+            <h3><Wallet :size="16" style="vertical-align:-3px" /> {{ t('cust.billing.usdtTitle') }}</h3>
+            <button class="ghost-button" type="button" @click="closeUsdt" style="padding:4px 8px"><X :size="14" /></button>
+          </div>
+          <div v-if="usdtPaid" class="sepay-success">
+            <div style="font-size:32px">✓</div>
+            <h4>{{ t('cust.billing.usdtPaid') }}</h4>
+            <p>{{ t('cust.billing.usdtPaidDesc', { amount: Number(usdtPaid.creditAmount).toLocaleString() }) }}</p>
+            <button class="primary-action" type="button" @click="closeUsdt">{{ t('common.close') }}</button>
+          </div>
+          <div v-else class="sepay-modal-body" style="grid-template-columns:1fr">
+            <div class="sepay-info">
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtNetwork') }}</span><strong class="cell-mono" style="color:var(--yellow)">{{ usdtData.coin }} · {{ usdtData.network }}</strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtAddress') }}</span><strong class="cell-mono" style="word-break:break-all">{{ usdtData.address }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyUsdtAddress">{{ t('cust.billing.copy') }}</button></strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtAmount') }}</span><strong class="cell-mono" style="color:var(--green); font-size:16px">{{ usdtData.usdtAmount }} USDT <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyUsdtAmount">{{ t('cust.billing.copy') }}</button></strong></div>
+              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtCredit') }}</span><strong class="cell-mono">{{ Number(usdtData.creditAmount).toLocaleString() }} {{ billing?.paymentMethods?.walletCurrency || 'VND' }}</strong></div>
+              <div class="sepay-row" v-if="usdtLeft"><span class="lbl">{{ t('cust.billing.usdtExpires') }}</span><strong class="cell-mono">{{ usdtLeft }}</strong></div>
+              <p class="sepay-hint">{{ t('cust.billing.usdtHint') }}</p>
+              <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.usdtPolling') }}</p>
             </div>
           </div>
         </div>

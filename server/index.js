@@ -2818,6 +2818,144 @@ async function paypalApi(method, pathStr, jsonBody) {
   })
 }
 
+
+// ── Binance USDT deposits (raw HTTPS + HMAC-SHA256, no SDK) ─────────────────
+//
+// Flow (Top-up wallet with USDT sent to the company Binance deposit address):
+//   1. Customer: POST /api/v1/user/billing/binance/create { amount }  (wallet currency)
+//      → backend allocates a UNIQUE usdt amount (base + random 4-decimal tail),
+//        stores a pending intent, returns { id, address, coin, network, usdtAmount }.
+//   2. Customer sends EXACTLY usdtAmount USDT over BEP20 to the deposit address.
+//   3. SPA polls GET /api/v1/user/billing/binance/status?id=… — each poll (globally
+//      throttled) pulls Binance deposit history (/sapi/v1/capital/deposit/hisrec,
+//      HMAC-signed) and matches successful deposits by exact amount.
+//   4. Match → wallet credited (race-safe dedup via binance_seen txId PK).
+//
+// config.billing fields:
+//   binanceEnabled         — bool
+//   binanceApiKey          — Binance API key (encrypted at rest; READ-ONLY perms!)
+//   binanceApiSecret       — Binance API secret (encrypted at rest)
+//   binanceDepositAddress  — company Binance USDT deposit address shown to customers
+//   binanceNetwork         — Binance network code the deposit address belongs to
+//                            ('BSC' = BEP20, default)
+//   binanceRate            — wallet units per 1 USDT (default 25000)
+//   binanceMin             — minimum top-up in USDT (default 5)
+function binanceRate() {
+  const r = Number(config.billing?.binanceRate)
+  return r > 0 ? r : 25000
+}
+function binanceMinTopup() {
+  const m = Number(config.billing?.binanceMin)
+  return Number.isFinite(m) && m >= 0 ? m : 5
+}
+function binanceNetworkCode() {
+  return String(config.billing?.binanceNetwork || 'BSC').toUpperCase()
+}
+function binanceCoinCode() {
+  return String(config.billing?.binanceCoin || 'USDT').toUpperCase()
+}
+// Amounts are the correlation key, so both sides (intent + deposit history)
+// are normalized to a fixed 4-decimal string before comparison.
+function normalizeUsdt(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  return n.toFixed(4)
+}
+async function binanceApi(pathStr, params = {}) {
+  const apiKey = readSecret(config.billing?.binanceApiKey)
+  const secret = readSecret(config.billing?.binanceApiSecret)
+  if (!apiKey || !secret) throw new Error('binanceApiKey / binanceApiSecret not configured')
+  const qs = new URLSearchParams({ ...params, recvWindow: '10000', timestamp: String(Date.now()) })
+  const signature = crypto.createHmac('sha256', secret).update(qs.toString()).digest('hex')
+  qs.append('signature', signature)
+  return new Promise((resolve, reject) => {
+    const r = https.request({
+      method: 'GET', hostname: 'api.binance.com', path: `${pathStr}?${qs.toString()}`,
+      headers: { 'X-MBX-APIKEY': apiKey }
+    }, (res2) => {
+      const chunks = []
+      res2.on('data', (c) => chunks.push(c))
+      res2.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        let j
+        try { j = JSON.parse(raw) } catch { j = { raw } }
+        if (res2.statusCode >= 400) return reject(new Error(j.msg || `Binance HTTP ${res2.statusCode}`))
+        resolve(j)
+      })
+    })
+    r.on('error', reject)
+    r.end()
+  })
+}
+function ensureBinanceTables() {
+  if (!sqliteDb) return false
+  sqliteDb.exec(`CREATE TABLE IF NOT EXISTS binance_topup (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, usdt_amount TEXT NOT NULL,
+    credit_amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    created_ts TEXT NOT NULL, matched_txid TEXT, matched_ts TEXT)`)
+  sqliteDb.exec('CREATE TABLE IF NOT EXISTS binance_seen (tx_id TEXT PRIMARY KEY, user_id TEXT, ts TEXT NOT NULL, amount TEXT)')
+  return true
+}
+const BINANCE_INTENT_TTL_MS = 2 * 60 * 60 * 1000 // customer has 2h to send
+let _binanceLastPoll = 0
+let _binancePollInflight = null
+// Pull successful deposits from Binance and match them against open intents.
+// The shared company deposit address means the AMOUNT is the only correlation
+// key — hence the unique 4-decimal tail per intent. Globally throttled to one
+// upstream call per 15s; concurrent pollers share the in-flight promise.
+async function binanceSweep() {
+  if (!config.billing?.binanceEnabled || !sqliteDb) return
+  if (_binancePollInflight) return _binancePollInflight
+  const now = Date.now()
+  if (now - _binanceLastPoll < 15_000) return
+  _binanceLastPoll = now
+  _binancePollInflight = (async () => {
+    try {
+      ensureBinanceTables()
+      const cutoff = new Date(now - BINANCE_INTENT_TTL_MS).toISOString()
+      sqliteDb.prepare("UPDATE binance_topup SET status = 'expired' WHERE status = 'pending' AND created_ts < ?").run(cutoff)
+      const open = sqliteDb.prepare("SELECT * FROM binance_topup WHERE status = 'pending'").all()
+      if (!open.length) return
+      const deposits = await binanceApi('/sapi/v1/capital/deposit/hisrec', {
+        coin: binanceCoinCode(), status: '1', startTime: String(now - 6 * 60 * 60 * 1000), limit: '1000'
+      })
+      if (!Array.isArray(deposits)) return
+      const wantNet = binanceNetworkCode()
+      for (const d of deposits) {
+        const txId = String(d.txId || '').trim()
+        if (!txId) continue
+        // Off-chain/internal Binance transfers may report an empty network —
+        // accept those too; a mismatching on-chain network is skipped.
+        const net = String(d.network || '').toUpperCase()
+        if (net && net !== wantNet) continue
+        const amt = normalizeUsdt(d.amount)
+        if (!amt) continue
+        if (sqliteDb.prepare('SELECT tx_id FROM binance_seen WHERE tx_id = ?').get(txId)) continue
+        const intent = open.find((i) => i.status === 'pending' && normalizeUsdt(i.usdt_amount) === amt
+          && Number(d.insertTime || 0) >= Date.parse(i.created_ts) - 10 * 60_000)
+        if (!intent) continue
+        // Claim the txId FIRST (PRIMARY KEY = race-safe): only the claiming
+        // sweep credits the wallet, a concurrent sweep sees changes=0.
+        const ins = sqliteDb.prepare('INSERT OR IGNORE INTO binance_seen (tx_id, user_id, ts, amount) VALUES (?, ?, ?, ?)')
+          .run(txId, intent.user_id, new Date().toISOString(), amt)
+        if (!ins.changes) continue
+        intent.status = 'paid'
+        sqliteDb.prepare("UPDATE binance_topup SET status = 'paid', matched_txid = ?, matched_ts = ? WHERE id = ?")
+          .run(txId, new Date().toISOString(), intent.id)
+        const next = recordBillingTx(intent.user_id, 'topup', Number(intent.credit_amount), `USDT ${amt} deposit tx=${txId.slice(0, 24)}`)
+        audit({ actor: 'binance', ip: '', method: 'SWEEP', path: '/binance/deposit', note: `topup user=${intent.user_id} +${intent.credit_amount} (${amt} USDT, tx ${txId}) → ${next}` })
+      }
+    } catch (e) {
+      logError({ source: 'binance', level: 'warn', code: 'binance:sweep-fail', message: e.message, context: {} })
+    } finally {
+      _binancePollInflight = null
+    }
+  })()
+  return _binancePollInflight
+}
+// Safety net for customers who close the page before their deposit confirms.
+setInterval(() => { binanceSweep()?.catch?.(() => {}) }, 2 * 60 * 1000).unref()
+
 // ── billing ledger (SQLite-backed; falls back to memory when sqlite absent) ──
 const billingMemory = new Map() // user_id -> { balance, tx: [] }
 function userBalance(userId) {
@@ -7084,7 +7222,15 @@ async function handleApi(req, res, url) {
           sepayBankCode: config.billing.sepayBankCode || '',
           sepayAccountNumber: config.billing.sepayAccountNumber || '',
           sepayAccountHolder: config.billing.sepayAccountHolder || '',
-          sepayPrefix: config.billing.sepayPrefix || 'PB'
+          sepayPrefix: config.billing.sepayPrefix || 'PB',
+          // Binance USDT deposits
+          binanceEnabled: Boolean(config.billing.binanceEnabled),
+          binanceApiKey: maskSecret(config.billing.binanceApiKey),
+          binanceApiSecret: maskSecret(config.billing.binanceApiSecret),
+          binanceDepositAddress: config.billing.binanceDepositAddress || '',
+          binanceNetwork: binanceNetworkCode(),
+          binanceRate: binanceRate(),
+          binanceMin: binanceMinTopup()
         })
       }
       if (req.method === 'PATCH') {
@@ -7131,6 +7277,18 @@ async function handleApi(req, res, url) {
         if (typeof body.sepayAccountNumber === 'string') config.billing.sepayAccountNumber = body.sepayAccountNumber.trim().replace(/\s+/g, '').slice(0, 32)
         if (typeof body.sepayAccountHolder === 'string') config.billing.sepayAccountHolder = body.sepayAccountHolder.trim().slice(0, 64)
         if (typeof body.sepayPrefix === 'string') config.billing.sepayPrefix = body.sepayPrefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'PB'
+        // Binance USDT fields
+        if (typeof body.binanceEnabled === 'boolean') config.billing.binanceEnabled = body.binanceEnabled
+        if (typeof body.binanceApiKey === 'string' && body.binanceApiKey && !body.binanceApiKey.startsWith('••••')) {
+          config.billing.binanceApiKey = writeSecret(body.binanceApiKey.trim())
+        }
+        if (typeof body.binanceApiSecret === 'string' && body.binanceApiSecret && !body.binanceApiSecret.startsWith('••••')) {
+          config.billing.binanceApiSecret = writeSecret(body.binanceApiSecret.trim())
+        }
+        if (typeof body.binanceDepositAddress === 'string') config.billing.binanceDepositAddress = body.binanceDepositAddress.trim().slice(0, 128)
+        if (typeof body.binanceNetwork === 'string') config.billing.binanceNetwork = body.binanceNetwork.trim().toUpperCase().slice(0, 16)
+        if (Number.isFinite(Number(body.binanceRate)) && Number(body.binanceRate) > 0) config.billing.binanceRate = Number(body.binanceRate)
+        if (Number.isFinite(Number(body.binanceMin)) && Number(body.binanceMin) >= 0) config.billing.binanceMin = Number(body.binanceMin)
         // Reset cached token when credentials change
         _paypalTokenCache = { value: '', expiresAt: 0 }
         await saveConfig()
@@ -10929,6 +11087,14 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
   // GET    /api/v1/user/billing/transactions   â€” full transaction list (paginated)
   // POST   /api/v1/user/billing/topup          â€” credit wallet (test mode; admin gateway integration later)
   if (req.method === 'GET' && sub === 'billing') {
+    // Late USDT deposits: if this user still has an open intent, sweep in the
+    // background so the credit lands even without the modal's status polling.
+    if (config.billing?.binanceEnabled && sqliteDb) {
+      try {
+        const pend = sqliteDb.prepare("SELECT id FROM binance_topup WHERE user_id = ? AND status = 'pending' LIMIT 1").get(user.id)
+        if (pend) binanceSweep()?.catch?.(() => {})
+      } catch { /* table not created yet */ }
+    }
     const balance = userBalance(user.id)
     const recent = sqliteDb ? sqliteDb.prepare('SELECT ts, type, amount, balance_after AS balanceAfter, note FROM billing_tx WHERE user_id = ? ORDER BY ts DESC LIMIT 10').all(user.id) : []
     return sendJson(res, 200, {
@@ -10945,6 +11111,10 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         paypalFeeFixed: paypalFeeFixedCfg(),
         walletCurrency: walletCurrencyUpper(),
         sepayEnabled: Boolean(config.billing?.sepayEnabled && config.billing?.sepayBankCode && config.billing?.sepayAccountNumber && config.billing?.sepayApiKey),
+        binanceEnabled: Boolean(config.billing?.binanceEnabled && config.billing?.binanceDepositAddress && config.billing?.binanceApiKey && config.billing?.binanceApiSecret),
+        binanceCoin: binanceCoinCode(),
+        binanceRate: binanceRate(),
+        binanceMin: binanceMinTopup(),
         testMode: Boolean(config.billing?.testMode)
       }
     })
@@ -11099,6 +11269,74 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     const rows = sqliteDb.prepare('SELECT id, ts, amount, ref, user_id, order_id FROM sepay_seen WHERE user_id = ? AND ts >= ? ORDER BY id DESC LIMIT 10')
       .all(user.id, new Date(since).toISOString())
     return sendJson(res, 200, { hits: rows.map((r) => ({ id: r.id, ts: r.ts, amount: r.amount, ref: r.ref, orderId: r.order_id || null })) })
+  }
+
+  // ── Binance USDT: create a top-up intent with a unique amount ───────────
+  if (req.method === 'POST' && sub === 'billing/binance/create') {
+    if (!config.billing?.binanceEnabled) return sendJson(res, 503, { error: 'USDT top-up not enabled' })
+    if (!config.billing?.binanceDepositAddress) return sendJson(res, 503, { error: 'binanceDepositAddress not configured' })
+    if (!readSecret(config.billing?.binanceApiKey) || !readSecret(config.billing?.binanceApiSecret)) {
+      return sendJson(res, 503, { error: 'Binance API credentials missing' })
+    }
+    if (!ensureBinanceTables()) return sendJson(res, 503, { error: 'storage unavailable' })
+    const body = await readJson(req)
+    const creditAmount = Math.floor(Number(body.amount) || 0)
+    if (creditAmount < 1 || creditAmount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 1..100,000,000' })
+    const rate = binanceRate()
+    const minTopup = binanceMinTopup()
+    if (minTopup > 0 && creditAmount / rate + 1e-9 < minTopup) {
+      return sendJson(res, 400, { error: `minimum USDT top-up is ${minTopup} USDT` })
+    }
+    // One open intent per user: re-opening the modal for the same amount
+    // reuses it; a different amount cancels the stale one so the unique-amount
+    // pool never fills with abandoned rows.
+    let intent = sqliteDb.prepare("SELECT * FROM binance_topup WHERE user_id = ? AND status = 'pending' ORDER BY created_ts DESC LIMIT 1").get(user.id)
+    if (intent && Number(intent.credit_amount) !== creditAmount) {
+      sqliteDb.prepare("UPDATE binance_topup SET status = 'cancelled' WHERE id = ?").run(intent.id)
+      intent = null
+    }
+    if (!intent) {
+      // Unique 4-decimal tail (0.0001–0.0099): the amount is the correlation
+      // key on a shared deposit address, so no two OPEN intents may collide.
+      const base = Math.floor((creditAmount / rate) * 100) / 100
+      let usdtAmount = ''
+      for (let i = 0; i < 60; i++) {
+        const cand = (base + crypto.randomInt(1, 100) / 10000).toFixed(4)
+        if (!sqliteDb.prepare("SELECT id FROM binance_topup WHERE usdt_amount = ? AND status = 'pending'").get(cand)) { usdtAmount = cand; break }
+      }
+      if (!usdtAmount) return sendJson(res, 503, { error: 'could not allocate a unique amount, please retry' })
+      intent = {
+        id: `usdt-${crypto.randomBytes(8).toString('hex')}`, user_id: user.id, usdt_amount: usdtAmount,
+        credit_amount: creditAmount, status: 'pending', created_ts: new Date().toISOString()
+      }
+      sqliteDb.prepare('INSERT INTO binance_topup (id, user_id, usdt_amount, credit_amount, status, created_ts) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(intent.id, intent.user_id, intent.usdt_amount, intent.credit_amount, intent.status, intent.created_ts)
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/binance/create', note: `intent ${intent.id} ${usdtAmount} USDT → credit ${creditAmount}` })
+    }
+    return sendJson(res, 200, {
+      id: intent.id,
+      address: String(config.billing.binanceDepositAddress).trim(),
+      coin: binanceCoinCode(),
+      network: binanceNetworkCode() === 'BSC' ? 'BEP20 (BNB Smart Chain)' : binanceNetworkCode(),
+      usdtAmount: intent.usdt_amount,
+      creditAmount: Number(intent.credit_amount),
+      expiresAt: new Date(Date.parse(intent.created_ts) + BINANCE_INTENT_TTL_MS).toISOString()
+    })
+  }
+
+  // ── Binance USDT: poll intent status (triggers a throttled deposit sweep) ──
+  if (req.method === 'GET' && sub === 'billing/binance/status') {
+    if (!config.billing?.binanceEnabled) return sendJson(res, 503, { error: 'USDT top-up not enabled' })
+    if (!ensureBinanceTables()) return sendJson(res, 503, { error: 'storage unavailable' })
+    const id = String(url.searchParams.get('id') || '').trim()
+    const intent = id ? sqliteDb.prepare('SELECT * FROM binance_topup WHERE id = ? AND user_id = ?').get(id, user.id) : null
+    if (!intent) return sendJson(res, 404, { error: 'intent not found' })
+    if (intent.status === 'pending') { try { await binanceSweep() } catch { /* sweep errors already logged */ } }
+    const fresh = sqliteDb.prepare('SELECT * FROM binance_topup WHERE id = ?').get(intent.id)
+    return sendJson(res, 200, {
+      id: fresh.id, status: fresh.status, usdtAmount: fresh.usdt_amount,
+      creditAmount: Number(fresh.credit_amount), txId: fresh.matched_txid || null, balance: userBalance(user.id)
+    })
   }
 
   // ── PayPal: create order (returns approveUrl for redirect) ──────────────

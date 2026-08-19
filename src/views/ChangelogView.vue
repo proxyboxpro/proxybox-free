@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.33', date: '2026-08-19', tag: 'feature',
+    titleEn: 'USDT top-ups via Binance (BEP20), minimum 5 USDT',
+    titleVi: 'Nạp tiền bằng USDT qua Binance (BEP20), tối thiểu 5 USDT',
+    items: [
+      { en: 'New crypto top-up channel: customers send USDT (BEP20) to the operator Binance deposit address. Each top-up gets a unique 4-decimal amount; the panel polls the Binance deposit-history API (HMAC-signed, read-only key) and credits the wallet automatically with txId-level dedup.',
+        vi: 'Kênh nạp crypto mới: khách gửi USDT (BEP20) vào địa chỉ nạp Binance của nhà vận hành. Mỗi lượt nạp được cấp một số tiền duy nhất 4 số lẻ; hệ thống poll Binance deposit-history API (ký HMAC, key chỉ đọc) và tự cộng ví, chống trùng theo txId.' },
+      { en: 'Minimum 5 USDT per top-up (admin-configurable, like the exchange rate and network). New USDT section at /admin/payment; the billing page gets a USDT button + modal with address, exact amount, countdown and auto-detection.',
+        vi: 'Tối thiểu 5 USDT mỗi lượt nạp (admin chỉnh được, cùng với tỉ giá và mạng). Mục USDT mới ở /admin/payment; trang nạp tiền có nút USDT + modal hiển thị địa chỉ, số tiền chính xác, đếm ngược và tự nhận diện.' },
+    ],
+  },
+  {
     version: '1.6.32', date: '2026-08-19', tag: 'feature',
     titleEn: 'PayPal: minimum top-up + gateway fee borne by the payer',
     titleVi: 'PayPal: nạp tối thiểu + phí cổng do người nạp chịu',
