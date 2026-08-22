@@ -11703,6 +11703,109 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
 const LOGIN_FAIL_MAX = 5
 const LOGIN_FAIL_WINDOW_MS = 60_000
 const LOGIN_LOCK_MS = 10 * 60_000
+// ── Registration anti-fraud ─────────────────────────────────────────────────
+// Lesson from 2026-08-22: one IP scripted 575 signups in 4 days and drained
+// the signup promo. Three layers, durable in SQLite so restarts never reset:
+//   1. Sliding-window caps per IP AND per subnet (v4 /24, v6 /48) — rotating
+//      addresses inside one allocation still hits the subnet cap.
+//   2. Gmail-alias normalization (dots + "+tag") — one mailbox, one account.
+//   3. Disposable-email-domain blocklist (config-extendable).
+// Overrides in config.security: { regPerIp10m, regPerIpDay, regPerSubnetDay,
+// promoPerIpDay, promoPerSubnetDay, blockedEmailDomains: [],
+// allowDisposableEmail: bool }. Loopback is exempt (local QA / e2e suites).
+function securityCfg() { return config.security || {} }
+function ensureAbuseTable() {
+  if (!sqliteDb) return false
+  sqliteDb.exec('CREATE TABLE IF NOT EXISTS abuse_events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ip TEXT NOT NULL, subnet TEXT, ts INTEGER NOT NULL)')
+  sqliteDb.exec('CREATE INDEX IF NOT EXISTS idx_abuse_kind_ip_ts ON abuse_events (kind, ip, ts)')
+  sqliteDb.exec('CREATE INDEX IF NOT EXISTS idx_abuse_kind_subnet_ts ON abuse_events (kind, subnet, ts)')
+  return true
+}
+function expandV6(ip) {
+  const [head, tail] = ip.split('::')
+  const hs = head ? head.split(':') : []
+  const ts = tail ? tail.split(':') : []
+  return [...hs, ...Array(Math.max(0, 8 - hs.length - ts.length)).fill('0'), ...ts]
+}
+function ipSubnet(ip) {
+  if (net.isIPv4(ip)) return ip.split('.').slice(0, 3).join('.') + '.0/24'
+  if (net.isIP(ip) === 6) {
+    try { return expandV6(ip.split('%')[0]).slice(0, 3).join(':') + '::/48' } catch { return ip }
+  }
+  return ip
+}
+function abuseRules(kind) {
+  const s = securityCfg()
+  if (kind === 'register') {
+    return [
+      ['ip', 10 * 60_000, Number(s.regPerIp10m ?? 2)],
+      ['ip', 24 * 3600_000, Number(s.regPerIpDay ?? 3)],
+      ['subnet', 24 * 3600_000, Number(s.regPerSubnetDay ?? 10)]
+    ]
+  }
+  return [
+    ['ip', 24 * 3600_000, Number(s.promoPerIpDay ?? 2)],
+    ['subnet', 24 * 3600_000, Number(s.promoPerSubnetDay ?? 5)]
+  ]
+}
+// true = over the limit, reject. Callers record AFTER success via abuseRecord
+// so failed attempts (validation errors) don't consume quota.
+function abuseExceeded(kind, ip) {
+  if (ip === '127.0.0.1' || ip === '::1') return false
+  if (!ensureAbuseTable()) return false // no sqlite → fail open
+  const now = Date.now()
+  const subnet = ipSubnet(ip)
+  for (const [col, windowMs, limit] of abuseRules(kind)) {
+    if (!(limit > 0)) continue
+    const val = col === 'ip' ? ip : subnet
+    const row = col === 'ip'
+      ? sqliteDb.prepare('SELECT COUNT(*) n FROM abuse_events WHERE kind = ? AND ip = ? AND ts >= ?').get(kind, val, now - windowMs)
+      : sqliteDb.prepare('SELECT COUNT(*) n FROM abuse_events WHERE kind = ? AND subnet = ? AND ts >= ?').get(kind, val, now - windowMs)
+    if (Number(row?.n) >= limit) return true
+  }
+  return false
+}
+function abuseRecord(kind, ip) {
+  if (ip === '127.0.0.1' || ip === '::1') return
+  if (!ensureAbuseTable()) return
+  try { sqliteDb.prepare('INSERT INTO abuse_events (kind, ip, subnet, ts) VALUES (?, ?, ?, ?)').run(kind, ip, ipSubnet(ip), Date.now()) } catch {}
+}
+setInterval(() => {
+  try { if (sqliteDb) sqliteDb.prepare('DELETE FROM abuse_events WHERE ts < ?').run(Date.now() - 7 * 24 * 3600_000) } catch {}
+}, 6 * 3600_000).unref()
+// Gmail ignores dots and anything after "+" in the local part — without
+// normalization one mailbox mints unlimited "unique" emails. "+tag" is
+// stripped for every domain (near-universal plus-aliasing).
+function normalizeEmail(email) {
+  const e = String(email || '').trim().toLowerCase()
+  const at = e.lastIndexOf('@')
+  if (at < 0) return e
+  let local = e.slice(0, at)
+  const domain = e.slice(at + 1)
+  const plus = local.indexOf('+')
+  if (plus >= 0) local = local.slice(0, plus)
+  if (domain === 'gmail.com' || domain === 'googlemail.com') local = local.replace(/\./g, '')
+  return `${local}@${domain}`
+}
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', 'guerrillamail.net', '10minutemail.com', '10minutemail.net',
+  'temp-mail.org', 'tempmail.com', 'tempmail.dev', 'yopmail.com', 'yopmail.fr', 'sharklasers.com',
+  'grr.la', 'trashmail.com', 'trashmail.de', 'getnada.com', 'dispostable.com', 'maildrop.cc',
+  'mintemail.com', 'throwawaymail.com', 'fakeinbox.com', 'mailnesia.com', 'tempr.email',
+  'discard.email', 'emailondeck.com', 'mohmal.com', 'moakt.com', 'moakt.cc', 'tmpmail.net',
+  'tmpmail.org', 'tempmailo.com', 'mail.tm', 'dropmail.me', '1secmail.com', '1secmail.net',
+  '1secmail.org', 'mailpoof.com', 'mytemp.email', 'inboxkitten.com', 'harakirimail.com',
+  '33mail.com', 'mail7.io', 'linshiyouxiang.net', '24mail.chacuo.net', 'burpcollaborator.net',
+  // domains seen in the 2026-08-22 abuse wave
+  'watsawang.com', 'kinws.com', 'goziview.com'
+])
+function emailDomainBlocked(email) {
+  const domain = String(email || '').split('@').pop().toLowerCase()
+  if ((securityCfg().blockedEmailDomains || []).some((d) => String(d).toLowerCase() === domain)) return true
+  if (securityCfg().allowDisposableEmail) return false
+  return DISPOSABLE_EMAIL_DOMAINS.has(domain)
+}
+
 const loginFailsByIp = new Map()
 const loginFailsByEmail = new Map()
 
@@ -11825,14 +11928,24 @@ function verifyTotp(b32Secret, code) {
 }
 
 async function handleRegister(req, res) {
+  const ip = clientIp(req)
   const body = await readJson(req)
   const email = String(body.email || '').trim().toLowerCase()
   const password = String(body.password || '')
   if (!email || password.length < 8) return sendJson(res, 400, { error: 'email and a password of at least 8 characters are required' })
   if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password)) return sendJson(res, 400, { error: 'password must contain upper, lower, and a digit' })
   if (!body.acceptedTos) return sendJson(res, 400, { error: 'must accept Terms of Service (set acceptedTos: true)' })
-  if (config.users.some((item) => String(item.email || '').toLowerCase() === email)) {
+  if (emailDomainBlocked(email)) {
+    audit({ actor: email, ip, method: 'POST', path: '/api/auth/register', status: 400, note: 'blocked email domain' })
+    return sendJson(res, 400, { error: 'Email tạm thời / dùng một lần không được chấp nhận — hãy dùng hộp thư thật. (Disposable email domains are not accepted.)' })
+  }
+  const normEmail = normalizeEmail(email)
+  if (config.users.some((item) => String(item.email || '').toLowerCase() === email || normalizeEmail(item.email) === normEmail)) {
     return sendJson(res, 409, { error: 'email is already registered' })
+  }
+  if (abuseExceeded('register', ip)) {
+    audit({ actor: email, ip, method: 'POST', path: '/api/auth/register', status: 429, note: 'registration rate limit' })
+    return sendJson(res, 429, { error: 'Quá nhiều lượt đăng ký từ IP này — vui lòng thử lại sau. (Too many signups from this IP — try again later.)' })
   }
   // Affiliate referral: ?ref=<code> on register â†' credits both new + referrer.
   let referrer = null
@@ -11859,6 +11972,7 @@ async function handleRegister(req, res) {
     tags: []
   }
   config.users.push(user)
+  abuseRecord('register', ip)
   await saveConfig()
   // Trial credits — configurable (config.billing.trialCredits). Use nullish
   // coalescing so the admin can explicitly set 0 to disable; `0 || 50000`

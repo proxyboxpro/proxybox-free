@@ -1,6 +1,6 @@
 {
   "name": "proxy-store-vue",
-  "version": "1.6.35",
+  "version": "1.6.36",
   "private": true,
   "type": "module",
   "engines": {

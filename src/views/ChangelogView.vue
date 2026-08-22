@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.36', date: '2026-08-22', tag: 'security',
+    titleEn: 'Registration anti-fraud: per-IP/subnet rate limits, gmail-alias dedup, disposable-email blocklist',
+    titleVi: 'Chống gian lận đăng ký: giới hạn theo IP/subnet, chặn alias Gmail, chặn email dùng một lần',
+    items: [
+      { en: 'Signups are now rate-limited per IP (2/10min, 3/day) AND per subnet (/24 IPv4, /48 IPv6 — 10/day), with counters stored in SQLite so restarts never reset them. Limits are config-overridable (config.security), loopback is exempt for local QA.',
+        vi: 'Đăng ký giờ bị giới hạn theo IP (2/10 phút, 3/ngày) VÀ theo subnet (/24 IPv4, /48 IPv6 — 10/ngày), bộ đếm lưu SQLite nên restart không reset. Có thể chỉnh qua config.security, loopback được miễn cho QA nội bộ.' },
+      { en: 'Emails are normalized before uniqueness checks (gmail dots + "+tag" aliases collapse to one mailbox) and ~45 disposable-email domains are rejected (extendable via config.security.blockedEmailDomains). The promo claim endpoint gets the same per-IP/subnet gate.',
+        vi: 'Email được chuẩn hóa trước khi kiểm tra trùng (dấu chấm Gmail + alias "+tag" quy về một hộp thư) và ~45 domain email dùng một lần bị từ chối (mở rộng qua config.security.blockedEmailDomains). Endpoint nhận ưu đãi cũng bị giới hạn IP/subnet tương tự.' },
+    ],
+  },
+  {
     version: '1.6.35', date: '2026-08-19', tag: 'feature',
     titleEn: 'USDT: "I have sent the payment" button + reload-proof awaiting banner',
     titleVi: 'USDT: nút "Tôi đã chuyển tiền" + banner chờ xác nhận sống sót qua reload',
