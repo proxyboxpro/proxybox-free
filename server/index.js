@@ -3011,6 +3011,21 @@ function userBalance(userId) {
   const m = billingMemory.get(userId)
   return m ? m.balance : 0
 }
+// Deposit-gated affiliate kickback (paid once per referee, respects a 0 config).
+function maybeAffiliateKickback(referredUserId) {
+  const user = config.users.find((u) => u.id === referredUserId)
+  if (!user || !user.referredBy) return
+  if (typeof isFeatureEnabled === 'function' && !isFeatureEnabled('affiliate')) return
+  const kickback = Number(config.billing?.affiliateKickback ?? 0)
+  if (!(kickback > 0)) return
+  const referrer = config.users.find((u) => u.id === user.referredBy)
+  if (!referrer || referrer.id === user.id) return
+  const marker = `[ref:${user.id}]`
+  if (sqliteDb) {
+    try { if (sqliteDb.prepare("SELECT 1 FROM billing_tx WHERE type = 'affiliate' AND note LIKE ? LIMIT 1").get(`%${marker}%`)) return } catch {}
+  }
+  recordBillingTx(referrer.id, 'affiliate', kickback, `referral from ${user.email} (first deposit) ${marker}`)
+}
 function recordBillingTx(userId, type, amount, note) {
   // SECURITY: wrap the read-balance + write-tx in an EXCLUSIVE transaction so two
   // concurrent requests can't both read the same `prev` and double-credit/debit.
@@ -3019,6 +3034,7 @@ function recordBillingTx(userId, type, amount, note) {
   // except 'refund' which is positive (paid back).
   const positiveTypes = new Set(['topup', 'trial', 'affiliate', 'refund', 'admin-credit', 'promo'])
   const sign = positiveTypes.has(type) ? 1 : -1
+  if (type === 'topup' && sign > 0) { try { maybeAffiliateKickback(userId) } catch { /* never block a topup */ } }
   const delta = sign * Math.abs(amount)
   if (sqliteDb) {
     try {
@@ -11939,6 +11955,13 @@ async function handleRegister(req, res) {
     audit({ actor: email, ip, method: 'POST', path: '/api/auth/register', status: 400, note: 'blocked email domain' })
     return sendJson(res, 400, { error: 'Email tạm thời / dùng một lần không được chấp nhận — hãy dùng hộp thư thật. (Disposable email domains are not accepted.)' })
   }
+  {
+    const at = email.lastIndexOf('@'); const local = at >= 0 ? email.slice(0, at) : ''; const domain = at >= 0 ? email.slice(at + 1) : ''
+    if ((domain === 'gmail.com' || domain === 'googlemail.com') && /[^a-z0-9.]/.test(local.split('+')[0])) {
+      audit({ actor: email, ip, method: 'POST', path: '/api/auth/register', status: 400, note: 'invalid gmail local part' })
+      return sendJson(res, 400, { error: 'Địa chỉ Gmail không hợp lệ. (Invalid Gmail address.)' })
+    }
+  }
   const normEmail = normalizeEmail(email)
   if (config.users.some((item) => String(item.email || '').toLowerCase() === email || normalizeEmail(item.email) === normEmail)) {
     return sendJson(res, 409, { error: 'email is already registered' })
@@ -11979,11 +12002,8 @@ async function handleRegister(req, res) {
   // would have silently fallen back to the old default.
   const trial = Number(config.billing?.trialCredits ?? 50000)
   if (trial > 0) recordBillingTx(user.id, 'trial', trial, 'signup trial credits')
-  // Affiliate kickback â€” give referrer a configured bonus too.
-  if (referrer) {
-    const kickback = Number(config.billing?.affiliateKickback || 20000)
-    if (kickback > 0) recordBillingTx(referrer.id, 'affiliate', kickback, `referral from ${user.email}`)
-  }
+  // Affiliate kickback is NOT paid at signup (deposit-gated — see
+  // maybeAffiliateKickback, hooked into recordBillingTx on a real 'topup').
   audit({ actor: email, ip: clientIp(req), method: 'POST', path: '/api/auth/register', note: `tos accepted; trial=${trial}; ref=${ref || 'none'}` })
   // Welcome email + email verification link (best-effort, async)
   const verifyLink = `${publicBaseUrl(req)}/verify-email?token=${verifyToken}`

@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.37', date: '2026-08-22', tag: 'security',
+    titleEn: 'Affiliate kickback is deposit-gated; fixed a bug that paid it even when set to 0',
+    titleVi: 'Hoa hồng giới thiệu chỉ trả khi có nạp tiền thật; sửa lỗi vẫn trả dù đặt 0',
+    items: [
+      { en: 'A signup farm mass-registered accounts with a referral code to mint the affiliate bonus. Kickback is now paid ONCE per referred user and ONLY after they make a real deposit — never at signup.',
+        vi: 'Một farm đăng ký hàng loạt tài khoản kèm mã giới thiệu để lấy hoa hồng. Hoa hồng giờ chỉ trả MỘT lần cho mỗi người được giới thiệu và CHỈ sau khi họ nạp tiền thật — không trả lúc đăng ký.' },
+      { en: 'Fixed: affiliateKickback used `|| 20000`, so setting it to 0 still paid 20,000đ. It now respects 0. Also rejects forged Gmail addresses (underscore/special chars in the local part).',
+        vi: 'Sửa: affiliateKickback dùng `|| 20000` nên đặt 0 vẫn trả 20.000đ. Giờ tôn trọng giá trị 0. Đồng thời từ chối địa chỉ Gmail giả (có underscore/ký tự lạ trong tên).' },
+    ],
+  },
+  {
     version: '1.6.36', date: '2026-08-22', tag: 'security',
     titleEn: 'Registration anti-fraud: per-IP/subnet rate limits, gmail-alias dedup, disposable-email blocklist',
     titleVi: 'Chống gian lận đăng ký: giới hạn theo IP/subnet, chặn alias Gmail, chặn email dùng một lần',
