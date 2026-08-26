@@ -17,6 +17,15 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.39', date: '2026-08-22', tag: 'feature',
+    titleEn: 'Saved card + auto-recharge: top up automatically when the wallet runs low',
+    titleVi: 'Lưu thẻ + tự động nạp: tự nạp tiền khi ví sắp hết',
+    items: [
+      { en: 'Customers can save a card (Stripe SetupIntent) and opt into auto-recharge. A background sweep tops up off-session when the wallet falls below the admin threshold; a short purchase/renewal also triggers a top-up-to-cover. Off-session charges carry the customer-borne fee; failures notify the customer. Admin sets threshold/amount/daily-cap.',
+        vi: 'Khách lưu thẻ (Stripe SetupIntent) và bật tự động nạp. Sweep nền trừ thẻ off-session khi ví dưới ngưỡng admin; đơn mua/gia hạn thiếu tiền cũng nạp bù. Trừ off-session kèm phí khách chịu; lỗi sẽ báo khách. Admin đặt ngưỡng/số tiền/giới hạn ngày.' },
+    ],
+  },
+  {
     version: '1.6.38', date: '2026-08-22', tag: 'feature',
     titleEn: 'Stripe card payments: minimum 5 USD, customer-borne fee, webhook-independent crediting',
     titleVi: 'Thanh toán thẻ Stripe: tối thiểu 5 USD, phí khách chịu, cộng ví không cần webhook',

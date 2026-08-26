@@ -55,6 +55,9 @@ onMounted(refresh)
         <label class="input-field"><span>{{ t('admin.pay.stripeFeePct') }}</span><input v-model.number="billing.stripeFeePct" type="number" min="0" max="99" step="0.1" placeholder="3.9" /></label>
         <label class="input-field"><span>{{ t('admin.pay.stripeFeeFixed') }}</span><input v-model.number="billing.stripeFeeFixed" type="number" min="0" step="0.05" placeholder="0.30" /></label>
         <p style="grid-column:1/-1; font-size:12px; color:var(--muted); margin:-2px 0 4px" v-html="t('admin.pay.stripeFeeHelp')"></p>
+        <label class="input-field"><span>{{ t('admin.pay.autoRechargeThreshold') }}</span><input v-model.number="billing.autoRechargeThreshold" type="number" min="0" step="10000" placeholder="50000" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.autoRechargeAmount') }}</span><input v-model.number="billing.autoRechargeAmount" type="number" min="0" step="10000" placeholder="200000" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.autoRechargeMaxPerDay') }}</span><input v-model.number="billing.autoRechargeMaxPerDay" type="number" min="1" step="1" placeholder="5" /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.successUrl') }}</span><input v-model="billing.successUrl" placeholder="https://your-domain/vi/customer/billing?paid=1" /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.cancelUrl') }}</span><input v-model="billing.cancelUrl" placeholder="https://your-domain/vi/customer/billing?paid=0" /></label>
       </div>

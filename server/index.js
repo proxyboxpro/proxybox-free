@@ -3058,6 +3058,110 @@ function userBalance(userId) {
   const m = billingMemory.get(userId)
   return m ? m.balance : 0
 }
+// ── Stripe saved-card auto-recharge ─────────────────────────────────────────
+// Admin fixes the threshold + recharge amount (config.billing.autoRecharge*);
+// the customer only opts in and saves a card. Two triggers: a low-balance
+// background sweep, and a top-up-to-cover when a purchase/renewal is short.
+function autoRechargeThreshold() { const n = Number(config.billing?.autoRechargeThreshold); return Number.isFinite(n) && n >= 0 ? n : 0 }
+function autoRechargeAmount() { const n = Number(config.billing?.autoRechargeAmount); return Number.isFinite(n) && n > 0 ? n : 0 }
+function autoRechargeMaxPerDay() { const n = Number(config.billing?.autoRechargeMaxPerDay); return Number.isFinite(n) && n > 0 ? n : 5 }
+function autoRechargeEnabledGlobally() { return autoRechargeAmount() > 0 && Boolean(config.billing?.stripeSecretKey) }
+// Gross-up a net wallet amount by the Stripe fee (customer bears it), in wallet units.
+function stripeGrossUp(net) {
+  const feePct = stripeFeePctCfg() / 100
+  const walletCur = String(config.billing?.currency || 'vnd').toLowerCase()
+  const feeFixed = walletCur === 'usd' ? stripeFeeFixedCfg() : stripeFeeFixedCfg() * stripeRate()
+  const zeroDecimal = new Set(['vnd', 'jpy', 'krw', 'huf', 'clp', 'pyg', 'xof'])
+  const g = (Number(net) + feeFixed) / (1 - feePct)
+  return zeroDecimal.has(walletCur) ? Math.max(1, Math.round(g)) : Math.round(g)
+}
+async function ensureStripeCustomer(user) {
+  if (user.stripeCustomerId) return user.stripeCustomerId
+  const c = await stripeApi('/v1/customers', { email: user.email, 'metadata[userId]': user.id, name: user.name || user.email })
+  if (!c.id) throw new Error('Stripe customer create failed')
+  user.stripeCustomerId = c.id
+  await saveConfig()
+  return c.id
+}
+// Charge the saved card off-session for a NET wallet top-up. Returns
+// { ok, credited?, balance?, requiresAction?, error? }. Idempotent-credit via stripe_seen(pi.id).
+async function stripeChargeOffSession(user, netAmount, reason) {
+  if (!user.stripeCustomerId || !user.stripePaymentMethodId) return { ok: false, error: 'no saved card' }
+  const net = Math.floor(Number(netAmount) || 0)
+  if (net <= 0) return { ok: false, error: 'bad amount' }
+  const currency = String(config.billing?.currency || 'vnd').toLowerCase()
+  const charge = stripeGrossUp(net)
+  let pi
+  try {
+    pi = await stripeApi('/v1/payment_intents', {
+      amount: String(charge), currency, customer: user.stripeCustomerId,
+      payment_method: user.stripePaymentMethodId, off_session: 'true', confirm: 'true',
+      'metadata[userId]': user.id, 'metadata[amount]': String(net), 'metadata[auto]': reason || 'auto'
+    })
+  } catch (e) {
+    const msg = String(e.message || e)
+    logError({ source: 'stripe-auto', level: 'warn', code: 'offsession-fail', message: msg, context: { userId: user.id, net } })
+    // authentication_required → card needs SCA; tell the customer to top up manually.
+    pushNotification(user.id, { type: 'billing', severity: 'warning', text: `Tự động nạp thẻ thất bại (${msg.slice(0, 80)}). Vui lòng nạp tiền thủ công.`, link: '/customer/billing' })
+    return { ok: false, error: msg, requiresAction: /authentication|action/i.test(msg) }
+  }
+  if (pi.status !== 'succeeded') {
+    pushNotification(user.id, { type: 'billing', severity: 'warning', text: `Tự động nạp thẻ chưa hoàn tất (${pi.status}). Vui lòng nạp tiền thủ công.`, link: '/customer/billing' })
+    return { ok: false, error: `status ${pi.status}`, requiresAction: pi.status === 'requires_action' }
+  }
+  if (sqliteDb) {
+    try {
+      sqliteDb.exec('CREATE TABLE IF NOT EXISTS stripe_seen (id TEXT PRIMARY KEY, ts TEXT NOT NULL)')
+      const ins = sqliteDb.prepare('INSERT OR IGNORE INTO stripe_seen (id, ts) VALUES (?, ?)').run(pi.id, new Date().toISOString())
+      if (!ins.changes) return { ok: true, credited: 0, balance: userBalance(user.id) }
+    } catch { /* fall through */ }
+  }
+  const next = recordBillingTx(user.id, 'topup', net, `stripe auto-recharge ${pi.id}`)
+  audit({ actor: 'stripe-auto', ip: '', method: 'AUTO', path: '/billing/auto-recharge', note: `user=${user.id} +${net} (${reason}) charge=${charge} → ${next}` })
+  pushNotification(user.id, { type: 'billing', severity: 'info', text: `Đã tự động nạp +${net.toLocaleString('vi-VN')}đ vào ví từ thẻ đã lưu.`, link: '/customer/billing' })
+  return { ok: true, credited: net, balance: next }
+}
+function autoRechargeCountToday(userId) {
+  if (!sqliteDb) return 0
+  try {
+    const since = new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z'
+    const r = sqliteDb.prepare("SELECT COUNT(*) n FROM billing_tx WHERE user_id = ? AND type = 'topup' AND note LIKE 'stripe auto-recharge %' AND ts >= ?").get(userId, since)
+    return Number(r?.n) || 0
+  } catch { return 0 }
+}
+const _autoRechargeInflight = new Set()
+// Ensure the wallet can cover `minNeeded` (0 = just top up to the configured amount).
+// Returns the (possibly new) balance. No-op unless the user opted in with a saved card.
+async function doAutoRecharge(user, minNeeded, reason) {
+  if (!user || !user.autoRecharge || !user.stripePaymentMethodId || !autoRechargeEnabledGlobally()) return userBalance(user.id)
+  if (_autoRechargeInflight.has(user.id)) return userBalance(user.id)
+  const bal = userBalance(user.id)
+  const need = Math.floor(Number(minNeeded) || 0)
+  if (need > 0 && bal >= need) return bal
+  if (autoRechargeCountToday(user.id) >= autoRechargeMaxPerDay()) {
+    pushNotification(user.id, { type: 'billing', severity: 'warning', text: `Đã đạt giới hạn tự động nạp trong ngày. Vui lòng nạp tiền thủ công.`, link: '/customer/billing' })
+    return bal
+  }
+  // Add enough to cover the shortfall, but at least the admin-configured amount.
+  const shortfall = need > 0 ? need - bal : 0
+  const net = Math.max(autoRechargeAmount(), shortfall)
+  _autoRechargeInflight.add(user.id)
+  try { const r = await stripeChargeOffSession(user, net, reason); return r.ok ? (r.balance ?? userBalance(user.id)) : bal }
+  finally { _autoRechargeInflight.delete(user.id) }
+}
+// Low-balance sweep: opt-in users whose wallet fell below the admin threshold.
+async function autoRechargeSweep() {
+  if (!autoRechargeEnabledGlobally()) return
+  const thr = autoRechargeThreshold()
+  if (thr <= 0) return
+  for (const user of config.users) {
+    if (!user.autoRecharge || !user.stripePaymentMethodId) continue
+    if (userBalance(user.id) >= thr) continue
+    try { await doAutoRecharge(user, 0, 'low-balance') } catch (e) { console.warn('[auto-recharge]', user.id, e.message) }
+  }
+}
+setInterval(() => { autoRechargeSweep().catch((e) => console.warn('[auto-recharge-sweep]', e.message)) }, 10 * 60 * 1000).unref()
+
 // Deposit-gated affiliate kickback (paid once per referee, respects a 0 config).
 function maybeAffiliateKickback(referredUserId) {
   const user = config.users.find((u) => u.id === referredUserId)
@@ -7319,6 +7423,9 @@ async function handleApi(req, res, url) {
           stripeRate: stripeRate(),
           stripeFeePct: stripeFeePctCfg(),
           stripeFeeFixed: stripeFeeFixedCfg(),
+          autoRechargeThreshold: autoRechargeThreshold(),
+          autoRechargeAmount: autoRechargeAmount(),
+          autoRechargeMaxPerDay: autoRechargeMaxPerDay(),
           paypalEnabled: Boolean(config.billing.paypalEnabled),
           paypalMode: config.billing.paypalMode === 'live' ? 'live' : 'sandbox',
           paypalClientId: maskSecret(config.billing.paypalClientId),
@@ -7372,6 +7479,9 @@ async function handleApi(req, res, url) {
         if (Number.isFinite(Number(body.stripeRate)) && Number(body.stripeRate) > 0) config.billing.stripeRate = Number(body.stripeRate)
         if (Number.isFinite(Number(body.stripeFeePct)) && Number(body.stripeFeePct) >= 0 && Number(body.stripeFeePct) < 100) config.billing.stripeFeePct = Number(body.stripeFeePct)
         if (Number.isFinite(Number(body.stripeFeeFixed)) && Number(body.stripeFeeFixed) >= 0) config.billing.stripeFeeFixed = Number(body.stripeFeeFixed)
+        if (Number.isFinite(Number(body.autoRechargeThreshold)) && Number(body.autoRechargeThreshold) >= 0) config.billing.autoRechargeThreshold = Math.floor(Number(body.autoRechargeThreshold))
+        if (Number.isFinite(Number(body.autoRechargeAmount)) && Number(body.autoRechargeAmount) >= 0) config.billing.autoRechargeAmount = Math.floor(Number(body.autoRechargeAmount))
+        if (Number.isFinite(Number(body.autoRechargeMaxPerDay)) && Number(body.autoRechargeMaxPerDay) > 0) config.billing.autoRechargeMaxPerDay = Math.floor(Number(body.autoRechargeMaxPerDay))
         // PayPal fields
         if (typeof body.paypalEnabled === 'boolean') config.billing.paypalEnabled = body.paypalEnabled
         if (body.paypalMode === 'live' || body.paypalMode === 'sandbox') config.billing.paypalMode = body.paypalMode
@@ -10294,7 +10404,10 @@ async function handleUserV1(req, res, url) {
       migratePricingToHourly()
       const perHour = (proxy.type === 'IPv6' ? config.pricing.ipv6 : config.pricing.ipv4).perHour || 0
       const cost = perHour * hours
-      if (userBalance(user.id) < cost) return sendJson(res, 402, { error: 'insufficient balance', required: cost, balance: userBalance(user.id) })
+      if (userBalance(user.id) < cost) {
+        await doAutoRecharge(user, cost, 'purchase')
+        if (userBalance(user.id) < cost) return sendJson(res, 402, { error: 'insufficient balance', required: cost, balance: userBalance(user.id) })
+      }
       // Push expires forward from the LATER of (now, current expires).
       const curMs = proxy.expiresAt ? Math.max(Date.now(), new Date(proxy.expiresAt).getTime()) : Date.now()
       const newAt = new Date(curMs + hours * 3600_000)
@@ -10806,9 +10919,12 @@ async function handleUserV1(req, res, url) {
     const creditGroup = type === 'IPv6' ? 'ipv6' : 'ipv4'
     const credit = previewScopedCredit(user.id, creditGroup, totalCost)
     const walletCharge = totalCost - credit.applied
-    const balance = userBalance(user.id)
+    let balance = userBalance(user.id)
     if (balance < walletCharge) {
-      return sendJson(res, 402, { error: 'insufficient balance', required: walletCharge, creditApplied: credit.applied, balance, topupUrl: '/api/v1/user/billing/checkout' })
+      balance = await doAutoRecharge(user, walletCharge, 'purchase')
+      if (balance < walletCharge) {
+        return sendJson(res, 402, { error: 'insufficient balance', required: walletCharge, creditApplied: credit.applied, balance, topupUrl: '/api/v1/user/billing/checkout' })
+      }
     }
     // Zone-aware node picking: filter candidates to nodes whose `zone` field
     // matches the customer's requested zone (or any zone if blank). Local control
@@ -11235,6 +11351,16 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
         stripeRate: stripeRate(),
         stripeFeePct: stripeFeePctCfg(),
         stripeFeeFixed: stripeFeeFixedCfg(),
+        autoRecharge: {
+          adminEnabled: autoRechargeEnabledGlobally(),
+          threshold: autoRechargeThreshold(),
+          amount: autoRechargeAmount(),
+          enabled: Boolean(user.autoRecharge),
+          hasCard: Boolean(user.stripePaymentMethodId),
+          cardBrand: user.stripeCardBrand || '',
+          cardLast4: user.stripeCardLast4 || '',
+          cardExp: user.stripeCardExp || ''
+        },
         paypalEnabled: Boolean(config.billing?.paypalEnabled && config.billing?.paypalClientId && config.billing?.paypalSecret),
         paypalCurrency: String(config.billing?.paypalCurrency || 'USD').toUpperCase(),
         paypalRate: Number(config.billing?.paypalRate) > 0 ? Number(config.billing.paypalRate) : 25000,
@@ -11406,6 +11532,69 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     } catch (e) {
       return sendJson(res, 502, { error: `Stripe: ${e.message}` })
     }
+  }
+
+  // ── Stripe: start a card-save (SetupIntent via Checkout mode=setup) ──────
+  if (req.method === 'POST' && sub === 'billing/card/setup') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    if (!config.billing.successUrl || !config.billing.cancelUrl) return sendJson(res, 503, { error: 'successUrl/cancelUrl must be configured' })
+    try {
+      const customerId = await ensureStripeCustomer(user)
+      const base = (config.billing.successUrl)
+      const successUrl = base + (base.includes('?') ? '&' : '?') + 'card=saved&setup_session={CHECKOUT_SESSION_ID}'
+      const session = await stripeApi('/v1/checkout/sessions', {
+        'mode': 'setup', 'payment_method_types[0]': 'card', 'customer': customerId,
+        'success_url': successUrl, 'cancel_url': (config.billing.cancelUrl)
+      })
+      return sendJson(res, 200, { url: session.url, sessionId: session.id })
+    } catch (e) { return sendJson(res, 502, { error: `Stripe: ${e.message}` }) }
+  }
+
+  // ── Stripe: confirm the saved card on return, store it as default ────────
+  if (req.method === 'POST' && sub === 'billing/card/confirm') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    const body = await readJson(req)
+    const sessionId = String(body.sessionId || '').trim()
+    if (!/^cs_[A-Za-z0-9_]+$/.test(sessionId)) return sendJson(res, 400, { error: 'invalid sessionId' })
+    try {
+      const session = await stripeApiGet(`/v1/checkout/sessions/${encodeURIComponent(sessionId)}`)
+      if (session.customer && user.stripeCustomerId && session.customer !== user.stripeCustomerId) return sendJson(res, 403, { error: 'session mismatch' })
+      const siId = session.setup_intent
+      if (!siId) return sendJson(res, 400, { error: 'no setup intent' })
+      const si = await stripeApiGet(`/v1/setup_intents/${encodeURIComponent(siId)}`)
+      const pmId = si.payment_method
+      if (si.status !== 'succeeded' || !pmId) return sendJson(res, 200, { ok: false, pending: true, status: si.status })
+      const pm = await stripeApiGet(`/v1/payment_methods/${encodeURIComponent(pmId)}`)
+      user.stripePaymentMethodId = pmId
+      user.stripeCardBrand = pm.card?.brand || ''
+      user.stripeCardLast4 = pm.card?.last4 || ''
+      user.stripeCardExp = pm.card ? `${pm.card.exp_month}/${pm.card.exp_year}` : ''
+      // Saving a card opts the user into auto-recharge by default (they can turn it off).
+      if (user.autoRecharge === undefined) user.autoRecharge = true
+      await saveConfig()
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/card/confirm', note: `card saved ${user.stripeCardBrand} ****${user.stripeCardLast4}` })
+      return sendJson(res, 200, { ok: true, card: { brand: user.stripeCardBrand, last4: user.stripeCardLast4, exp: user.stripeCardExp }, autoRecharge: user.autoRecharge })
+    } catch (e) { return sendJson(res, 502, { error: `Stripe: ${e.message}` }) }
+  }
+
+  // ── Stripe: remove the saved card ───────────────────────────────────────
+  if (req.method === 'DELETE' && sub === 'billing/card') {
+    if (user.stripePaymentMethodId) { try { await stripeApi(`/v1/payment_methods/${encodeURIComponent(user.stripePaymentMethodId)}/detach`, {}) } catch { /* already gone */ } }
+    user.stripePaymentMethodId = ''; user.stripeCardBrand = ''; user.stripeCardLast4 = ''; user.stripeCardExp = ''; user.autoRecharge = false
+    await saveConfig()
+    audit({ actor: user.email, ip: clientIp(req), method: 'DELETE', path: '/api/v1/user/billing/card', note: 'card removed' })
+    return sendJson(res, 200, { ok: true })
+  }
+
+  // ── Stripe: toggle auto-recharge (customer opt-in; admin owns threshold/amount) ──
+  if (req.method === 'PATCH' && sub === 'billing/auto-recharge') {
+    const body = await readJson(req)
+    if (typeof body.enabled === 'boolean') {
+      if (body.enabled && !user.stripePaymentMethodId) return sendJson(res, 400, { error: 'save a card first' })
+      user.autoRecharge = body.enabled
+      await saveConfig()
+    }
+    return sendJson(res, 200, { ok: true, autoRecharge: Boolean(user.autoRecharge) })
   }
 
   // ── SePay (VN bank transfer): return a VIETQR url + memo for the user ──

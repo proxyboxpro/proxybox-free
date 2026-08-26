@@ -355,6 +355,41 @@ async function maybeFinalizeStripe() {
     await refresh()
   } catch (e) { err.value = `Card confirm failed: ${e.message}` } finally { busy.value = false }
 }
+// ─── Saved card + auto-recharge (Stripe) ───────────────────────────
+const ar = computed(() => billing.value?.paymentMethods?.autoRecharge || {})
+async function saveCard() {
+  if (busy.value) return
+  busy.value = true; err.value = ''
+  try {
+    const r = await apiFetch('/api/v1/user/billing/card/setup', { method: 'POST' })
+    if (r.url) window.location.href = r.url
+    else err.value = 'Stripe did not return a setup URL'
+  } catch (e) { err.value = e.message; busy.value = false }
+}
+async function maybeFinalizeCard() {
+  const params = new URLSearchParams(location.search)
+  const sid = params.get('setup_session')
+  if (!sid || !sid.startsWith('cs_')) return
+  busy.value = true; err.value = ''
+  try {
+    const r = await apiFetch('/api/v1/user/billing/card/confirm', { method: 'POST', body: { sessionId: sid } })
+    if (r.ok) flash.value = t('cust.billing.cardSaved') || 'Card saved.'
+    else if (r.pending) flash.value = t('cust.billing.stripePending') || 'Processing…'
+    history.replaceState(null, '', location.pathname)
+    await refresh()
+  } catch (e) { err.value = `Card save failed: ${e.message}` } finally { busy.value = false }
+}
+async function toggleAutoRecharge(ev) {
+  const enabled = ev.target.checked
+  try { await apiFetch('/api/v1/user/billing/auto-recharge', { method: 'PATCH', body: { enabled } }); await refresh() }
+  catch (e) { err.value = e.message; await refresh() }
+}
+async function removeCard() {
+  if (busy.value) return
+  busy.value = true; err.value = ''
+  try { await apiFetch('/api/v1/user/billing/card', { method: 'DELETE' }); flash.value = t('cust.billing.cardRemoved') || 'Card removed.'; await refresh() }
+  catch (e) { err.value = e.message } finally { busy.value = false }
+}
 function fmtTs(s) { return s ? String(s).slice(0, 16).replace('T', ' ') : '—' }
 function viewOrder(id) { router.push({ name: 'proxies', query: { order: id } }) }
 function invoiceUrl(id) { return `/api/v1/user/orders/${id}/invoice` }
@@ -450,6 +485,7 @@ onMounted(async () => {
   await refresh()
   await maybeFinalizePaypal()
   await maybeFinalizeStripe()
+  await maybeFinalizeCard()
 })
 </script>
 
@@ -541,6 +577,26 @@ onMounted(async () => {
         </div>
         <p v-if="billing?.paymentMethods?.stripeEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ stripeTermsNote }}</p>
         <p v-if="billing?.paymentMethods?.paypalEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ paypalTermsNote }}</p>
+      </section>
+
+      <!-- Saved card + auto-recharge (Stripe) -->
+      <section v-if="billing?.paymentMethods?.stripeEnabled && ar.adminEnabled" class="surface" style="padding:18px">
+        <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><CreditCard :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.billing.autoRechargeTitle') }}</h2>
+        <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.billing.autoRechargeDesc', { threshold: Number(ar.threshold).toLocaleString(), amount: Number(ar.amount).toLocaleString(), cur: (billing.paymentMethods.walletCurrency || 'VND') }) }}</p>
+        <div v-if="ar.hasCard" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 14px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:10px; max-width:560px">
+          <CreditCard :size="18" style="color:var(--pxl)" />
+          <span class="cell-mono" style="font-size:14px">{{ (ar.cardBrand || 'card').toUpperCase() }} ····{{ ar.cardLast4 }}</span>
+          <span style="font-size:12px; color:var(--muted)">exp {{ ar.cardExp }}</span>
+          <div style="flex:1"></div>
+          <button class="ghost-button" type="button" style="padding:4px 10px; font-size:12px" @click="removeCard">{{ t('cust.billing.cardRemove') }}</button>
+        </div>
+        <button v-else class="primary-action" type="button" :disabled="busy" @click="saveCard" style="max-width:280px">
+          <CreditCard :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.cardSave') }}
+        </button>
+        <label v-if="ar.hasCard" class="check-line" style="margin-top:14px; display:inline-flex; align-items:center; gap:8px; cursor:pointer">
+          <input type="checkbox" :checked="ar.enabled" @change="toggleAutoRecharge" />
+          <span style="font-size:13px">{{ t('cust.billing.autoRechargeToggle') }}</span>
+        </label>
       </section>
 
       <!-- SePay QR modal — shown after clicking Pay via VN bank transfer -->
