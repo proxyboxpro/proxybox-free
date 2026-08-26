@@ -17,6 +17,15 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.41', date: '2026-08-22', tag: 'fix',
+    titleEn: 'Redesigned the wallet top-up panel — method tiles + a single pay button',
+    titleVi: 'Thiết kế lại ô nạp tiền — thẻ chọn phương thức + một nút thanh toán',
+    items: [
+      { en: 'The passive method list and the row of coloured buttons are replaced by selectable method tiles and one primary pay button that adapts to the chosen method.',
+        vi: 'Danh sách phương thức thụ động và hàng nút nhiều màu được thay bằng thẻ chọn phương thức và một nút thanh toán duy nhất tự đổi theo phương thức đã chọn.' },
+    ],
+  },
+  {
     version: '1.6.40', date: '2026-08-22', tag: 'feature',
     titleEn: 'In-place card checkout (Stripe Payment Element); card management; provider name hidden',
     titleVi: 'Thanh toán thẻ ngay tại trang (Stripe Payment Element); quản lý thẻ; ẩn tên nhà cung cấp',

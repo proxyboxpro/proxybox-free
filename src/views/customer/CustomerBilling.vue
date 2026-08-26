@@ -525,6 +525,42 @@ async function mountElement(clientSecret) {
   _elements = _stripe.elements({ clientSecret, appearance })
   _elements.create('payment', { layout: 'tabs' }).mount('#stripe-pe')
 }
+const selectedMethod = ref('')
+const enabledMethods = computed(() => {
+  const pm = billing.value?.paymentMethods || {}
+  const list = []
+  if (pm.stripeEnabled) list.push('card')
+  if (pm.paypalEnabled) list.push('paypal')
+  if (pm.sepayEnabled) list.push('sepay')
+  if (pm.binanceEnabled) list.push('usdt')
+  return list
+})
+watch(enabledMethods, (m) => { if (!selectedMethod.value || !m.includes(selectedMethod.value)) selectedMethod.value = m[0] || '' }, { immediate: true })
+const methodEstimate = computed(() => {
+  const cur = (billing.value?.paymentMethods?.walletCurrency || 'VND')
+  switch (selectedMethod.value) {
+    case 'card': return stripeEstimate.value
+    case 'paypal': return paypalEstimate.value
+    case 'usdt': return `${usdtEstimate.value} USDT`
+    case 'sepay': return `${Number(topup.value || 0).toLocaleString()} ${cur}`
+    default: return ''
+  }
+})
+const selectedNote = computed(() => {
+  switch (selectedMethod.value) {
+    case 'card': return stripeTermsNote.value
+    case 'paypal': return paypalTermsNote.value
+    case 'usdt': return t('cust.billing.usdtHint')
+    case 'sepay': return t('cust.billing.sepayMethodLabel')
+    default: return ''
+  }
+})
+function payNow() {
+  if (selectedMethod.value === 'card') return payWithCardInline()
+  if (selectedMethod.value === 'paypal') return payWithPaypal()
+  if (selectedMethod.value === 'sepay') return payWithSepay()
+  if (selectedMethod.value === 'usdt') return payWithUsdt()
+}
 function stripeMinWallet() {
   const pm = billing.value?.paymentMethods || {}
   const min = Number(pm.stripeMin) || 0
@@ -643,43 +679,43 @@ onMounted(async () => {
           </div>
           <button class="ghost-button" type="button" style="padding:4px 10px; font-size:11.5px" @click="reopenUsdt">{{ t('cust.billing.usdtPendingView') }}</button>
         </div>
-        <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap:14px; max-width:560px; margin-bottom:8px">
-          <label class="input-field">
-            <span>{{ t('cust.billing.amount') }} ({{ (pricing?.currency || 'VND').toUpperCase() }})</span>
-            <input v-model.number="topup" type="number" min="10000" step="10000" />
-          </label>
-          <div class="input-field">
-            <span>{{ t('cust.billing.method') }}</span>
-            <div style="display:flex; flex-direction:column; gap:6px; padding:6px 11px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:var(--radius-sm); color:var(--text); font-size:13px">
-              <span v-if="billing?.paymentMethods?.stripeEnabled" style="display:inline-flex; align-items:center; gap:6px"><CreditCard :size="14" style="color:var(--pxl)" /> {{ t('cust.billing.cardMethodLabel') }}</span>
-              <span v-if="billing?.paymentMethods?.paypalEnabled" style="display:inline-flex; align-items:center; gap:6px"><CircleDollarSign :size="14" style="color:#1546a0" /> PayPal ({{ billing.paymentMethods.paypalCurrency || 'USD' }})</span>
-              <span v-if="billing?.paymentMethods?.sepayEnabled" style="display:inline-flex; align-items:center; gap:6px"><Landmark :size="14" style="color:var(--green)" /> {{ t('cust.billing.sepayMethodLabel') }}</span>
-              <span v-if="billing?.paymentMethods?.binanceEnabled" style="display:inline-flex; align-items:center; gap:6px"><Wallet :size="14" style="color:#26a17b" /> {{ t('cust.billing.usdtMethodLabel') }}</span>
-              <span v-if="!billing?.paymentMethods?.stripeEnabled && !billing?.paymentMethods?.paypalEnabled && !billing?.paymentMethods?.sepayEnabled" style="font-size:11.5px; color:var(--muted)">{{ t('cust.billing.noPayment') }}</span>
-            </div>
-          </div>
+        <label class="input-field" style="max-width:560px; margin-bottom:10px">
+          <span>{{ t('cust.billing.amount') }} ({{ (pricing?.currency || 'VND').toUpperCase() }})</span>
+          <input v-model.number="topup" type="number" min="10000" step="10000" class="amount-input" />
+        </label>
+
+        <div class="chips" style="margin-bottom:16px">
+          <button v-for="a in presets" :key="a" type="button" :class="{ active: topup === a }" @click="topup = a">{{ a.toLocaleString() }}</button>
         </div>
 
-        <div class="chips" style="margin-bottom:14px">
-          <button v-for="a in presets" :key="a" type="button" :class="{ active: topup === a }" @click="topup = a">{{ a.toLocaleString() }} VND</button>
+        <div v-if="enabledMethods.length" class="pay-methods">
+          <button v-if="billing?.paymentMethods?.stripeEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'card' }" @click="selectedMethod = 'card'">
+            <span class="pay-ico" style="color:var(--pxl)"><CreditCard :size="18" /></span>
+            <span class="pay-meta"><b>{{ t('cust.billing.cardMethodLabel') }}</b><small>≈ {{ stripeEstimate }}</small></span>
+          </button>
+          <button v-if="billing?.paymentMethods?.paypalEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'paypal' }" @click="selectedMethod = 'paypal'">
+            <span class="pay-ico" style="color:#3b82f6"><CircleDollarSign :size="18" /></span>
+            <span class="pay-meta"><b>PayPal</b><small>≈ {{ paypalEstimate }}</small></span>
+          </button>
+          <button v-if="billing?.paymentMethods?.sepayEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'sepay' }" @click="selectedMethod = 'sepay'">
+            <span class="pay-ico" style="color:var(--green)"><Landmark :size="18" /></span>
+            <span class="pay-meta"><b>{{ t('cust.billing.sepayMethodLabel') }}</b><small>{{ Number(topup || 0).toLocaleString() }} VND</small></span>
+          </button>
+          <button v-if="billing?.paymentMethods?.binanceEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'usdt' }" @click="selectedMethod = 'usdt'">
+            <span class="pay-ico" style="color:#26a17b"><Wallet :size="18" /></span>
+            <span class="pay-meta"><b>USDT · BEP20</b><small>≈ {{ usdtEstimate }} USDT</small></span>
+          </button>
         </div>
+        <p v-else style="font-size:12px; color:var(--muted)">{{ t('cust.billing.noPayment') }}</p>
 
-        <div style="display:flex; flex-wrap:wrap; gap:10px">
-          <button v-if="billing?.paymentMethods?.stripeEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithCardInline">
-            <CreditCard :size="15" /> {{ busy && stripeModal === false ? t('common.loading') : t('cust.billing.cardPayBtn', { amount: stripeEstimate }) }}
-          </button>
-          <button v-if="billing?.paymentMethods?.paypalEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithPaypal" style="background:#0070ba; border-color:#0070ba">
-            <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : `Pay with PayPal (≈ ${paypalEstimate})` }}
-          </button>
-          <button v-if="billing?.paymentMethods?.sepayEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithSepay" style="background:var(--green); border-color:var(--green); color:#0a1f1a">
-            <QrCode :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.sepayPayBtn', { amount: Number(topup).toLocaleString() }) }}
-          </button>
-          <button v-if="billing?.paymentMethods?.binanceEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithUsdt" style="background:#26a17b; border-color:#26a17b">
-            <Wallet :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.usdtPayBtn', { usdt: usdtEstimate }) }}
-          </button>
-        </div>
-        <p v-if="billing?.paymentMethods?.stripeEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ stripeTermsNote }}</p>
-        <p v-if="billing?.paymentMethods?.paypalEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ paypalTermsNote }}</p>
+        <button v-if="enabledMethods.length" class="primary-action pay-cta" type="button" :disabled="busy" @click="payNow">
+          <CreditCard v-if="selectedMethod === 'card'" :size="16" />
+          <CircleDollarSign v-else-if="selectedMethod === 'paypal'" :size="16" />
+          <Landmark v-else-if="selectedMethod === 'sepay'" :size="16" />
+          <Wallet v-else :size="16" />
+          {{ busy && stripeModal === false ? t('common.loading') : t('cust.billing.payNowBtn', { amount: methodEstimate }) }}
+        </button>
+        <p v-if="selectedNote" style="font-size:11.5px; color:var(--muted); margin:10px 0 0; line-height:1.5">{{ selectedNote }}</p>
       </section>
 
       <!-- Saved card + auto-recharge (Stripe) -->
@@ -936,4 +972,15 @@ onMounted(async () => {
 .px-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 8px 2px; }
 .px-pager .ghost-button { min-width: 34px; justify-content: center; }
 .px-pager-info { font-size: 12.5px; color: var(--muted); min-width: 50px; text-align: center; font-family: var(--mono); }
+
+.amount-input { font-size:18px; font-variant-numeric:tabular-nums; letter-spacing:0.02em }
+.pay-methods { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; max-width:560px; margin-bottom:16px }
+.pay-tile { display:flex; align-items:center; gap:11px; padding:12px 13px; background:var(--pxl-card-2); border:1.5px solid var(--pxl-bd); border-radius:12px; cursor:pointer; text-align:left; transition:border-color .12s, background .12s }
+.pay-tile:hover { border-color:var(--pxl) }
+.pay-tile.active { border-color:var(--pxl); background:color-mix(in srgb, var(--pxl) 12%, var(--pxl-card-2)); box-shadow:0 0 0 3px color-mix(in srgb, var(--pxl) 18%, transparent) }
+.pay-ico { display:flex; flex-shrink:0; width:34px; height:34px; align-items:center; justify-content:center; background:var(--surface); border-radius:9px }
+.pay-meta { display:flex; flex-direction:column; gap:1px; min-width:0 }
+.pay-meta b { font-size:13px; color:var(--text); font-weight:600; line-height:1.25 }
+.pay-meta small { font-size:11px; color:var(--muted); font-family:var(--mono) }
+.pay-cta { width:100%; max-width:560px; justify-content:center; padding:13px; font-size:14.5px; font-weight:600 }
 </style>

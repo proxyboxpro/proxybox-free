@@ -590,6 +590,7 @@ export default {
   'cust.billing.cardRemove': 'Xóa thẻ',
   'cust.billing.cardSaved': 'Đã lưu thẻ.',
   'cust.billing.cardRemoved': 'Đã xóa thẻ.',
+  'cust.billing.payNowBtn': 'Thanh toán ≈ {amount}',
   'cust.billing.cardMethodLabel': 'Thẻ · Apple Pay · Google Pay',
   'cust.billing.cardPayBtn': 'Thanh toán thẻ (≈ {amount})',
   'cust.billing.cardModalTitle': 'Thanh toán bằng thẻ',

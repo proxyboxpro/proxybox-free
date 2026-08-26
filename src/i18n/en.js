@@ -572,6 +572,7 @@ export default {
   'cust.billing.cardRemove': 'Remove card',
   'cust.billing.cardSaved': 'Card saved.',
   'cust.billing.cardRemoved': 'Card removed.',
+  'cust.billing.payNowBtn': 'Pay ≈ {amount}',
   'cust.billing.cardMethodLabel': 'Card · Apple Pay · Google Pay',
   'cust.billing.cardPayBtn': 'Pay by card (≈ {amount})',
   'cust.billing.cardModalTitle': 'Pay by card',
