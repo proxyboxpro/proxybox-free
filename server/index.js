@@ -2675,6 +2675,33 @@ function stripeApi(pathStr, formObj) {
   })
 }
 
+// GET a Stripe resource (e.g. retrieve a Checkout Session on return) — the
+// POST-only stripeApi can't read. Used by the confirm-on-return fallback so
+// wallet credit works even before an admin wires the dashboard webhook secret.
+function stripeApiGet(pathStr) {
+  return new Promise((resolve, reject) => {
+    const key = readSecret(config.billing?.stripeSecretKey)
+    if (!key) return reject(new Error('billing.stripeSecretKey not configured'))
+    const req = https.request({
+      method: 'GET', hostname: 'api.stripe.com', path: pathStr,
+      headers: { 'Authorization': `Bearer ${key}` }
+    }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        try {
+          const json = JSON.parse(raw)
+          if (res.statusCode >= 400) return reject(new Error(json.error?.message || `Stripe HTTP ${res.statusCode}`))
+          resolve(json)
+        } catch (e) { reject(new Error(`Stripe parse: ${raw.slice(0, 200)}`)) }
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
 // Verify the `Stripe-Signature` header per https://stripe.com/docs/webhooks/signatures.
 // Throws if invalid. Tolerance = 5 minutes against replay.
 function verifyStripeSignature(rawBody, header, secret, toleranceSec = 300) {
@@ -2745,6 +2772,26 @@ function paypalFeePctCfg() {
 }
 function paypalFeeFixedCfg() {
   const f = Number(config.billing?.paypalFeeFixed)
+  return Number.isFinite(f) && f >= 0 ? f : 0.3
+}
+// Stripe charges in the wallet currency (config.billing.currency, e.g. VND)
+// directly. `stripeRate` converts the USD-denominated minimum + fixed fee into
+// wallet units. The customer bears the Stripe fee: charge is grossed-up so the
+// wallet is still credited the exact net top-up (same model as PayPal).
+function stripeRate() {
+  const r = Number(config.billing?.stripeRate)
+  return r > 0 ? r : 25000
+}
+function stripeMinTopup() {
+  const m = Number(config.billing?.stripeMin)
+  return Number.isFinite(m) && m >= 0 ? m : 5
+}
+function stripeFeePctCfg() {
+  const p = Number(config.billing?.stripeFeePct)
+  return Number.isFinite(p) && p >= 0 && p < 100 ? p : 3.9
+}
+function stripeFeeFixedCfg() {
+  const f = Number(config.billing?.stripeFeeFixed)
   return Number.isFinite(f) && f >= 0 ? f : 0.3
 }
 function walletCurrencyUpper() {
@@ -6286,7 +6333,9 @@ async function handleApi(req, res, url) {
       if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
         const session = event.data?.object || {}
         const userId = session.metadata?.userId
-        const amount = Math.floor(Number(session.metadata?.amount) || session.amount_total || 0)
+        // Credit the NET wallet amount from metadata only. Never fall back to
+        // amount_total — that is the fee-grossed-up charge and would over-credit.
+        const amount = Math.floor(Number(session.metadata?.amount) || 0)
         const user = config.users.find((u) => u.id === userId)
         if (user && amount > 0) {
           const next = recordBillingTx(user.id, 'topup', amount, `stripe ${session.id}`)
@@ -7265,6 +7314,11 @@ async function handleApi(req, res, url) {
           cancelUrl: config.billing.cancelUrl || '',
           stripeSecretKey: maskSecret(config.billing.stripeSecretKey),
           stripeWebhookSecret: maskSecret(config.billing.stripeWebhookSecret),
+          stripePublishableKey: config.billing.stripePublishableKey || '',
+          stripeMin: stripeMinTopup(),
+          stripeRate: stripeRate(),
+          stripeFeePct: stripeFeePctCfg(),
+          stripeFeeFixed: stripeFeeFixedCfg(),
           paypalEnabled: Boolean(config.billing.paypalEnabled),
           paypalMode: config.billing.paypalMode === 'live' ? 'live' : 'sandbox',
           paypalClientId: maskSecret(config.billing.paypalClientId),
@@ -7313,6 +7367,11 @@ async function handleApi(req, res, url) {
         if (typeof body.stripeWebhookSecret === 'string' && body.stripeWebhookSecret && !body.stripeWebhookSecret.startsWith('••••')) {
           config.billing.stripeWebhookSecret = writeSecret(body.stripeWebhookSecret.trim())
         }
+        if (typeof body.stripePublishableKey === 'string') config.billing.stripePublishableKey = body.stripePublishableKey.trim().slice(0, 200)
+        if (Number.isFinite(Number(body.stripeMin)) && Number(body.stripeMin) >= 0) config.billing.stripeMin = Number(body.stripeMin)
+        if (Number.isFinite(Number(body.stripeRate)) && Number(body.stripeRate) > 0) config.billing.stripeRate = Number(body.stripeRate)
+        if (Number.isFinite(Number(body.stripeFeePct)) && Number(body.stripeFeePct) >= 0 && Number(body.stripeFeePct) < 100) config.billing.stripeFeePct = Number(body.stripeFeePct)
+        if (Number.isFinite(Number(body.stripeFeeFixed)) && Number(body.stripeFeeFixed) >= 0) config.billing.stripeFeeFixed = Number(body.stripeFeeFixed)
         // PayPal fields
         if (typeof body.paypalEnabled === 'boolean') config.billing.paypalEnabled = body.paypalEnabled
         if (body.paypalMode === 'live' || body.paypalMode === 'sandbox') config.billing.paypalMode = body.paypalMode
@@ -11172,6 +11231,10 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       binancePending,
       paymentMethods: {
         stripeEnabled: Boolean(config.billing?.stripeSecretKey),
+        stripeMin: stripeMinTopup(),
+        stripeRate: stripeRate(),
+        stripeFeePct: stripeFeePctCfg(),
+        stripeFeeFixed: stripeFeeFixedCfg(),
         paypalEnabled: Boolean(config.billing?.paypalEnabled && config.billing?.paypalClientId && config.billing?.paypalSecret),
         paypalCurrency: String(config.billing?.paypalCurrency || 'USD').toUpperCase(),
         paypalRate: Number(config.billing?.paypalRate) > 0 ? Number(config.billing.paypalRate) : 25000,
@@ -11268,6 +11331,21 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     const amount = Math.floor(Number(body.amount) || 0)
     if (amount < 10000 || amount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 10,000..100,000,000' })
     const currency = String(config.billing.currency || 'usd').toLowerCase()
+    // Minimum top-up (denominated in USD, checked against the wallet-currency
+    // amount via stripeRate) + customer-pays-fee gross-up. `amount` stays the
+    // NET wallet credit (metadata.amount → webhook), unit_amount is grossed up.
+    const sRate = stripeRate()
+    const sMin = stripeMinTopup()
+    const walletCur = String(config.billing.currency || 'vnd').toLowerCase()
+    const creditInUsd = currency === 'usd' ? amount : amount / sRate
+    if (sMin > 0 && creditInUsd + 1e-9 < sMin) {
+      return sendJson(res, 400, { error: `minimum Stripe top-up is ${sMin} USD` })
+    }
+    const sFeePct = stripeFeePctCfg() / 100
+    const sFeeFixed = currency === 'usd' ? stripeFeeFixedCfg() : stripeFeeFixedCfg() * sRate
+    const zeroDecimalCur = new Set(['vnd', 'jpy', 'krw', 'huf', 'clp', 'pyg', 'xof'])
+    const grossRaw = (amount + sFeeFixed) / (1 - sFeePct)
+    const chargeUnit = zeroDecimalCur.has(currency) ? Math.max(1, Math.round(grossRaw)) : Math.round(grossRaw)
     // Stripe accepts amount as the smallest currency unit. For VND (zero-decimal) that's just the integer.
     // For USD it would be cents â€” admin's responsibility to pick correct config.currency.
     // SECURITY: only accept successUrl/cancelUrl from config (admin-controlled).
@@ -11276,14 +11354,17 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     if (!config.billing.successUrl || !config.billing.cancelUrl) {
       return sendJson(res, 503, { error: 'billing.successUrl and billing.cancelUrl must be configured' })
     }
-    const successUrl = config.billing.successUrl
+    const successBase = config.billing.successUrl
     const cancelUrl = config.billing.cancelUrl
+    // Append the session-id template so the return can be confirmed server-side
+    // (retrieve session → credit), independent of the dashboard webhook.
+    const successUrl = successBase + (successBase.includes('?') ? '&' : '?') + 'stripe=ok&session_id={CHECKOUT_SESSION_ID}'
     const form = {
       'mode': 'payment',
       'payment_method_types[0]': 'card',
       'line_items[0][quantity]': '1',
       'line_items[0][price_data][currency]': currency,
-      'line_items[0][price_data][unit_amount]': String(amount),
+      'line_items[0][price_data][unit_amount]': String(chargeUnit),
       'line_items[0][price_data][product_data][name]': `ProxyBox wallet top-up`,
       'metadata[userId]': user.id,
       'metadata[amount]': String(amount),
@@ -11293,8 +11374,35 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     }
     try {
       const session = await stripeApi('/v1/checkout/sessions', form)
-      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/checkout', note: `intent ${session.id} amount=${amount}` })
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/checkout', note: `intent ${session.id} amount=${amount} charge=${chargeUnit}` })
       return sendJson(res, 200, { url: session.url, sessionId: session.id })
+    } catch (e) {
+      return sendJson(res, 502, { error: `Stripe: ${e.message}` })
+    }
+  }
+
+  // ── Stripe: confirm a Checkout Session on return (credits wallet if paid) ──
+  if (req.method === 'POST' && sub === 'billing/checkout/confirm') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    const body = await readJson(req)
+    const sessionId = String(body.sessionId || '').trim()
+    if (!/^cs_[A-Za-z0-9_]+$/.test(sessionId)) return sendJson(res, 400, { error: 'invalid sessionId' })
+    try {
+      const session = await stripeApiGet(`/v1/checkout/sessions/${encodeURIComponent(sessionId)}`)
+      if (session.metadata?.userId !== user.id) return sendJson(res, 403, { error: 'session does not belong to this user' })
+      if (session.payment_status !== 'paid') return sendJson(res, 200, { ok: false, pending: true, status: session.payment_status })
+      const amount = Math.floor(Number(session.metadata?.amount) || 0)
+      if (amount <= 0) return sendJson(res, 502, { error: 'session amount missing' })
+      if (sqliteDb) {
+        try {
+          sqliteDb.exec('CREATE TABLE IF NOT EXISTS stripe_seen (id TEXT PRIMARY KEY, ts TEXT NOT NULL)')
+          const ins = sqliteDb.prepare('INSERT OR IGNORE INTO stripe_seen (id, ts) VALUES (?, ?)').run(session.id, new Date().toISOString())
+          if (!ins.changes) return sendJson(res, 200, { ok: true, alreadyCredited: true, balance: userBalance(user.id) })
+        } catch {}
+      }
+      const next = recordBillingTx(user.id, 'topup', amount, `stripe ${session.id}`)
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/checkout/confirm', note: `credited user=${user.id} +${amount} → ${next}` })
+      return sendJson(res, 200, { ok: true, amount, balance: next })
     } catch (e) {
       return sendJson(res, 502, { error: `Stripe: ${e.message}` })
     }

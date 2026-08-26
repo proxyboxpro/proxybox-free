@@ -49,6 +49,12 @@ onMounted(refresh)
         <label class="input-field"><span>{{ t('admin.pay.affiliateKickback') }}</span><input v-model.number="billing.affiliateKickback" type="number" min="0" /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.stripeSecretKey') }}</span><input v-model="billing.stripeSecretKey" placeholder="sk_test_..." /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.stripeWebhookSecret') }}</span><input v-model="billing.stripeWebhookSecret" placeholder="whsec_..." /></label>
+        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.stripePublishableKey') }}</span><input v-model="billing.stripePublishableKey" placeholder="pk_live_..." /></label>
+        <label class="input-field"><span>{{ t('admin.pay.stripeMin') }}</span><input v-model.number="billing.stripeMin" type="number" min="0" step="1" placeholder="5" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.stripeRate') }}</span><input v-model.number="billing.stripeRate" type="number" min="1" step="100" placeholder="25000" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.stripeFeePct') }}</span><input v-model.number="billing.stripeFeePct" type="number" min="0" max="99" step="0.1" placeholder="3.9" /></label>
+        <label class="input-field"><span>{{ t('admin.pay.stripeFeeFixed') }}</span><input v-model.number="billing.stripeFeeFixed" type="number" min="0" step="0.05" placeholder="0.30" /></label>
+        <p style="grid-column:1/-1; font-size:12px; color:var(--muted); margin:-2px 0 4px" v-html="t('admin.pay.stripeFeeHelp')"></p>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.successUrl') }}</span><input v-model="billing.successUrl" placeholder="https://your-domain/vi/customer/billing?paid=1" /></label>
         <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.pay.cancelUrl') }}</span><input v-model="billing.cancelUrl" placeholder="https://your-domain/vi/customer/billing?paid=0" /></label>
       </div>

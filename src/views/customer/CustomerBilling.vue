@@ -96,7 +96,19 @@ async function pay() {
   if (busy.value) return
   busy.value = true; err.value = ''; flash.value = ''
   try {
-    const r = await apiFetch('/api/v1/user/billing/checkout', { method: 'POST', body: { amount: Math.max(10000, Number(topup.value) || 0) } })
+    const amount = Math.max(10000, Math.floor(Number(topup.value) || 0))
+    const pm = billing.value?.paymentMethods || {}
+    const min = Number(pm.stripeMin) || 0
+    const rate = Number(pm.stripeRate) > 0 ? Number(pm.stripeRate) : 25000
+    const walletCur = (pm.walletCurrency || 'VND').toUpperCase()
+    if (min > 0) {
+      const minWallet = walletCur === 'USD' ? min : min * rate
+      if (amount + 1e-9 < minWallet) {
+        err.value = t('cust.billing.stripeMinErr', { min, wallet: Math.ceil(minWallet).toLocaleString(), walletCur })
+        busy.value = false; return
+      }
+    }
+    const r = await apiFetch('/api/v1/user/billing/checkout', { method: 'POST', body: { amount } })
     if (r.url) window.location.href = r.url
     else flash.value = t('cust.billing.sessionCreated')
   } catch (e) { err.value = e.message } finally { busy.value = false }
@@ -328,6 +340,21 @@ async function maybeFinalizePaypal() {
     err.value = `PayPal capture failed: ${e.message}`
   } finally { busy.value = false }
 }
+async function maybeFinalizeStripe() {
+  const params = new URLSearchParams(location.search)
+  const sessionId = params.get('session_id')
+  if (!sessionId || !sessionId.startsWith('cs_')) return
+  busy.value = true; err.value = ''
+  try {
+    const r = await apiFetch('/api/v1/user/billing/checkout/confirm', { method: 'POST', body: { sessionId } })
+    if (r.ok) flash.value = r.alreadyCredited
+      ? (t('cust.billing.stripeAlreadyDone') || 'Card payment already processed.')
+      : (t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() }) || `Card payment received: ${r.amount}.`)
+    else if (r.pending) flash.value = t('cust.billing.stripePending') || 'Payment is processing.'
+    history.replaceState(null, '', location.pathname)
+    await refresh()
+  } catch (e) { err.value = `Card confirm failed: ${e.message}` } finally { busy.value = false }
+}
 function fmtTs(s) { return s ? String(s).slice(0, 16).replace('T', ' ') : '—' }
 function viewOrder(id) { router.push({ name: 'proxies', query: { order: id } }) }
 function invoiceUrl(id) { return `/api/v1/user/orders/${id}/invoice` }
@@ -395,10 +422,34 @@ const paypalTermsNote = computed(() => {
     fixed: Number(pm.paypalFeeFixed) || 0
   })
 })
+// Stripe charges in the wallet currency; show the grossed-up amount incl. fee.
+const stripeEstimate = computed(() => {
+  const pm = billing.value?.paymentMethods
+  if (!pm) return ''
+  const walletCur = (pm.walletCurrency || pricing.value?.currency || 'VND').toUpperCase()
+  const rate = Number(pm.stripeRate) > 0 ? Number(pm.stripeRate) : 25000
+  const amount = Math.max(1, Number(topup.value) || 0)
+  const feePct = (Number(pm.stripeFeePct) || 0) / 100
+  const feeFixed = (Number(pm.stripeFeeFixed) || 0) * (walletCur === 'USD' ? 1 : rate)
+  const gross = feePct < 1 ? (amount + feeFixed) / (1 - feePct) : amount + feeFixed
+  const zeroDecimal = new Set(['VND', 'JPY', 'KRW', 'HUF'])
+  const shown = zeroDecimal.has(walletCur) ? Math.round(gross).toLocaleString() : (Math.round(gross * 100) / 100).toFixed(2)
+  return `${shown} ${walletCur}`
+})
+const stripeTermsNote = computed(() => {
+  const pm = billing.value?.paymentMethods
+  if (!pm) return ''
+  return t('cust.billing.stripeFeeNote', {
+    min: Number(pm.stripeMin) || 0,
+    pct: Number(pm.stripeFeePct) || 0,
+    fixed: Number(pm.stripeFeeFixed) || 0
+  })
+})
 
 onMounted(async () => {
   await refresh()
   await maybeFinalizePaypal()
+  await maybeFinalizeStripe()
 })
 </script>
 
@@ -476,7 +527,7 @@ onMounted(async () => {
 
         <div style="display:flex; flex-wrap:wrap; gap:10px">
           <button v-if="billing?.paymentMethods?.stripeEnabled" class="primary-action" type="button" :disabled="busy" @click="pay">
-            <CreditCard :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.payVia', { amount: Number(topup).toLocaleString() }) }}
+            <CreditCard :size="15" /> {{ busy ? t('common.loading') : `Pay with card (≈ ${stripeEstimate})` }}
           </button>
           <button v-if="billing?.paymentMethods?.paypalEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithPaypal" style="background:#0070ba; border-color:#0070ba">
             <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : `Pay with PayPal (≈ ${paypalEstimate})` }}
@@ -488,6 +539,7 @@ onMounted(async () => {
             <Wallet :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.usdtPayBtn', { usdt: usdtEstimate }) }}
           </button>
         </div>
+        <p v-if="billing?.paymentMethods?.stripeEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ stripeTermsNote }}</p>
         <p v-if="billing?.paymentMethods?.paypalEnabled" style="font-size:11.5px; color:var(--muted); margin:6px 0 0">{{ paypalTermsNote }}</p>
       </section>
 

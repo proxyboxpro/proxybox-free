@@ -17,6 +17,17 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.38', date: '2026-08-22', tag: 'feature',
+    titleEn: 'Stripe card payments: minimum 5 USD, customer-borne fee, webhook-independent crediting',
+    titleVi: 'Thanh toán thẻ Stripe: tối thiểu 5 USD, phí khách chịu, cộng ví không cần webhook',
+    items: [
+      { en: 'Stripe checkout enforces a minimum top-up (default 5 USD) and grosses-up the charge so the gateway fee (default 3.9% + $0.30) is paid by the customer; the wallet is credited the exact net amount. Knobs at /admin/payment.',
+        vi: 'Thanh toán Stripe có mức nạp tối thiểu (mặc định 5 USD) và cộng phí cổng (mặc định 3.9% + $0.30) vào số tiền — khách chịu phí, ví cộng đúng số net. Chỉnh ở /admin/payment.' },
+      { en: 'Wallet is credited via confirm-on-return (retrieve the Checkout Session) so top-ups work even before a dashboard webhook secret is configured, with shared dedup so a session is never credited twice.',
+        vi: 'Ví được cộng qua xác nhận-khi-quay-lại (truy vấn Checkout Session) nên hoạt động ngay cả khi chưa cấu hình webhook secret, chống trùng để không cộng 2 lần.' },
+    ],
+  },
+  {
     version: '1.6.37', date: '2026-08-22', tag: 'security',
     titleEn: 'Affiliate kickback is deposit-gated; fixed a bug that paid it even when set to 0',
     titleVi: 'Hoa hồng giới thiệu chỉ trả khi có nạp tiền thật; sửa lỗi vẫn trả dù đặt 0',
