@@ -6446,6 +6446,20 @@ async function handleApi(req, res, url) {
           audit({ actor: 'stripe', ip: clientIp(req), method: 'POST', path: '/api/webhooks/stripe', note: `credited user=${user.id} +${amount} â†' ${next}` })
         }
       }
+      if (event.type === 'payment_intent.succeeded') {
+        const pi = event.data?.object || {}
+        const userId = pi.metadata?.userId
+        const amount = Math.floor(Number(pi.metadata?.amount) || 0)
+        const user = config.users.find((u) => u.id === userId)
+        if (user && amount > 0) {
+          let credit = true
+          if (sqliteDb) { try { sqliteDb.exec('CREATE TABLE IF NOT EXISTS stripe_seen (id TEXT PRIMARY KEY, ts TEXT NOT NULL)'); credit = sqliteDb.prepare('INSERT OR IGNORE INTO stripe_seen (id, ts) VALUES (?, ?)').run(pi.id, new Date().toISOString()).changes > 0 } catch {} }
+          if (credit) {
+            const next = recordBillingTx(user.id, 'topup', amount, `stripe ${pi.id}`)
+            audit({ actor: 'stripe', ip: clientIp(req), method: 'POST', path: '/api/webhooks/stripe', note: `pi credited user=${user.id} +${amount} → ${next}` })
+          }
+        }
+      }
       res.writeHead(200); return res.end('{}')
     }
 
@@ -11347,6 +11361,7 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
       binancePending,
       paymentMethods: {
         stripeEnabled: Boolean(config.billing?.stripeSecretKey),
+        stripePublishableKey: config.billing?.stripePublishableKey || '',
         stripeMin: stripeMinTopup(),
         stripeRate: stripeRate(),
         stripeFeePct: stripeFeePctCfg(),
@@ -11532,6 +11547,94 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
     } catch (e) {
       return sendJson(res, 502, { error: `Stripe: ${e.message}` })
     }
+  }
+
+  // ── Stripe Payment Element (in-place, no redirect) ──────────────────────
+  // Create a PaymentIntent for a wallet top-up. `amount` is the NET wallet
+  // credit; the charge is grossed-up so the customer bears the fee (metadata
+  // keeps the net so the webhook/confirm credit exactly that).
+  if (req.method === 'POST' && sub === 'billing/stripe/intent') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    const body = await readJson(req)
+    const amount = Math.floor(Number(body.amount) || 0)
+    if (amount < 10000 || amount > 100_000_000) return sendJson(res, 400, { error: 'amount must be 10,000..100,000,000' })
+    const currency = String(config.billing.currency || 'vnd').toLowerCase()
+    const sMin = stripeMinTopup(), sRate = stripeRate()
+    const creditInUsd = currency === 'usd' ? amount : amount / sRate
+    if (sMin > 0 && creditInUsd + 1e-9 < sMin) return sendJson(res, 400, { error: `minimum Stripe top-up is ${sMin} USD` })
+    const charge = stripeGrossUp(amount)
+    const saveCard = Boolean(body.saveCard)
+    try {
+      let customerId
+      if (saveCard) customerId = await ensureStripeCustomer(user)
+      const form = {
+        amount: String(charge), currency,
+        'automatic_payment_methods[enabled]': 'true',
+        'metadata[userId]': user.id, 'metadata[amount]': String(amount),
+        description: 'Wallet top-up'
+      }
+      if (customerId) { form.customer = customerId; form.setup_future_usage = 'off_session' }
+      const pi = await stripeApi('/v1/payment_intents', form)
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/stripe/intent', note: `pi ${pi.id} net=${amount} charge=${charge}` })
+      return sendJson(res, 200, { clientSecret: pi.client_secret, publishableKey: config.billing.stripePublishableKey || '', amount, charge, currency })
+    } catch (e) { return sendJson(res, 502, { error: `Stripe: ${e.message}` }) }
+  }
+
+  // Confirm a PaymentIntent on the client's success callback → credit wallet.
+  if (req.method === 'POST' && sub === 'billing/stripe/confirm-intent') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    const body = await readJson(req)
+    const piId = String(body.paymentIntentId || '').trim()
+    if (!/^pi_[A-Za-z0-9_]+$/.test(piId)) return sendJson(res, 400, { error: 'invalid paymentIntentId' })
+    try {
+      const pi = await stripeApiGet(`/v1/payment_intents/${encodeURIComponent(piId)}`)
+      if (pi.metadata?.userId !== user.id) return sendJson(res, 403, { error: 'intent does not belong to this user' })
+      if (pi.status !== 'succeeded') return sendJson(res, 200, { ok: false, pending: true, status: pi.status })
+      const amount = Math.floor(Number(pi.metadata?.amount) || 0)
+      if (amount <= 0) return sendJson(res, 502, { error: 'intent amount missing' })
+      if (sqliteDb) {
+        try {
+          sqliteDb.exec('CREATE TABLE IF NOT EXISTS stripe_seen (id TEXT PRIMARY KEY, ts TEXT NOT NULL)')
+          if (!sqliteDb.prepare('INSERT OR IGNORE INTO stripe_seen (id, ts) VALUES (?, ?)').run(pi.id, new Date().toISOString()).changes) return sendJson(res, 200, { ok: true, alreadyCredited: true, balance: userBalance(user.id) })
+        } catch {}
+      }
+      const next = recordBillingTx(user.id, 'topup', amount, `stripe ${pi.id}`)
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/stripe/confirm-intent', note: `credited user=${user.id} +${amount} → ${next}` })
+      return sendJson(res, 200, { ok: true, amount, balance: next })
+    } catch (e) { return sendJson(res, 502, { error: `Stripe: ${e.message}` }) }
+  }
+
+  // Create a SetupIntent to save a card in-place (Payment Element setup mode).
+  if (req.method === 'POST' && sub === 'billing/stripe/setup-intent') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    try {
+      const customerId = await ensureStripeCustomer(user)
+      const si = await stripeApi('/v1/setup_intents', { customer: customerId, 'automatic_payment_methods[enabled]': 'true', usage: 'off_session' })
+      return sendJson(res, 200, { clientSecret: si.client_secret, publishableKey: config.billing.stripePublishableKey || '' })
+    } catch (e) { return sendJson(res, 502, { error: `Stripe: ${e.message}` }) }
+  }
+
+  // Store the saved card after an in-place SetupIntent succeeds.
+  if (req.method === 'POST' && sub === 'billing/stripe/save-card') {
+    if (!config.billing?.stripeSecretKey) return sendJson(res, 503, { error: 'billing not configured' })
+    const body = await readJson(req)
+    const siId = String(body.setupIntentId || '').trim()
+    if (!/^seti_[A-Za-z0-9_]+$/.test(siId)) return sendJson(res, 400, { error: 'invalid setupIntentId' })
+    try {
+      const si = await stripeApiGet(`/v1/setup_intents/${encodeURIComponent(siId)}`)
+      if (user.stripeCustomerId && si.customer && si.customer !== user.stripeCustomerId) return sendJson(res, 403, { error: 'mismatch' })
+      const pmId = si.payment_method
+      if (si.status !== 'succeeded' || !pmId) return sendJson(res, 200, { ok: false, pending: true, status: si.status })
+      const pm = await stripeApiGet(`/v1/payment_methods/${encodeURIComponent(pmId)}`)
+      user.stripePaymentMethodId = pmId
+      user.stripeCardBrand = pm.card?.brand || ''
+      user.stripeCardLast4 = pm.card?.last4 || ''
+      user.stripeCardExp = pm.card ? `${pm.card.exp_month}/${pm.card.exp_year}` : ''
+      if (user.autoRecharge === undefined) user.autoRecharge = true
+      await saveConfig()
+      audit({ actor: user.email, ip: clientIp(req), method: 'POST', path: '/api/v1/user/billing/stripe/save-card', note: `card saved ${user.stripeCardBrand} ****${user.stripeCardLast4}` })
+      return sendJson(res, 200, { ok: true, card: { brand: user.stripeCardBrand, last4: user.stripeCardLast4, exp: user.stripeCardExp }, autoRecharge: user.autoRecharge })
+    } catch (e) { return sendJson(res, 502, { error: `Stripe: ${e.message}` }) }
   }
 
   // ── Stripe: start a card-save (SetupIntent via Checkout mode=setup) ──────

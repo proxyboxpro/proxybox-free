@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ArrowDownLeft, ArrowUpRight, Check, ChevronRight, CircleDollarSign, CreditCard,
@@ -340,6 +340,23 @@ async function maybeFinalizePaypal() {
     err.value = `PayPal capture failed: ${e.message}`
   } finally { busy.value = false }
 }
+// Return from a 3DS redirect for an in-place PaymentIntent / SetupIntent.
+async function maybeFinalizePaymentIntent() {
+  const params = new URLSearchParams(location.search)
+  const pi = params.get('payment_intent')
+  const si = params.get('setup_intent')
+  try {
+    if (pi && pi.startsWith('pi_')) {
+      const r = await apiFetch('/api/v1/user/billing/stripe/confirm-intent', { method: 'POST', body: { paymentIntentId: pi } })
+      if (r.ok) flash.value = r.alreadyCredited ? (t('cust.billing.stripeAlreadyDone')) : t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() })
+      history.replaceState(null, '', location.pathname); await refresh()
+    } else if (si && si.startsWith('seti_')) {
+      const r = await apiFetch('/api/v1/user/billing/stripe/save-card', { method: 'POST', body: { setupIntentId: si } })
+      if (r.ok) flash.value = t('cust.billing.cardSaved')
+      history.replaceState(null, '', location.pathname); await refresh()
+    }
+  } catch (e) { err.value = e.message }
+}
 async function maybeFinalizeStripe() {
   const params = new URLSearchParams(location.search)
   const sessionId = params.get('session_id')
@@ -481,11 +498,97 @@ const stripeTermsNote = computed(() => {
   })
 })
 
+// ─── Stripe Payment Element (in-place, no redirect) ────────────────
+let _stripeJs = null
+function loadStripeJs() {
+  if (window.Stripe) return Promise.resolve(window.Stripe)
+  if (_stripeJs) return _stripeJs
+  _stripeJs = new Promise((resolve, reject) => {
+    const el = document.createElement('script')
+    el.src = 'https://js.stripe.com/v3/'
+    el.onload = () => resolve(window.Stripe)
+    el.onerror = () => reject(new Error('Không tải được Stripe.js'))
+    document.head.appendChild(el)
+  })
+  return _stripeJs
+}
+const stripeModal = ref(false)      // false | 'pay' | 'setup'
+const stripeSubmitting = ref(false)
+const stripeSaveCard = ref(false)
+const stripeErr = ref('')
+let _stripe = null, _elements = null
+const appearance = { theme: 'night', variables: { colorPrimary: '#22c55e', colorBackground: '#0f1720', borderRadius: '8px' } }
+async function mountElement(clientSecret) {
+  const Stripe = await loadStripeJs()
+  _stripe = Stripe(billing.value?.paymentMethods?.stripePublishableKey || '')
+  await nextTick()
+  _elements = _stripe.elements({ clientSecret, appearance })
+  _elements.create('payment', { layout: 'tabs' }).mount('#stripe-pe')
+}
+function stripeMinWallet() {
+  const pm = billing.value?.paymentMethods || {}
+  const min = Number(pm.stripeMin) || 0
+  const rate = Number(pm.stripeRate) > 0 ? Number(pm.stripeRate) : 25000
+  const walletCur = (pm.walletCurrency || 'VND').toUpperCase()
+  return { min, walletCur, minWallet: walletCur === 'USD' ? min : min * rate }
+}
+async function payWithCardInline() {
+  if (busy.value) return
+  err.value = ''; stripeErr.value = ''
+  const amount = Math.max(10000, Math.floor(Number(topup.value) || 0))
+  const { min, walletCur, minWallet } = stripeMinWallet()
+  if (min > 0 && amount + 1e-9 < minWallet) {
+    err.value = t('cust.billing.stripeMinErr', { min, wallet: Math.ceil(minWallet).toLocaleString(), walletCur }); return
+  }
+  busy.value = true
+  try {
+    const r = await apiFetch('/api/v1/user/billing/stripe/intent', { method: 'POST', body: { amount, saveCard: stripeSaveCard.value } })
+    stripeModal.value = 'pay'
+    await mountElement(r.clientSecret)
+  } catch (e) { err.value = e.message; stripeModal.value = false } finally { busy.value = false }
+}
+async function submitStripePay() {
+  if (stripeSubmitting.value || !_stripe || !_elements) return
+  stripeSubmitting.value = true; stripeErr.value = ''
+  try {
+    const { error, paymentIntent } = await _stripe.confirmPayment({ elements: _elements, redirect: 'if_required', confirmParams: { return_url: location.origin + location.pathname } })
+    if (error) { stripeErr.value = error.message; return }
+    const r = await apiFetch('/api/v1/user/billing/stripe/confirm-intent', { method: 'POST', body: { paymentIntentId: paymentIntent.id } })
+    closeStripeModal()
+    flash.value = r.alreadyCredited ? (t('cust.billing.stripeAlreadyDone') || 'Đã xử lý.') : (t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() }))
+    await refresh()
+  } catch (e) { stripeErr.value = e.message } finally { stripeSubmitting.value = false }
+}
+async function addCardInline() {
+  if (busy.value) return
+  err.value = ''; stripeErr.value = ''
+  busy.value = true
+  try {
+    const r = await apiFetch('/api/v1/user/billing/stripe/setup-intent', { method: 'POST' })
+    stripeModal.value = 'setup'
+    await mountElement(r.clientSecret)
+  } catch (e) { err.value = e.message; stripeModal.value = false } finally { busy.value = false }
+}
+async function submitStripeSetup() {
+  if (stripeSubmitting.value || !_stripe || !_elements) return
+  stripeSubmitting.value = true; stripeErr.value = ''
+  try {
+    const { error, setupIntent } = await _stripe.confirmSetup({ elements: _elements, redirect: 'if_required', confirmParams: { return_url: location.origin + location.pathname } })
+    if (error) { stripeErr.value = error.message; return }
+    await apiFetch('/api/v1/user/billing/stripe/save-card', { method: 'POST', body: { setupIntentId: setupIntent.id } })
+    closeStripeModal()
+    flash.value = t('cust.billing.cardSaved') || 'Đã lưu thẻ.'
+    await refresh()
+  } catch (e) { stripeErr.value = e.message } finally { stripeSubmitting.value = false }
+}
+function closeStripeModal() { stripeModal.value = false; _elements = null; _stripe = null; stripeSubmitting.value = false }
+
 onMounted(async () => {
   await refresh()
   await maybeFinalizePaypal()
   await maybeFinalizeStripe()
   await maybeFinalizeCard()
+  await maybeFinalizePaymentIntent()
 })
 </script>
 
@@ -548,7 +651,7 @@ onMounted(async () => {
           <div class="input-field">
             <span>{{ t('cust.billing.method') }}</span>
             <div style="display:flex; flex-direction:column; gap:6px; padding:6px 11px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:var(--radius-sm); color:var(--text); font-size:13px">
-              <span v-if="billing?.paymentMethods?.stripeEnabled" style="display:inline-flex; align-items:center; gap:6px"><CreditCard :size="14" style="color:var(--pxl)" /> Stripe (Card / Apple / Google Pay)</span>
+              <span v-if="billing?.paymentMethods?.stripeEnabled" style="display:inline-flex; align-items:center; gap:6px"><CreditCard :size="14" style="color:var(--pxl)" /> {{ t('cust.billing.cardMethodLabel') }}</span>
               <span v-if="billing?.paymentMethods?.paypalEnabled" style="display:inline-flex; align-items:center; gap:6px"><CircleDollarSign :size="14" style="color:#1546a0" /> PayPal ({{ billing.paymentMethods.paypalCurrency || 'USD' }})</span>
               <span v-if="billing?.paymentMethods?.sepayEnabled" style="display:inline-flex; align-items:center; gap:6px"><Landmark :size="14" style="color:var(--green)" /> {{ t('cust.billing.sepayMethodLabel') }}</span>
               <span v-if="billing?.paymentMethods?.binanceEnabled" style="display:inline-flex; align-items:center; gap:6px"><Wallet :size="14" style="color:#26a17b" /> {{ t('cust.billing.usdtMethodLabel') }}</span>
@@ -562,8 +665,8 @@ onMounted(async () => {
         </div>
 
         <div style="display:flex; flex-wrap:wrap; gap:10px">
-          <button v-if="billing?.paymentMethods?.stripeEnabled" class="primary-action" type="button" :disabled="busy" @click="pay">
-            <CreditCard :size="15" /> {{ busy ? t('common.loading') : `Pay with card (≈ ${stripeEstimate})` }}
+          <button v-if="billing?.paymentMethods?.stripeEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithCardInline">
+            <CreditCard :size="15" /> {{ busy && stripeModal === false ? t('common.loading') : t('cust.billing.cardPayBtn', { amount: stripeEstimate }) }}
           </button>
           <button v-if="billing?.paymentMethods?.paypalEnabled" class="primary-action" type="button" :disabled="busy" @click="payWithPaypal" style="background:#0070ba; border-color:#0070ba">
             <CircleDollarSign :size="15" /> {{ busy ? t('common.loading') : `Pay with PayPal (≈ ${paypalEstimate})` }}
@@ -590,7 +693,7 @@ onMounted(async () => {
           <div style="flex:1"></div>
           <button class="ghost-button" type="button" style="padding:4px 10px; font-size:12px" @click="removeCard">{{ t('cust.billing.cardRemove') }}</button>
         </div>
-        <button v-else class="primary-action" type="button" :disabled="busy" @click="saveCard" style="max-width:280px">
+        <button v-else class="primary-action" type="button" :disabled="busy" @click="addCardInline" style="max-width:280px">
           <CreditCard :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.cardSave') }}
         </button>
         <label v-if="ar.hasCard" class="check-line" style="margin-top:14px; display:inline-flex; align-items:center; gap:8px; cursor:pointer">
@@ -625,6 +728,31 @@ onMounted(async () => {
               <p class="sepay-hint">{{ sepayData.instructions }}</p>
               <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.sepayPolling') }}</p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stripe Payment Element modal (in-place card entry, no redirect) -->
+      <div v-if="stripeModal" class="sepay-modal-overlay" @click.self="closeStripeModal">
+        <div class="sepay-modal" style="max-width:460px">
+          <div class="sepay-modal-head">
+            <h3><CreditCard :size="16" style="vertical-align:-3px" /> {{ stripeModal === 'setup' ? t('cust.billing.cardSave') : t('cust.billing.cardModalTitle') }}</h3>
+            <button class="ghost-button" type="button" @click="closeStripeModal" style="padding:4px 8px"><X :size="14" /></button>
+          </div>
+          <div style="padding:18px; display:flex; flex-direction:column; gap:14px">
+            <div v-if="stripeModal === 'pay'" style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:10px 12px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px">
+              <span style="color:var(--muted)">{{ t('cust.billing.cardChargeLabel') }}</span>
+              <strong class="cell-mono" style="color:var(--green); font-size:15px">≈ {{ stripeEstimate }}</strong>
+            </div>
+            <div id="stripe-pe"><div style="padding:20px; text-align:center; color:var(--muted); font-size:12px"><RefreshCw :size="14" class="spin" style="vertical-align:-2px" /> {{ t('common.loading') }}</div></div>
+            <p v-if="stripeErr" class="error-text" style="margin:0; font-size:12px">{{ stripeErr }}</p>
+            <button v-if="stripeModal === 'pay'" class="primary-action" type="button" :disabled="stripeSubmitting" @click="submitStripePay" style="width:100%">
+              <CreditCard :size="15" /> {{ stripeSubmitting ? t('common.loading') : t('cust.billing.cardPayNow', { amount: stripeEstimate }) }}
+            </button>
+            <button v-else class="primary-action" type="button" :disabled="stripeSubmitting" @click="submitStripeSetup" style="width:100%">
+              <CreditCard :size="15" /> {{ stripeSubmitting ? t('common.loading') : t('cust.billing.cardSaveNow') }}
+            </button>
+            <p style="font-size:11px; color:var(--muted); margin:0; text-align:center">🔒 {{ t('cust.billing.cardSecure') }}</p>
           </div>
         </div>
       </div>

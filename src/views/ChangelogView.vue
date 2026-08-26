@@ -17,6 +17,15 @@ const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.6.40', date: '2026-08-22', tag: 'feature',
+    titleEn: 'In-place card checkout (Stripe Payment Element); card management; provider name hidden',
+    titleVi: 'Thanh toán thẻ ngay tại trang (Stripe Payment Element); quản lý thẻ; ẩn tên nhà cung cấp',
+    items: [
+      { en: 'Card top-ups and add-card run inline via the Stripe Payment Element (cards + Apple/Google Pay) — no redirect to a hosted page; 3DS handled in-modal. Requires script-src/frame-src for js.stripe.com in your CSP.',
+        vi: 'Nạp thẻ và thêm thẻ chạy ngay tại trang qua Stripe Payment Element (thẻ + Apple/Google Pay) — không chuyển trang; 3DS xử lý trong hộp thoại. Cần thêm js.stripe.com vào script-src/frame-src trong CSP.' },
+    ],
+  },
+  {
     version: '1.6.39', date: '2026-08-22', tag: 'feature',
     titleEn: 'Saved card + auto-recharge: top up automatically when the wallet runs low',
     titleVi: 'Lưu thẻ + tự động nạp: tự nạp tiền khi ví sắp hết',
