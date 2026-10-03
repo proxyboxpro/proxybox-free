@@ -702,12 +702,14 @@ onMounted(async () => {
               <a-alert v-if="billing?.binancePending" type="info" show-icon :message="t('cust.billing.usdtPendingTitle')">
                 <template #icon><SyncOutlined spin /></template>
                 <template #description>
-                  <span class="mono">{{ billing.binancePending.usdtAmount }} USDT</span>
-                  → +{{ Number(billing.binancePending.creditAmount).toLocaleString() }} {{ billing.paymentMethods?.walletCurrency || 'VND' }}
-                  · {{ billing.binancePending.status === 'sent' ? t('cust.billing.usdtPendingSent') : t('cust.billing.usdtPendingWaiting') }}
-                </template>
-                <template #action>
-                  <a-button size="small" @click="reopenUsdt">{{ t('cust.billing.usdtPendingView') }}</a-button>
+                  <a-flex vertical gap="small" align="flex-start">
+                    <span>
+                      <span class="mono">{{ billing.binancePending.usdtAmount }} USDT</span>
+                      → +{{ Number(billing.binancePending.creditAmount).toLocaleString() }} {{ billing.paymentMethods?.walletCurrency || 'VND' }}
+                      · {{ billing.binancePending.status === 'sent' ? t('cust.billing.usdtPendingSent') : t('cust.billing.usdtPendingWaiting') }}
+                    </span>
+                    <a-button size="small" @click="reopenUsdt">{{ t('cust.billing.usdtPendingView') }}</a-button>
+                  </a-flex>
                 </template>
               </a-alert>
 

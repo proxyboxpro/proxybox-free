@@ -43,9 +43,9 @@ function shareFb() {
 }
 
 const referralColumns = computed(() => [
-  { title: t('cust.aff.col.signupAt'), key: 'signupDate', dataIndex: 'signupDate', width: 160 },
+  { title: t('cust.aff.col.signupAt'), key: 'signupDate', dataIndex: 'signupDate', width: 120 },
   { title: t('cust.aff.col.email'), key: 'maskedEmail', dataIndex: 'maskedEmail' },
-  { title: t('cust.aff.col.kickback'), key: 'kickback', dataIndex: 'kickback', width: 140, align: 'right' }
+  { title: t('cust.aff.col.kickback'), key: 'kickback', dataIndex: 'kickback', width: 110, align: 'right' }
 ])
 const referralRows = computed(() => (data.value?.referrals || []).map((r, i) => ({ ...r, _k: i })))
 
@@ -150,7 +150,7 @@ onMounted(refresh)
                 row-key="_k"
                 size="middle"
                 :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
-                :scroll="{ x: 520 }"
+                :scroll="{ x: 360 }"
                 :locale="{ emptyText: t('cust.aff.empty') }"
               >
                 <template #bodyCell="{ column, record: r }">

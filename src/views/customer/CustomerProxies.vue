@@ -795,13 +795,14 @@ function selectTab(g, tabId) {
 }
 
 const proxyColumns = computed(() => [
-  { title: '#', key: 'idx', width: 56 },
-  { title: t('cust.proxies.label'), key: 'label', width: 210 },
-  { title: t('cust.proxies.host'), key: 'endpoint', width: 220 },
-  { title: t('cust.proxies.creds'), key: 'creds', width: 230 },
-  { title: t('cust.proxies.status'), key: 'status', width: 100 },
-  { title: t('cust.proxies.spark24h'), key: 'spark', width: 110 },
-  { title: t('cust.proxies.actions'), key: 'actions', width: 340 }
+  { title: '#', key: 'idx', width: 50 },
+  { title: t('cust.proxies.label'), key: 'label', width: 160 },
+  { title: t('cust.proxies.host'), key: 'endpoint', width: 180 },
+  { title: t('cust.proxies.creds'), key: 'creds', width: 180 },
+  { title: t('cust.proxies.status'), key: 'status', width: 90 },
+  { title: t('cust.proxies.spark24h'), key: 'spark', width: 96 },
+  // Pinned on desktop so row actions stay reachable while the middle scrolls.
+  { title: t('cust.proxies.actions'), key: 'actions', width: 340, fixed: screens.value.md ? 'right' : undefined }
 ])
 const credsColumns = computed(() => [
   { title: t('cust.proxies.host'), key: 'endpoint' },
@@ -1454,7 +1455,7 @@ onBeforeUnmount(() => {
               :row-selection="rowSelectionOf(g)"
               row-key="id"
               size="small"
-              :scroll="{ x: 1200 }"
+              :scroll="{ x: 1130 }"
               @change="(pag) => onProxyTableChange(g, pag)"
             >
               <template #bodyCell="{ column, record: p, index }">
