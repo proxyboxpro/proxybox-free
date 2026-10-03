@@ -1,6 +1,5 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Building2, Calendar, Globe, Hash, Layers, Loader2, MapPin, Network, Play } from 'lucide-vue-next'
 import { apiFetch, ApiError } from '../../api'
 import { useI18n } from '../../i18n'
 import CountryFlag from '../../components/CountryFlag.vue'
@@ -24,6 +23,7 @@ const detectedFamily = computed(() => {
 })
 
 async function runLookup() {
+  if (busy.value) return
   err.value = ''
   result.value = null
   if (!detectedFamily.value) {
@@ -47,135 +47,93 @@ function pasteFromClipboard() {
 </script>
 
 <template>
-  <h1>{{ t('cust.tools.ipInfo.title') }}</h1>
-  <p class="sub">{{ t('cust.tools.ipInfo.subtitle') }}</p>
+  <div class="page">
+    <a-typography-text type="secondary">{{ t('cust.tools.ipInfo.subtitle') }}</a-typography-text>
 
-  <section class="surface" style="padding:18px; margin-bottom:14px">
-    <div class="section-head">
-      <h2><Network :size="14" /> {{ t('cust.tools.ipInfo.inputHead') }}</h2>
-    </div>
+    <a-card size="small">
+      <template #title><ApiOutlined /> {{ t('cust.tools.ipInfo.inputHead') }}</template>
+      <a-form @submit="runLookup">
+        <a-flex wrap="wrap" gap="small" align="center">
+          <a-input
+            v-model:value="input"
+            size="large"
+            class="mono ip-input"
+            :placeholder="t('cust.tools.ipInfo.placeholder')"
+            autocomplete="off"
+            spellcheck="false"
+            allow-clear
+          >
+            <template #suffix>
+              <a-tag v-if="detectedFamily === 4" color="green" :bordered="false" class="mono fam-tag">IPv4</a-tag>
+              <a-tag v-else-if="detectedFamily === 6" color="blue" :bordered="false" class="mono fam-tag">IPv6</a-tag>
+            </template>
+          </a-input>
+          <a-space :size="8">
+            <a-button size="large" @click="pasteFromClipboard">
+              <template #icon><SnippetsOutlined /></template>
+              {{ t('cust.tools.ipInfo.paste') }}
+            </a-button>
+            <a-button type="primary" size="large" html-type="submit" :loading="busy" :disabled="!detectedFamily">
+              <template #icon><SearchOutlined /></template>
+              {{ busy ? t('cust.tools.ipInfo.running') : t('cust.tools.ipInfo.run') }}
+            </a-button>
+          </a-space>
+        </a-flex>
+      </a-form>
 
-    <div class="ii-input-row">
-      <div class="ii-input-wrap">
-        <input
-          v-model="input"
-          type="text"
-          class="ii-input"
-          :placeholder="t('cust.tools.ipInfo.placeholder')"
-          autocomplete="off"
-          spellcheck="false"
-          @keydown.enter="runLookup"
-        />
-        <span v-if="detectedFamily === 4" class="family-badge fv4">IPv4</span>
-        <span v-else-if="detectedFamily === 6" class="family-badge fv6">IPv6</span>
-      </div>
+      <a-alert v-if="err" type="error" show-icon :message="err" class="below" />
+      <a-typography-paragraph v-else type="secondary" class="below hint">
+        <InfoCircleOutlined /> {{ t('cust.tools.ipInfo.hint') }}
+      </a-typography-paragraph>
+    </a-card>
 
-      <button type="button" class="btn-paste" @click="pasteFromClipboard">{{ t('cust.tools.ipInfo.paste') }}</button>
-      <button type="button" class="btn-run" :disabled="busy || !detectedFamily" @click="runLookup">
-        <Loader2 v-if="busy" :size="14" class="spin" />
-        <Play v-else :size="14" />
-        {{ busy ? t('cust.tools.ipInfo.running') : t('cust.tools.ipInfo.run') }}
-      </button>
-    </div>
+    <a-card v-if="result && !result.error" size="small">
+      <template #title><GlobalOutlined /> {{ t('cust.tools.ipInfo.resultHead') }}</template>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 3 }">
+        <a-descriptions-item>
+          <template #label><ApiOutlined /> {{ t('cust.tools.ipInfo.ip') }}</template>
+          <a-typography-text class="mono" :copyable="{ text: result.ip }">{{ result.ip }}</a-typography-text>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ipInfo.family')">
+          <span class="mono">{{ result.family.toUpperCase() }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><NumberOutlined /> {{ t('cust.tools.ipInfo.asn') }}</template>
+          <span class="mono">{{ result.asn || '—' }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><ClusterOutlined /> {{ t('cust.tools.ipInfo.cidr') }}</template>
+          <span class="mono">{{ result.cidr || '—' }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><EnvironmentOutlined /> {{ t('cust.tools.ipInfo.country') }}</template>
+          <a-space :size="8">
+            <CountryFlag v-if="result.country && result.country.length === 2" :code="result.country" :size="16" />
+            <span class="mono">{{ result.country || '—' }}</span>
+          </a-space>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ipInfo.registry')">
+          <span class="mono">{{ (result.registry || '—').toUpperCase() }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><CalendarOutlined /> {{ t('cust.tools.ipInfo.allocDate') }}</template>
+          <span class="mono">{{ result.allocDate || '—' }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><BankOutlined /> {{ t('cust.tools.ipInfo.org') }}</template>
+          <span class="mono org">{{ result.org || '—' }}</span>
+        </a-descriptions-item>
+      </a-descriptions>
+    </a-card>
 
-    <p v-if="err" class="error-text" style="margin-top:12px">{{ err }}</p>
-    <p v-else class="hint-text">{{ t('cust.tools.ipInfo.hint') }}</p>
-  </section>
-
-  <section v-if="result && !result.error" class="surface" style="padding:18px">
-    <div class="section-head">
-      <h2><Globe :size="14" /> {{ t('cust.tools.ipInfo.resultHead') }}</h2>
-    </div>
-
-    <div class="ii-stats-grid">
-      <div class="stat-cell">
-        <span class="lbl"><Network :size="12" /> {{ t('cust.tools.ipInfo.ip') }}</span>
-        <span class="cell-mono val">{{ result.ip }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ipInfo.family') }}</span>
-        <span class="cell-mono val">{{ result.family.toUpperCase() }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl"><Hash :size="12" /> {{ t('cust.tools.ipInfo.asn') }}</span>
-        <span class="cell-mono val">{{ result.asn || '—' }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl"><Layers :size="12" /> {{ t('cust.tools.ipInfo.cidr') }}</span>
-        <span class="cell-mono val">{{ result.cidr || '—' }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl"><MapPin :size="12" /> {{ t('cust.tools.ipInfo.country') }}</span>
-        <span class="val country-cell">
-          <CountryFlag v-if="result.country && result.country.length === 2" :code="result.country" :size="16" />
-          <span class="cell-mono">{{ result.country || '—' }}</span>
-        </span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ipInfo.registry') }}</span>
-        <span class="cell-mono val">{{ (result.registry || '—').toUpperCase() }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl"><Calendar :size="12" /> {{ t('cust.tools.ipInfo.allocDate') }}</span>
-        <span class="cell-mono val">{{ result.allocDate || '—' }}</span>
-      </div>
-      <div class="stat-cell" style="grid-column: span 3">
-        <span class="lbl"><Building2 :size="12" /> {{ t('cust.tools.ipInfo.org') }}</span>
-        <span class="cell-mono val org-val">{{ result.org || '—' }}</span>
-      </div>
-    </div>
-  </section>
-
-  <section v-else-if="result?.error" class="surface" style="padding:18px">
-    <p class="error-text">{{ result.error }}</p>
-  </section>
+    <a-alert v-else-if="result?.error" type="error" show-icon :message="result.error" />
+  </div>
 </template>
 
 <style scoped>
-.sub { color: var(--muted); margin: 2px 0 14px; }
-
-.ii-input-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-.ii-input-wrap { position: relative; flex: 1; min-width: 260px; }
-.ii-input {
-  width: 100%; height: 38px; padding: 0 60px 0 12px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-  color: var(--text); font-family: var(--mono); font-size: 13px; outline: none;
-}
-.ii-input:focus { border-color: var(--green); }
-.family-badge {
-  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-  height: 22px; padding: 0 8px; border-radius: var(--radius-sm);
-  font-size: 11px; font-weight: 600; font-family: var(--mono); display: inline-flex; align-items: center;
-}
-.family-badge.fv4 { background: var(--green-soft); color: var(--green); }
-.family-badge.fv6 { background: var(--blue-soft); color: var(--blue); }
-
-.btn-paste, .btn-run {
-  height: 38px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border);
-  background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.btn-paste:hover { border-color: var(--muted); }
-.btn-run { background: var(--green); border-color: var(--green); color: #0a0e14; font-weight: 600; }
-.btn-run:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-run:not(:disabled):hover { filter: brightness(1.08); }
-
-.spin { animation: ii-spin 0.9s linear infinite; }
-@keyframes ii-spin { to { transform: rotate(360deg); } }
-
-.hint-text { color: var(--muted); font-size: 12px; margin-top: 10px; }
-
-.ii-stats-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px;
-}
-.stat-cell {
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
-}
-.stat-cell .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; display: inline-flex; align-items: center; gap: 4px; }
-.stat-cell .val { font-size: 14px; color: var(--text); }
-.country-cell { display: inline-flex; align-items: center; gap: 8px; }
-.org-val { font-size: 13px; word-break: break-word; }
-
-@media (max-width: 720px) { .ii-stats-grid { grid-template-columns: repeat(2, 1fr); } }
+.ip-input { flex: 1 1 260px; min-width: 0; }
+.fam-tag { margin-inline-end: 0; }
+.below { margin-top: 12px; }
+.hint { margin-bottom: 0; font-size: 12px; }
+.org { word-break: break-word; }
 </style>

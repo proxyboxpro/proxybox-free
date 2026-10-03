@@ -1,18 +1,18 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Copy, Download, Key, Plus, Power, RefreshCw, RotateCw, Server, ShieldCheck, Trash2, Zap } from 'lucide-vue-next'
+import { DeleteOutlined, GlobalOutlined, WindowsOutlined } from '@ant-design/icons-vue'
 import { useI18n } from '../i18n'
 import { apiFetch } from '../api'
 import { nodesState, loadNodes, addNode, removeNode, installNode, syncNode } from '../store/nodes'
+import { message, confirmAsync } from '../ui/feedback'
+import StatusTag from '../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
 const syncing = ref('')
 const busy = ref('')
-const flash = ref('')
 
 const showForm = ref(false)
 const submitting = ref(false)
-const errorText = ref('')
 const zones = ref([])
 // Drop "dual" — admin must classify the node strictly as v4 OR v6.
 const form = reactive({ name: '', host: '', sshUser: 'root', sshPassword: '', family: 'ipv4', tag: '', zone: '' })
@@ -29,32 +29,53 @@ const others = computed(() => {
 })
 const byonCount  = computed(() => nodesState.nodes.filter((n) => n.isByon || n.ownerId).length)
 const fleetCount = computed(() => nodesState.nodes.filter((n) => n.id !== 'local' && !n.isByon && !n.ownerId).length)
+const ownerOptions = computed(() => [
+  { label: 'All', value: 'all' },
+  { label: `Fleet (${fleetCount.value})`, value: 'fleet' },
+  { label: `BYON (${byonCount.value})`, value: 'byon' }
+])
+const emptyText = computed(() => (ownerFilter.value === 'byon' ? t('nodes.add.emptyByon')
+  : ownerFilter.value === 'fleet' ? t('nodes.add.emptyFleet')
+    : t('nodes.add.emptyAll')))
+const zoneOptions = computed(() => [
+  { label: t('nodes.add.zoneAuto'), value: '' },
+  ...zones.value.map((z) => ({ label: `${z.flag || ''} ${z.name}`.trim(), value: z.id }))
+])
+
+const columns = computed(() => [
+  { title: t('nodes.list.colNode'), key: 'node', width: 260 },
+  { title: t('nodes.list.colEndpoint'), key: 'endpoint', width: 220 },
+  { title: t('nodes.list.colFamilyZone'), key: 'family', width: 150 },
+  { title: t('nodes.list.colStatus'), key: 'status', width: 150 },
+  { title: t('nodes.list.colActions'), key: 'actions', width: 380 }
+])
+const expandedKeys = computed(() => Object.keys(installOut))
 
 function detailLink(id) { return { name: 'admin-node-detail', params: { nodeId: id } } }
+function statusColor(s) { return s === 'online' ? 'success' : (s === 'install-failed' ? 'error' : 'warning') }
 
 async function onSync(id) {
   if (syncing.value) return
   syncing.value = id
-  try { await syncNode(id) } catch (e) { errorText.value = e.message } finally { syncing.value = '' }
+  try { await syncNode(id) } catch (e) { message.error(e.message) } finally { syncing.value = '' }
 }
 async function submit() {
   if (submitting.value) return
-  errorText.value = ''
   submitting.value = true
   try {
     await addNode({ name: form.name, host: form.host, sshUser: form.sshUser, sshPassword: form.sshPassword, family: form.family, tag: form.tag, zone: form.zone })
     form.name = ''; form.host = ''; form.sshPassword = ''; form.family = 'ipv4'; form.tag = ''; form.zone = ''
     showForm.value = false
-  } catch (e) { errorText.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { submitting.value = false }
 }
 async function onRemove(id) {
-  if (!confirm(t('nodes.add.confirmDelete', { id }))) return
-  try { await removeNode(id) } catch (e) { errorText.value = e.message }
+  if (!(await confirmAsync({ title: t('nodes.add.confirmDelete', { id }), danger: true }))) return
+  try { await removeNode(id) } catch (e) { message.error(e.message) }
 }
 async function onInstall(id) {
   if (installing.value) return
-  installing.value = id; errorText.value = ''
+  installing.value = id
   try {
     const r = await installNode(id)
     installOut[id] = { ok: !!r.ok, output: r.output || r.error || '' }
@@ -67,16 +88,16 @@ async function onToggle(n) {
     const action = n.disabled ? 'enable' : 'disable'
     const r = await apiFetch(`/api/nodes/${n.id}/${action}`, { method: 'POST' })
     n.disabled = r.disabled
-    flash.value = r.disabled ? t('nodes.add.flashDisabled', { name: n.name }) : t('nodes.add.flashEnabled', { name: n.name })
-  } catch (e) { errorText.value = e.message }
+    message.success(r.disabled ? t('nodes.add.flashDisabled', { name: n.name }) : t('nodes.add.flashEnabled', { name: n.name }))
+  } catch (e) { message.error(e.message) }
   finally { busy.value = '' }
 }
 async function onCheckAll(n) {
-  busy.value = n.id; flash.value = ''
+  busy.value = n.id
   try {
     const r = await apiFetch(`/api/nodes/${n.id}/check-all`, { method: 'POST' })
-    flash.value = t('nodes.add.checkAllResult', { name: n.name, passed: r.passed, total: r.total, failed: r.failed })
-  } catch (e) { errorText.value = e.message }
+    message.success(t('nodes.add.checkAllResult', { name: n.name, passed: r.passed, total: r.total, failed: r.failed }), 6)
+  } catch (e) { message.error(e.message) }
   finally { busy.value = '' }
 }
 
@@ -99,7 +120,7 @@ async function regenFleetToken() {
 }
 async function revokeFleetToken() {
   if (!fleet.value) return
-  if (!confirm(t('nodes.fleet.confirmRevoke'))) return
+  if (!(await confirmAsync({ title: t('nodes.fleet.confirmRevoke'), danger: true }))) return
   fleetBusy.value = true
   try { await apiFetch('/api/nodes/fleet-token', { method: 'DELETE' }); fleet.value = null }
   catch (e) { fleetErr.value = e.message }
@@ -108,6 +129,16 @@ async function revokeFleetToken() {
 async function copyText(s, key) {
   try { await navigator.clipboard.writeText(s); fleetCopied.value = key; setTimeout(() => { if (fleetCopied.value === key) fleetCopied.value = '' }, 1500) } catch { /* ignore */ }
 }
+const fleetCmds = computed(() => {
+  const f = fleet.value
+  if (!f) return []
+  return [
+    { key: 'linux-v4', icon: GlobalOutlined, title: t('nodes.fleet.linuxV4'), tag: 'v4', tagColor: 'blue', cmd: f.installLinuxV4 || f.installLinux, hint: t('nodes.fleet.linuxV4Note') },
+    { key: 'linux-v6', icon: GlobalOutlined, title: t('nodes.fleet.linuxV6'), tag: 'v6', tagColor: 'purple', cmd: f.installLinuxV6 || f.installLinux, hint: t('nodes.fleet.linuxV6Note') },
+    { key: 'win', icon: WindowsOutlined, title: 'Windows (PowerShell, Administrator)', cmd: f.installWindows },
+    { key: 'uninst', icon: DeleteOutlined, title: t('nodes.fleet.uninstall'), tag: t('nodes.fleet.tagDanger'), tagColor: 'red', cmd: f.uninstall, hint: t('nodes.fleet.uninstallNote') }
+  ]
+})
 
 onMounted(async () => {
   loadNodes()
@@ -117,250 +148,214 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">{{ t('nodes.title') }}</span>
-      <div class="spacer"></div>
-      <button class="primary-action small" type="button" @click="showForm = !showForm"><Plus :size="16" /> {{ t('nodes.add') }}</button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('nodes.title') }}</a-typography-text>
+      <a-button type="primary" @click="showForm = !showForm">
+        <template #icon><PlusOutlined /></template>
+        {{ t('nodes.add') }}
+      </a-button>
+    </a-flex>
 
-    <p v-if="nodesState.error" class="error-text">{{ nodesState.error }}</p>
-    <p v-if="errorText" class="error-text">{{ errorText }}</p>
-    <p v-if="flash" style="color:#15803d">{{ flash }}</p>
+    <a-alert v-if="nodesState.error" type="error" show-icon :message="nodesState.error" />
+
+    <!-- ── Add node form ───────────────────────────────────────────────── -->
+    <a-card v-if="showForm" :title="t('nodes.add')">
+      <a-typography-paragraph type="secondary">{{ t('nodes.addHint') }}</a-typography-paragraph>
+      <a-form :model="form" layout="vertical" @finish="submit">
+        <a-row :gutter="16">
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('nodes.name')" name="name"><a-input v-model:value="form.name" placeholder="vn-edge-2" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('nodes.host')" name="host"><a-input v-model:value="form.host" placeholder="103.x.x.x" class="mono" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('nodes.sshUser')" name="sshUser"><a-input v-model:value="form.sshUser" placeholder="root" class="mono" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('nodes.sshPassword')" name="sshPassword"><a-input-password v-model:value="form.sshPassword" placeholder="••••••" /></a-form-item>
+          </a-col>
+          <a-col :span="24">
+            <a-form-item name="family">
+              <template #label>
+                <a-space :size="4">{{ t('nodes.family') }}<a-typography-text type="danger" strong>{{ t('nodes.add.required') }}</a-typography-text></a-space>
+              </template>
+              <a-radio-group v-model:value="form.family" button-style="solid">
+                <a-radio-button value="ipv4">IPv4 only</a-radio-button>
+                <a-radio-button value="ipv6">IPv6 only</a-radio-button>
+              </a-radio-group>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('nodes.tag')" name="tag"><a-input v-model:value="form.tag" :placeholder="t('nodes.add.tagPh')" :maxlength="32" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('nodes.add.zoneLabel')" name="zone"><a-select v-model:value="form.zone" :options="zoneOptions" /></a-form-item>
+          </a-col>
+        </a-row>
+        <a-button type="primary" html-type="submit" :loading="submitting">{{ submitting ? t('auth.processing') : t('nodes.register') }}</a-button>
+      </a-form>
+    </a-card>
 
     <!-- ── Quick (zero-touch) enrollment ───────────────────────────────── -->
-    <section class="surface">
-      <div class="section-head">
-        <h2><Zap :size="16" style="vertical-align:-3px; color:var(--green)" /> {{ t('nodes.fleet.title') }}</h2>
-        <div class="action-row">
-          <button v-if="!fleet" class="primary-action small" type="button" :disabled="fleetBusy" @click="regenFleetToken">
-            <Key :size="14" /> {{ fleetBusy ? '...' : t('nodes.fleet.generate') }}
-          </button>
-          <template v-else>
-            <button class="ghost-button" type="button" :disabled="fleetBusy" @click="regenFleetToken"><RotateCw :size="13" /> {{ t('nodes.fleet.rotate') }}</button>
-            <button class="ghost-button" type="button" :disabled="fleetBusy" @click="revokeFleetToken"><Trash2 :size="13" /> {{ t('nodes.fleet.revoke') }}</button>
-          </template>
-        </div>
-      </div>
-      <p v-if="fleetErr" class="error-text">{{ fleetErr }}</p>
-      <p v-if="!fleet" class="empty-text" style="text-align:left">{{ t('nodes.fleet.intro') }}</p>
-      <template v-else>
-        <p class="empty-text" style="text-align:left">{{ t('nodes.fleet.intro') }}</p>
-        <div class="fleet-grid">
-          <div class="fleet-cmd fleet-cmd-v4">
-            <div class="fleet-cmd-head">
-              <strong>🌐 {{ t('nodes.fleet.linuxV4') }}</strong>
-              <span class="fleet-tag tag-v4">v4</span>
-              <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.installLinuxV4 || fleet.installLinux, 'linux-v4')">
-                <Copy :size="12" /> {{ fleetCopied === 'linux-v4' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
-              </button>
-            </div>
-            <code class="fleet-snippet cell-mono">{{ fleet.installLinuxV4 || fleet.installLinux }}</code>
-            <p class="fleet-hint">{{ t('nodes.fleet.linuxV4Note') }}</p>
-          </div>
-          <div class="fleet-cmd fleet-cmd-v6">
-            <div class="fleet-cmd-head">
-              <strong>🌍 {{ t('nodes.fleet.linuxV6') }}</strong>
-              <span class="fleet-tag tag-v6">v6</span>
-              <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.installLinuxV6 || fleet.installLinux, 'linux-v6')">
-                <Copy :size="12" /> {{ fleetCopied === 'linux-v6' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
-              </button>
-            </div>
-            <code class="fleet-snippet cell-mono">{{ fleet.installLinuxV6 || fleet.installLinux }}</code>
-            <p class="fleet-hint">{{ t('nodes.fleet.linuxV6Note') }}</p>
-          </div>
-          <div class="fleet-cmd">
-            <div class="fleet-cmd-head">
-              <strong>Windows (PowerShell, Administrator)</strong>
-              <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.installWindows, 'win')">
-                <Copy :size="12" /> {{ fleetCopied === 'win' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
-              </button>
-            </div>
-            <code class="fleet-snippet cell-mono">{{ fleet.installWindows }}</code>
-          </div>
-          <div class="fleet-cmd fleet-cmd-uninstall">
-            <div class="fleet-cmd-head">
-              <strong>🗑 {{ t('nodes.fleet.uninstall') }}</strong>
-              <span class="fleet-tag tag-danger">{{ t('nodes.fleet.tagDanger') }}</span>
-              <button class="ghost-button" type="button" style="padding:2px 8px" @click="copyText(fleet.uninstall, 'uninst')">
-                <Copy :size="12" /> {{ fleetCopied === 'uninst' ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
-              </button>
-            </div>
-            <code class="fleet-snippet cell-mono">{{ fleet.uninstall }}</code>
-            <p class="fleet-hint">{{ t('nodes.fleet.uninstallNote') }}</p>
-          </div>
-          <div class="fleet-cmd">
-            <div class="fleet-cmd-head">
-              <strong>{{ t('nodes.fleet.directDownload') }}</strong>
-            </div>
-            <div class="fleet-dl-row">
-              <a class="ghost-button" :href="fleet.binaryLinux" target="_blank"><Download :size="13" /> Linux binary</a>
-              <a class="ghost-button" :href="fleet.binaryWindows" target="_blank"><Download :size="13" /> Windows .exe</a>
-            </div>
-          </div>
-        </div>
-        <p class="empty-text" style="text-align:left; margin-top:10px">
-          <span style="color:var(--muted)">{{ t('nodes.fleet.token') }}:</span>
-          <span class="cell-mono" style="margin-left:6px">{{ fleet.token }}</span>
-        </p>
+    <a-card>
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <span><ThunderboltOutlined class="title-icon" /> {{ t('nodes.fleet.title') }}</span>
+          <a-button v-if="!fleet" type="primary" :loading="fleetBusy" @click="regenFleetToken">
+            <template #icon><KeyOutlined /></template>
+            {{ t('nodes.fleet.generate') }}
+          </a-button>
+          <a-space v-else wrap :size="8">
+            <a-button :disabled="fleetBusy" @click="regenFleetToken"><template #icon><RedoOutlined /></template>{{ t('nodes.fleet.rotate') }}</a-button>
+            <a-button danger :disabled="fleetBusy" @click="revokeFleetToken"><template #icon><DeleteOutlined /></template>{{ t('nodes.fleet.revoke') }}</a-button>
+          </a-space>
+        </a-flex>
       </template>
-    </section>
+      <a-alert v-if="fleetErr" type="error" show-icon :message="fleetErr" class="block-gap" />
+      <a-typography-paragraph type="secondary">{{ t('nodes.fleet.intro') }}</a-typography-paragraph>
+      <template v-if="fleet">
+        <a-row :gutter="[12, 12]">
+          <a-col v-for="c in fleetCmds" :key="c.key" :xs="24" :xl="12">
+            <a-card size="small" class="full-height">
+              <template #title>
+                <a-space :size="6">
+                  <component :is="c.icon" />
+                  <span>{{ c.title }}</span>
+                  <a-tag v-if="c.tag" :color="c.tagColor" :bordered="false" class="mono">{{ c.tag }}</a-tag>
+                </a-space>
+              </template>
+              <template #extra>
+                <a-button size="small" @click="copyText(c.cmd, c.key)">
+                  <template #icon><CheckOutlined v-if="fleetCopied === c.key" /><CopyOutlined v-else /></template>
+                  {{ fleetCopied === c.key ? t('nodes.fleet.copied') : t('nodes.fleet.copy') }}
+                </a-button>
+              </template>
+              <a-typography-paragraph class="cmd-block"><pre class="mono">{{ c.cmd }}</pre></a-typography-paragraph>
+              <a-typography-text v-if="c.hint" type="secondary" class="hint">{{ c.hint }}</a-typography-text>
+            </a-card>
+          </a-col>
+          <a-col :xs="24" :xl="12">
+            <a-card size="small" :title="t('nodes.fleet.directDownload')" class="full-height">
+              <a-space wrap>
+                <a-button :href="fleet.binaryLinux" target="_blank"><template #icon><DownloadOutlined /></template>Linux binary</a-button>
+                <a-button :href="fleet.binaryWindows" target="_blank"><template #icon><DownloadOutlined /></template>Windows .exe</a-button>
+              </a-space>
+            </a-card>
+          </a-col>
+        </a-row>
+        <a-flex wrap="wrap" gap="small" align="center" class="token-row">
+          <a-typography-text type="secondary">{{ t('nodes.fleet.token') }}:</a-typography-text>
+          <a-typography-text class="mono" :copyable="{ text: fleet.token }">{{ fleet.token }}</a-typography-text>
+        </a-flex>
+      </template>
+    </a-card>
 
-    <section v-if="showForm" class="surface">
-      <div class="section-head"><h2>{{ t('nodes.add') }}</h2></div>
-      <p class="empty-text" style="text-align:left">{{ t('nodes.addHint') }}</p>
-      <div class="form-grid">
-        <label class="input-field"><span>{{ t('nodes.name') }}</span><input v-model="form.name" placeholder="vn-edge-2" /></label>
-        <label class="input-field"><span>{{ t('nodes.host') }}</span><input v-model="form.host" placeholder="103.x.x.x" /></label>
-        <label class="input-field"><span>{{ t('nodes.sshUser') }}</span><input v-model="form.sshUser" placeholder="root" /></label>
-        <label class="input-field"><span>{{ t('nodes.sshPassword') }}</span><input v-model="form.sshPassword" type="password" placeholder="••••••" /></label>
-        <label class="input-field" style="grid-column:1/-1">
-          <span>{{ t('nodes.family') }} <strong style="color:#b91c1c">{{ t('nodes.add.required') }}</strong></span>
-          <div class="segment-tabs">
-            <button :class="{ active: form.family === 'ipv4' }" type="button" @click="form.family = 'ipv4'">IPv4 only</button>
-            <button :class="{ active: form.family === 'ipv6' }" type="button" @click="form.family = 'ipv6'">IPv6 only</button>
-          </div>
-        </label>
-        <label class="input-field"><span>{{ t('nodes.tag') }}</span><input v-model="form.tag" :placeholder="t('nodes.add.tagPh')" maxlength="32" /></label>
-        <label class="input-field">
-          <span>{{ t('nodes.add.zoneLabel') }}</span>
-          <select v-model="form.zone">
-            <option value="">{{ t('nodes.add.zoneAuto') }}</option>
-            <option v-for="z in zones" :key="z.id" :value="z.id">{{ z.flag }} {{ z.name }}</option>
-          </select>
-        </label>
-      </div>
-      <button class="primary-action small" type="button" :disabled="submitting" @click="submit">{{ submitting ? t('auth.processing') : t('nodes.register') }}</button>
-    </section>
+    <!-- ── Local node summary card ───────────────────────────────────────── -->
+    <a-card v-if="local">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <RouterLink :to="detailLink('local')"><CloudServerOutlined /> {{ local.name }}</RouterLink>
+          <a-space wrap :size="8">
+            <a-button :loading="syncing === 'local'" @click="onSync('local')">
+              <template #icon><SyncOutlined /></template>
+              {{ syncing === 'local' ? t('nodes.syncing') : t('nodes.sync') }}
+            </a-button>
+            <a-button :loading="busy === 'local'" @click="onCheckAll({ id: 'local', name: 'control plane' })">
+              <template #icon><SafetyCertificateOutlined /></template>
+              Check all
+            </a-button>
+            <StatusTag status="online" />
+          </a-space>
+        </a-flex>
+      </template>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 4 }">
+        <a-descriptions-item label="Host"><a-typography-text class="mono" :copyable="{ text: local.host }">{{ local.host }}</a-typography-text></a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.proxies')">{{ local.proxies }}</a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.ipv4')">{{ local.network ? local.network.ipv4PoolSize : '—' }}</a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.ipv6')">{{ local.network ? local.network.ipv6PoolSize : '—' }}</a-descriptions-item>
+      </a-descriptions>
+    </a-card>
 
-    <!-- Local node summary card -->
-    <section v-if="local" class="surface">
-      <div class="section-head">
-        <h2><RouterLink :to="detailLink('local')" style="color:inherit"><Server :size="16" style="vertical-align:-3px" /> {{ local.name }}</RouterLink></h2>
-        <div class="action-row">
-          <button class="ghost-button" type="button" :disabled="syncing === 'local'" @click="onSync('local')"><RefreshCw :size="15" /> {{ syncing === 'local' ? t('nodes.syncing') : t('nodes.sync') }}</button>
-          <button class="ghost-button" type="button" :disabled="busy === 'local'" @click="onCheckAll({ id: 'local', name: 'control plane' })"><ShieldCheck :size="15" /> Check all</button>
-          <span class="status-pill active">online</span>
-        </div>
-      </div>
-      <div class="detail-grid">
-        <div><span>Host</span><strong class="cell-mono">{{ local.host }}</strong></div>
-        <div><span>{{ t('nodes.proxies') }}</span><strong>{{ local.proxies }}</strong></div>
-        <div><span>{{ t('nodes.ipv4') }}</span><strong>{{ local.network ? local.network.ipv4PoolSize : '—' }}</strong></div>
-        <div><span>{{ t('nodes.ipv6') }}</span><strong>{{ local.network ? local.network.ipv6PoolSize : '—' }}</strong></div>
-      </div>
-    </section>
-
-    <!-- Agent node list — compact table with inline actions -->
-    <section class="surface">
-      <div class="section-head" style="display:flex; align-items:center; gap:10px">
-        <h2 style="margin:0">{{ t('nodes.agents') }} ({{ others.length }})</h2>
-        <div class="seg-tabs">
-          <button :class="{ active: ownerFilter === 'all'   }" type="button" @click="ownerFilter = 'all'">All</button>
-          <button :class="{ active: ownerFilter === 'fleet' }" type="button" @click="ownerFilter = 'fleet'">Fleet ({{ fleetCount }})</button>
-          <button :class="{ active: ownerFilter === 'byon'  }" type="button" @click="ownerFilter = 'byon'">BYON ({{ byonCount }})</button>
-        </div>
-      </div>
-      <p v-if="others.length === 0" class="empty-text">
-        {{ ownerFilter === 'byon' ? t('nodes.add.emptyByon')
-         : ownerFilter === 'fleet' ? t('nodes.add.emptyFleet')
-         : t('nodes.add.emptyAll') }}
-      </p>
-      <div v-else class="data-table">
-        <div class="table-row" style="grid-template-columns: 1.6fr 1.4fr 1fr 1fr 2.6fr; font-weight:600; background:var(--surface-2)">
-          <span>{{ t('nodes.list.colNode') }}</span><span>{{ t('nodes.list.colEndpoint') }}</span><span>{{ t('nodes.list.colFamilyZone') }}</span><span>{{ t('nodes.list.colStatus') }}</span><span>{{ t('nodes.list.colActions') }}</span>
-        </div>
-        <div v-for="n in others" :key="n.id" class="table-row" style="grid-template-columns: 1.6fr 1.4fr 1fr 1fr 2.6fr">
-          <RouterLink :to="detailLink(n.id)" class="proxy-name" style="color:inherit">
-            <Server :size="14" /> {{ n.name }}
-            <span v-if="n.isByon" class="tag tag-byon" :title="t('nodes.list.byonTitle', { email: n.ownerEmail })" style="margin-left:6px">BYON · {{ n.ownerEmail || n.ownerId }}</span>
-            <span v-else-if="n.tag" class="tag" style="margin-left:6px">{{ n.tag }}</span>
-            <span v-if="n.version" class="tag" style="margin-left:4px">v{{ n.version }}</span>
-          </RouterLink>
-          <span class="cell-mono" style="font-size:12.5px">{{ n.sshUser }}@{{ n.host }}<span v-if="n.proxies" style="color:var(--muted)"> · {{ n.proxies }} px</span></span>
-          <span>
-            <span v-if="n.family" class="tag" :class="'tag-fam-' + n.family">{{ n.family }}</span>
-            <span v-if="n.zone && n.zone !== 'auto'" class="tag" style="margin-left:4px">{{ n.zone }}</span>
-          </span>
-          <span>
-            <span v-if="n.disabled" class="status-pill failed">{{ t('nodes.list.disabled') }}</span>
-            <span v-else :class="['status-pill', n.status === 'online' ? 'active' : (n.status === 'install-failed' ? 'failed' : 'pending')]">{{ n.status }}</span>
-            <span v-if="n.outdated" class="status-pill pending" :title="t('nodes.list.outdatedTitle', { cur: n.version, latest: n.latestAgentVersion })" style="margin-left:4px; font-size:10px">{{ t('nodes.list.outdated') }}</span>
-          </span>
-          <span class="action-row">
-            <button class="ghost-button" type="button" :disabled="syncing === n.id" style="padding:2px 8px" @click="onSync(n.id)"><RefreshCw :size="13" /> {{ t('nodes.list.sync') }}</button>
-            <button class="ghost-button" type="button" :disabled="busy === n.id" style="padding:2px 8px" @click="onCheckAll(n)"><ShieldCheck :size="13" /> {{ t('nodes.list.checkLive') }}</button>
-            <button class="ghost-button" type="button" :disabled="busy === n.id" style="padding:2px 8px" @click="onToggle(n)"><Power :size="13" /> {{ n.disabled ? t('nodes.list.enable') : t('nodes.list.disable') }}</button>
-            <button v-if="n.hasCreds && n.status !== 'online'" class="primary-action small" type="button" :disabled="installing === n.id" style="padding:2px 8px" @click="onInstall(n.id)">{{ installing === n.id ? '...' : t('nodes.list.install') }}</button>
-            <button class="ghost-button" type="button" style="padding:2px 8px" @click="onRemove(n.id)"><Trash2 :size="13" /></button>
-          </span>
-          <div v-if="installOut[n.id]" style="grid-column:1/-1; padding-top:4px">
-            <pre :style="{ maxHeight: '180px', overflow: 'auto', borderColor: installOut[n.id].ok ? '#dcfce7' : '#fee2e2' }"><code>{{ installOut[n.id].output }}</code></pre>
-          </div>
-        </div>
-      </div>
-    </section>
-  </section>
+    <!-- ── Agent node list — compact table with inline actions ──────────── -->
+    <a-card :body-style="{ padding: 0 }">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <span>{{ t('nodes.agents') }} ({{ others.length }})</span>
+          <a-segmented v-model:value="ownerFilter" :options="ownerOptions" />
+        </a-flex>
+      </template>
+      <a-table
+        :columns="columns"
+        :data-source="others"
+        row-key="id"
+        size="middle"
+        :pagination="false"
+        :scroll="{ x: 1160 }"
+        :locale="{ emptyText }"
+        :expanded-row-keys="expandedKeys"
+        :show-expand-column="false"
+      >
+        <template #bodyCell="{ column, record: n }">
+          <template v-if="column.key === 'node'">
+            <a-space wrap :size="4">
+              <RouterLink :to="detailLink(n.id)"><CloudServerOutlined /> {{ n.name }}</RouterLink>
+              <a-tooltip v-if="n.isByon" :title="t('nodes.list.byonTitle', { email: n.ownerEmail })">
+                <a-tag color="gold" :bordered="false">BYON · {{ n.ownerEmail || n.ownerId }}</a-tag>
+              </a-tooltip>
+              <a-tag v-else-if="n.tag" :bordered="false">{{ n.tag }}</a-tag>
+              <a-tag v-if="n.version" :bordered="false" class="mono">v{{ n.version }}</a-tag>
+            </a-space>
+          </template>
+          <template v-else-if="column.key === 'endpoint'">
+            <span class="mono">{{ n.sshUser }}@{{ n.host }}</span>
+            <a-typography-text v-if="n.proxies" type="secondary"> · {{ n.proxies }} px</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'family'">
+            <a-space wrap :size="4">
+              <a-tag v-if="n.family" :color="n.family === 'ipv6' ? 'purple' : n.family === 'ipv4' ? 'blue' : 'cyan'" :bordered="false" class="mono">{{ n.family }}</a-tag>
+              <a-tag v-if="n.zone && n.zone !== 'auto'" :bordered="false">{{ n.zone }}</a-tag>
+            </a-space>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <a-space wrap :size="4">
+              <StatusTag v-if="n.disabled" status="disabled" color="error" :label="t('nodes.list.disabled')" />
+              <StatusTag v-else :status="n.status" :color="statusColor(n.status)" />
+              <a-tooltip v-if="n.outdated" :title="t('nodes.list.outdatedTitle', { cur: n.version, latest: n.latestAgentVersion })">
+                <StatusTag status="pending" :label="t('nodes.list.outdated')" />
+              </a-tooltip>
+            </a-space>
+          </template>
+          <template v-else-if="column.key === 'actions'">
+            <a-space wrap :size="4">
+              <a-button size="small" :loading="syncing === n.id" @click="onSync(n.id)"><template #icon><SyncOutlined /></template>{{ t('nodes.list.sync') }}</a-button>
+              <a-button size="small" :disabled="busy === n.id" @click="onCheckAll(n)"><template #icon><SafetyCertificateOutlined /></template>{{ t('nodes.list.checkLive') }}</a-button>
+              <a-button size="small" :disabled="busy === n.id" @click="onToggle(n)"><template #icon><PoweroffOutlined /></template>{{ n.disabled ? t('nodes.list.enable') : t('nodes.list.disable') }}</a-button>
+              <a-button v-if="n.hasCreds && n.status !== 'online'" size="small" type="primary" :loading="installing === n.id" @click="onInstall(n.id)">{{ t('nodes.list.install') }}</a-button>
+              <a-button size="small" danger @click="onRemove(n.id)"><template #icon><DeleteOutlined /></template></a-button>
+            </a-space>
+          </template>
+        </template>
+        <template #expandedRowRender="{ record: n }">
+          <a-alert v-if="installOut[n.id]" :type="installOut[n.id].ok ? 'success' : 'error'" class="install-out">
+            <template #message><pre class="mono">{{ installOut[n.id].output }}</pre></template>
+          </a-alert>
+        </template>
+      </a-table>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.fleet-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 10px;
-  margin-top: 10px;
-}
-.fleet-cmd {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.fleet-cmd-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  font-size: 12px; color: var(--muted);
-}
-.fleet-cmd-head strong { color: var(--text); font-weight: 600; font-size: 12px; }
-.fleet-snippet {
-  display: block;
-  background: var(--border-soft);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--text);
-  word-break: break-all;
-  line-height: 1.5;
-}
-.fleet-dl-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.fleet-dl-row .ghost-button { padding: 4px 10px; font-size: 12px; }
-.fleet-cmd-head strong { display: flex; align-items: center; gap: 6px; }
-.fleet-cmd-head .ghost-button { margin-left: auto; }
-.fleet-tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-family: var(--mono); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
-.fleet-tag.tag-v4 { background: rgba(59,130,246,0.15); color: #93c5fd; }
-.fleet-tag.tag-v6 { background: rgba(168,85,247,0.15); color: #c4b5fd; }
-.fleet-tag.tag-danger { background: rgba(239,68,68,0.15); color: #fca5a5; }
-.fleet-cmd-v4 { border-left: 3px solid #3b82f6; padding-left: 10px; }
-.fleet-cmd-v6 { border-left: 3px solid #a855f7; padding-left: 10px; }
-.fleet-cmd-uninstall { border-left: 3px solid #ef4444; padding-left: 10px; }
-.fleet-hint { font-size: 11px; color: var(--muted); margin: 0; line-height: 1.4; }
-
-/* Segment tabs to filter the agent list by owner type (fleet / BYON). */
-.seg-tabs {
-  display: inline-flex; margin-left: auto;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 2px;
-}
-.seg-tabs button {
-  padding: 4px 10px; font-size: 11.5px;
-  background: transparent; border: none; color: var(--muted);
-  border-radius: 6px; cursor: pointer;
-}
-.seg-tabs button.active { background: rgba(34,197,94,0.12); color: var(--green); font-weight: 600; }
-@media (max-width: 700px) {
-  .seg-tabs { margin-left: 0; flex-wrap: wrap; }
-  .seg-tabs button { flex: 1; }
-}
+.title-icon { color: var(--pb-primary); }
+.block-gap { margin-bottom: 12px; }
+.full-height { height: 100%; }
+.card-head-controls { padding: 8px 0; }
+.card-head-controls :deep(.ant-segmented), .card-head-controls :deep(.ant-btn) { font-weight: 400; }
+.cmd-block { margin-bottom: 8px !important; }
+.cmd-block pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.hint { font-size: 12px; }
+.token-row { margin-top: 12px; }
+.install-out pre { margin: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
 </style>

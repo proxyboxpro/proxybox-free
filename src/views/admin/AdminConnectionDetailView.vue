@@ -2,10 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
-import { Activity, ArrowLeft, Ban, RefreshCw, Search } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber, formatRate } from '../../utils/format'
 import { useI18n } from '../../i18n'
+import { isDark } from '../../theme'
+import { message, confirmAsync } from '../../ui/feedback'
 
 const { t } = useI18n()
 
@@ -64,126 +65,227 @@ async function loadEvents() {
 }
 async function refresh() { await Promise.all([loadSummary(), loadHistory(), loadTopHosts(), loadEvents()]) }
 async function blockHost(host) {
-  if (!confirm(t('admin.connDetail.confirmBlock', { host }))) return
+  if (!(await confirmAsync({ title: t('admin.connDetail.confirmBlock', { host }), danger: true }))) return
   try {
     await apiFetch('/api/admin/deny-hosts', { method: 'POST', body: { host } })
-    alert(t('admin.connDetail.blocked', { host }))
-  } catch (e) { alert(t('admin.connDetail.blockErr', { msg: e.message })) }
+    message.success(t('admin.connDetail.blocked', { host }))
+  } catch (e) { message.error(t('admin.connDetail.blockErr', { msg: e.message })) }
 }
 
 watch(range, refresh)
 onMounted(() => { refresh(); timer = setInterval(refresh, 10_000) })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
+const RANGES = ['1h', '24h', '7d', '30d']
+const fmtNum = ({ value }) => formatNumber(value)
+const fmtBytes = ({ value }) => formatBytes(value)
+
 const bwSeries = computed(() => [
   { name: 'Bytes ↓', data: history.value.map((p) => [p.ts, p.down || 0]) },
   { name: 'Bytes ↑', data: history.value.map((p) => [p.ts, p.up || 0]) }
 ])
-const bwOptions = computed(() => ({
-  chart: { type: 'area', toolbar: { show: false }, animations: { enabled: false }, background: 'transparent', stacked: true },
-  theme: { mode: 'dark' },
-  stroke: { curve: 'smooth', width: 1.5 },
-  dataLabels: { enabled: false },
-  colors: ['#3b82f6', '#8b5cf6'],
-  fill: { type: 'gradient', gradient: { shadeIntensity: 0.6, opacityFrom: 0.4, opacityTo: 0.05 } },
-  grid: { borderColor: 'rgba(255,255,255,0.06)', strokeDashArray: 2 },
-  xaxis: { type: 'datetime', labels: { style: { colors: '#94a3b8', fontSize: '11px' } } },
-  yaxis: { labels: { style: { colors: '#94a3b8', fontSize: '11px' }, formatter: (v) => formatBytes(v) } },
-  tooltip: { theme: 'dark', y: { formatter: (v) => formatBytes(v) } },
-  legend: { labels: { colors: '#94a3b8' } }
-}))
+const bwOptions = computed(() => {
+  const dark = isDark.value
+  const muted = dark ? '#94a3b8' : '#64748b'
+  return {
+    chart: { type: 'area', toolbar: { show: false }, animations: { enabled: false }, background: 'transparent', stacked: true },
+    theme: { mode: dark ? 'dark' : 'light' },
+    stroke: { curve: 'smooth', width: 1.5 },
+    dataLabels: { enabled: false },
+    colors: ['#3b82f6', '#8b5cf6'],
+    fill: { type: 'gradient', gradient: { shadeIntensity: 0.6, opacityFrom: 0.4, opacityTo: 0.05 } },
+    grid: { borderColor: dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)', strokeDashArray: 2 },
+    xaxis: { type: 'datetime', labels: { style: { colors: muted, fontSize: '11px' } } },
+    yaxis: { labels: { style: { colors: muted, fontSize: '11px' }, formatter: (v) => formatBytes(v) } },
+    tooltip: { theme: dark ? 'dark' : 'light', y: { formatter: (v) => formatBytes(v) } },
+    legend: { labels: { colors: muted } }
+  }
+})
+
+const hostColumns = computed(() => [
+  { title: t('admin.connDetail.colHost'), key: 'host' },
+  { title: t('admin.connDetail.colHits'), key: 'count', align: 'right', width: 90 },
+  { title: t('admin.connDetail.colBytes'), key: 'bytes', align: 'right', width: 120 },
+  { title: t('admin.connDetail.colLast'), key: 'last', align: 'right', width: 180, responsive: ['sm'] },
+  { title: '', key: 'block', align: 'right', width: 56 }
+])
+const eventColumns = computed(() => [
+  { title: t('admin.connDetail.colWhen'), key: 'when', width: 170 },
+  { title: t('admin.connDetail.colClient'), key: 'client' },
+  { title: t('admin.connDetail.colTarget'), key: 'target' },
+  { title: t('admin.connDetail.colBytes'), key: 'bytes', align: 'right', width: 100 },
+  { title: t('admin.connDetail.colMs'), key: 'ms', align: 'right', width: 80, responsive: ['sm'] },
+  { title: t('admin.connDetail.colKind'), key: 'kind', width: 100, responsive: ['sm'] }
+])
+// Events carry no id — key rows by their position in the fetched list.
+const eventRows = computed(() => events.value.map((c, i) => ({ ...c, _k: i })))
+const pagination = { defaultPageSize: 20, showSizeChanger: true, hideOnSinglePage: true }
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <button class="ghost-button" type="button" @click="router.push({ name: 'admin-connections' })"><ArrowLeft :size="13" /></button>
-      <span class="eyebrow"><Activity :size="14" style="vertical-align:-2px" /> {{ t('admin.connDetail.proxyLabel') }} <span class="cell-mono">{{ proxyId }}</span></span>
-      <div class="spacer"></div>
-      <div class="segment-tabs">
-        <button type="button" :class="{ active: range === '1h' }" @click="range = '1h'">1h</button>
-        <button type="button" :class="{ active: range === '24h' }" @click="range = '24h'">24h</button>
-        <button type="button" :class="{ active: range === '7d' }" @click="range = '7d'">7d</button>
-        <button type="button" :class="{ active: range === '30d' }" @click="range = '30d'">30d</button>
-      </div>
-      <button class="ghost-button" type="button" :disabled="loading" @click="refresh"><RefreshCw :size="12" /></button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-space :size="8" align="center">
+        <a-button shape="circle" @click="router.push({ name: 'admin-connections' })">
+          <template #icon><ArrowLeftOutlined /></template>
+        </a-button>
+        <a-typography-text type="secondary">
+          <LineChartOutlined /> {{ t('admin.connDetail.proxyLabel') }}
+        </a-typography-text>
+        <a-typography-text :copyable="{ text: proxyId }" class="mono">{{ proxyId }}</a-typography-text>
+      </a-space>
+      <a-space wrap>
+        <a-segmented v-model:value="range" :options="RANGES" />
+        <a-button shape="circle" :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+        </a-button>
+      </a-space>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
     <!-- Summary -->
-    <section v-if="summary" class="surface">
-      <div class="metric-cards">
-        <article><span>{{ t('admin.connDetail.owner') }}</span><strong style="font-size:14px">{{ summary.ownerEmail || '—' }}</strong><small style="color:var(--muted);font-size:11.5px">{{ summary.ownerId }}</small></article>
-        <article><span>{{ t('admin.connDetail.host') }}</span><strong class="cell-mono" style="font-size:13px">{{ summary.ip || summary.bindIp }}:{{ summary.port }}</strong><small style="color:var(--muted);font-size:11.5px">{{ t('admin.connDetail.egressPrefix') }}{{ summary.bindIp }} · {{ summary.nodeName }} · {{ summary.zone }}</small></article>
-        <article><span>{{ t('admin.connDetail.open') }}</span><strong :style="{color: summary.active ? 'var(--green)' : 'var(--muted)'}">{{ summary.active }}</strong><small style="color:var(--muted);font-size:11.5px">{{ t('admin.connDetail.allTime', { n: formatNumber(summary.total) }) }}</small></article>
-        <article><span>{{ t('admin.connDetail.bandwidth') }}</span><strong style="font-size:14px">{{ formatBytes(summary.uploadBytes + summary.downloadBytes) }}</strong><small style="color:var(--muted);font-size:11.5px">↑ {{ formatRate(summary.bpsOut) }} · ↓ {{ formatRate(summary.bpsIn) }}</small></article>
-      </div>
-    </section>
+    <a-row v-if="summary" :gutter="[12, 12]">
+      <a-col :xs="24" :sm="12" :xl="6">
+        <a-card size="small" class="fill">
+          <a-statistic :title="t('admin.connDetail.owner')" :value="summary.ownerEmail || '—'" :value-style="{ fontSize: '16px' }" />
+          <a-typography-text type="secondary" class="kpi-sub mono">{{ summary.ownerId }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :sm="12" :xl="6">
+        <a-card size="small" class="fill">
+          <a-statistic :title="t('admin.connDetail.host')" :value-style="{ fontSize: '16px' }">
+            <template #formatter>
+              <a-typography-text :copyable="{ text: `${summary.ip || summary.bindIp}:${summary.port}` }" class="mono">
+                {{ summary.ip || summary.bindIp }}:{{ summary.port }}
+              </a-typography-text>
+            </template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">
+            {{ t('admin.connDetail.egressPrefix') }}<span class="mono">{{ summary.bindIp }}</span> · {{ summary.nodeName }} · {{ summary.zone }}
+          </a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :sm="12" :xl="6">
+        <a-card size="small" class="fill">
+          <a-statistic
+            :title="t('admin.connDetail.open')"
+            :value="summary.active || 0"
+            :formatter="fmtNum"
+            :value-style="{ color: summary.active ? 'var(--pb-success)' : 'var(--pb-text-3)' }"
+          />
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.connDetail.allTime', { n: formatNumber(summary.total) }) }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :sm="12" :xl="6">
+        <a-card size="small" class="fill">
+          <a-statistic
+            :title="t('admin.connDetail.bandwidth')"
+            :value="(summary.uploadBytes || 0) + (summary.downloadBytes || 0)"
+            :formatter="fmtBytes"
+          />
+          <a-typography-text type="secondary" class="kpi-sub">↑ {{ formatRate(summary.bpsOut) }} · ↓ {{ formatRate(summary.bpsIn) }}</a-typography-text>
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- Bandwidth chart -->
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.connDetail.bwTitle', { range }) }}</h2></div>
-      <p v-if="!history.length" class="empty-text" style="padding:24px 0">{{ t('admin.connDetail.bwEmpty') }}</p>
-      <apexchart v-else type="area" :options="bwOptions" :series="bwSeries" :height="240" />
-    </section>
+    <a-card :title="t('admin.connDetail.bwTitle', { range })">
+      <a-empty v-if="!history.length" :description="t('admin.connDetail.bwEmpty')" />
+      <apexchart v-else :key="isDark ? 'dark' : 'light'" type="area" :options="bwOptions" :series="bwSeries" :height="240" />
+    </a-card>
 
     <!-- Top hosts in window -->
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.connDetail.topTitle', { range }) }}</h2></div>
-      <p v-if="!topHosts.length" class="empty-text">{{ t('admin.connDetail.topEmpty') }}</p>
-      <div v-if="topHosts.length" class="data-table">
-        <div class="table-head" style="grid-template-columns: 2fr 80px 1fr 1fr 32px">
-          <span>{{ t('admin.connDetail.colHost') }}</span>
-          <span style="text-align:right">{{ t('admin.connDetail.colHits') }}</span>
-          <span style="text-align:right">{{ t('admin.connDetail.colBytes') }}</span>
-          <span style="text-align:right">{{ t('admin.connDetail.colLast') }}</span>
-          <span></span>
-        </div>
-        <div v-for="h in topHosts" :key="h.host" class="table-row" style="grid-template-columns: 2fr 80px 1fr 1fr 32px">
-          <span class="cell-mono" style="font-size:12.5px">
-            <span v-if="h.geo?.cc" :title="`${h.geo.country}${h.geo.asn ? ' · ' + h.geo.asn : ''}`" style="margin-right:4px">{{ ccToFlag(h.geo.cc) }}</span>{{ h.host }}
-          </span>
-          <span style="text-align:right">{{ formatNumber(h.count) }}</span>
-          <span class="cell-mono" style="text-align:right; font-size:12px">{{ formatBytes(h.bytesUp + h.bytesDown) }}</span>
-          <span style="text-align:right; color:var(--muted); font-size:11.5px">{{ new Date(h.lastTs).toLocaleString('vi-VN') }}</span>
-          <button class="icon-button" type="button" :title="t('admin.connDetail.blockTitle')" @click="blockHost(h.host)"><Ban :size="12" /></button>
-        </div>
-      </div>
-    </section>
+    <a-card :title="t('admin.connDetail.topTitle', { range })" :body-style="{ padding: 0 }">
+      <a-table
+        :columns="hostColumns"
+        :data-source="topHosts"
+        :pagination="pagination"
+        row-key="host"
+        size="middle"
+        :scroll="{ x: 520 }"
+        :locale="{ emptyText: t('admin.connDetail.topEmpty') }"
+      >
+        <template #bodyCell="{ column, record: h }">
+          <template v-if="column.key === 'host'">
+            <a-tooltip v-if="h.geo?.cc" :title="`${h.geo.country}${h.geo.asn ? ' · ' + h.geo.asn : ''}`">
+              <span class="flag">{{ ccToFlag(h.geo.cc) }}</span>
+            </a-tooltip>
+            <span class="mono">{{ h.host }}</span>
+          </template>
+          <template v-else-if="column.key === 'count'">{{ formatNumber(h.count) }}</template>
+          <template v-else-if="column.key === 'bytes'">
+            <span class="mono nowrap">{{ formatBytes((h.bytesUp || 0) + (h.bytesDown || 0)) }}</span>
+          </template>
+          <template v-else-if="column.key === 'last'">
+            <a-typography-text type="secondary" class="small">{{ new Date(h.lastTs).toLocaleString('vi-VN') }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'block'">
+            <a-tooltip :title="t('admin.connDetail.blockTitle')">
+              <a-button size="small" type="text" danger @click="blockHost(h.host)">
+                <template #icon><StopOutlined /></template>
+              </a-button>
+            </a-tooltip>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
 
     <!-- Event log -->
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.connDetail.evLogTitle', { n: events.length }) }}</h2></div>
-      <div class="ord-filters">
-        <div class="filter-row">
-          <label class="filter-field"><Search :size="13" /><input v-model="hostFilter" :placeholder="t('admin.connDetail.filterHost')" @input="loadEvents" /></label>
-          <label class="filter-field"><Search :size="13" /><input v-model="srcFilter" :placeholder="t('admin.connDetail.filterSrc')" @input="loadEvents" /></label>
-        </div>
-      </div>
-      <p v-if="!events.length && !loading" class="empty-text">{{ t('admin.connDetail.evEmpty') }}</p>
-      <div v-if="events.length" class="data-table" style="margin-top:10px">
-        <div class="table-head" style="grid-template-columns: 1.3fr 0.9fr 2fr 70px 60px 1fr">
-          <span>{{ t('admin.connDetail.colWhen') }}</span>
-          <span>{{ t('admin.connDetail.colClient') }}</span>
-          <span>{{ t('admin.connDetail.colTarget') }}</span>
-          <span style="text-align:right">{{ t('admin.connDetail.colBytes') }}</span>
-          <span style="text-align:right">{{ t('admin.connDetail.colMs') }}</span>
-          <span>{{ t('admin.connDetail.colKind') }}</span>
-        </div>
-        <div v-for="(c, i) in events" :key="i" class="table-row" style="grid-template-columns: 1.3fr 0.9fr 2fr 70px 60px 1fr">
-          <span style="font-size:11.5px; color:var(--muted)">{{ new Date(c.ts).toLocaleString('vi-VN') }}</span>
-          <span class="cell-mono" style="font-size:11.5px">
-            <span v-if="c.srcGeo?.cc" :title="c.srcGeo.country" style="margin-right:3px">{{ ccToFlag(c.srcGeo.cc) }}</span>{{ c.src || '—' }}
-          </span>
-          <span class="cell-mono" style="font-size:11.5px">
-            <span v-if="c.hostGeo?.cc" :title="c.hostGeo.country" style="margin-right:3px">{{ ccToFlag(c.hostGeo.cc) }}</span>{{ c.host }}:{{ c.port }}
-          </span>
-          <span class="cell-mono" style="text-align:right; font-size:11.5px">{{ formatBytes((c.up || 0) + (c.dn || c.down || 0)) }}</span>
-          <span class="cell-mono" style="text-align:right; font-size:11.5px">{{ c.ms }}</span>
-          <span style="font-size:11.5px; color:var(--muted)">{{ c.kind }}</span>
-        </div>
-      </div>
-    </section>
-  </section>
+    <a-card :title="t('admin.connDetail.evLogTitle', { n: events.length })" :body-style="{ padding: 0 }">
+      <a-flex wrap="wrap" gap="small" class="ev-filters">
+        <a-input v-model:value="hostFilter" allow-clear :placeholder="t('admin.connDetail.filterHost')" class="ev-filter" @change="loadEvents">
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+        <a-input v-model:value="srcFilter" allow-clear :placeholder="t('admin.connDetail.filterSrc')" class="ev-filter" @change="loadEvents">
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+      </a-flex>
+      <a-table
+        :columns="eventColumns"
+        :data-source="eventRows"
+        :pagination="pagination"
+        row-key="_k"
+        size="small"
+        :scroll="{ x: 620 }"
+        :locale="{ emptyText: t('admin.connDetail.evEmpty') }"
+      >
+        <template #bodyCell="{ column, record: c }">
+          <template v-if="column.key === 'when'">
+            <a-typography-text type="secondary" class="small">{{ new Date(c.ts).toLocaleString('vi-VN') }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'client'">
+            <a-tooltip v-if="c.srcGeo?.cc" :title="c.srcGeo.country">
+              <span class="flag">{{ ccToFlag(c.srcGeo.cc) }}</span>
+            </a-tooltip>
+            <span class="mono">{{ c.src || '—' }}</span>
+          </template>
+          <template v-else-if="column.key === 'target'">
+            <a-tooltip v-if="c.hostGeo?.cc" :title="c.hostGeo.country">
+              <span class="flag">{{ ccToFlag(c.hostGeo.cc) }}</span>
+            </a-tooltip>
+            <span class="mono">{{ c.host }}:{{ c.port }}</span>
+          </template>
+          <template v-else-if="column.key === 'bytes'">
+            <span class="mono nowrap">{{ formatBytes((c.up || 0) + (c.dn || c.down || 0)) }}</span>
+          </template>
+          <template v-else-if="column.key === 'ms'">
+            <span class="mono">{{ c.ms }}</span>
+          </template>
+          <template v-else-if="column.key === 'kind'">
+            <a-typography-text type="secondary" class="small">{{ c.kind }}</a-typography-text>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+  </div>
 </template>
+
+<style scoped>
+.fill { height: 100%; }
+.kpi-sub { font-size: 12px; }
+.small { font-size: 12px; }
+.flag { margin-right: 4px; }
+.ev-filters { padding: 12px 16px; }
+.ev-filter { width: 240px; max-width: 100%; }
+</style>

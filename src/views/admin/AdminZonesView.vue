@@ -1,73 +1,128 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message, confirmAsync } from '../../ui/feedback'
 
 const { t } = useI18n()
 const zones = ref([])
 const newZone = ref({ id: '', name: '', flag: '', timezone: 'Asia/Ho_Chi_Minh' })
-const err = ref(''); const flash = ref('')
+const err = ref('')
+const loading = ref(false)
+const adding = ref(false)
 
 async function refresh() {
   err.value = ''
+  loading.value = true
   try { zones.value = await apiFetch('/api/admin/zones') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 async function addZone() {
   if (!newZone.value.id) return
+  adding.value = true
   try {
     zones.value = await apiFetch('/api/admin/zones', { method: 'POST', body: newZone.value })
     newZone.value = { id: '', name: '', flag: '', timezone: 'Asia/Ho_Chi_Minh' }
-    flash.value = t('admin.zones.added')
-  } catch (e) { err.value = e.message }
+    message.success(t('admin.zones.added'))
+  } catch (e) { message.error(e.message) }
+  finally { adding.value = false }
 }
 async function deleteZone(id) {
-  if (!confirm(t('admin.zones.confirmDel', { id }))) return
+  if (!(await confirmAsync({ title: t('admin.zones.confirmDel', { id }), danger: true }))) return
   try {
     await apiFetch(`/api/admin/zones/${id}`, { method: 'DELETE' })
     zones.value = zones.value.filter((z) => z.id !== id)
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
+
+const columns = computed(() => [
+  { title: t('admin.zones.colId'), key: 'id', dataIndex: 'id' },
+  { title: t('admin.zones.colName'), key: 'name', dataIndex: 'name' },
+  { title: t('admin.zones.colTimezone'), key: 'timezone', dataIndex: 'timezone', responsive: ['sm'] },
+  { title: t('admin.zones.colOnline'), key: 'onlineNodes', dataIndex: 'onlineNodes', align: 'right', width: 130 },
+  { title: '', key: 'actions', align: 'right', width: 110 }
+])
+
 onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">{{ t('admin.zones.eyebrow') }} ({{ zones.length }})</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh">{{ t('admin.common.refresh') }}</button>
-    </div>
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color:var(--green)">{{ flash }}</p>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.zones.eyebrow') }} ({{ zones.length }})</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+        {{ t('admin.common.refresh') }}
+      </a-button>
+    </a-flex>
 
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.zones.title') }}</h2></div>
-      <p style="font-size:13px;color:var(--muted);margin:0 0 10px" v-html="t('admin.zones.hint')"></p>
-      <div v-if="zones.length" class="data-table">
-        <div class="table-head" style="grid-template-columns: 1fr 2fr 1fr 1fr auto">
-          <span>{{ t('admin.zones.colId') }}</span><span>{{ t('admin.zones.colName') }}</span><span>{{ t('admin.zones.colTimezone') }}</span><span>{{ t('admin.zones.colOnline') }}</span><span></span>
-        </div>
-        <div v-for="z in zones" :key="z.id" class="table-row" style="grid-template-columns: 1fr 2fr 1fr 1fr auto">
-          <span class="cell-mono">{{ z.id }}</span>
-          <span>{{ z.flag }} {{ z.name }}</span>
-          <span class="cell-mono" style="font-size:11.5px; color:var(--muted)">{{ z.timezone }}</span>
-          <span>{{ z.onlineNodes ?? 0 }}</span>
-          <button class="ghost-button" type="button" @click="deleteZone(z.id)">{{ t('admin.common.delete') }}</button>
-        </div>
-      </div>
-      <p v-else class="empty-text">{{ t('admin.zones.empty') }}</p>
-    </section>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.zones.addTitle') }}</h2></div>
-      <div class="form-grid">
-        <label class="input-field"><span>{{ t('admin.zones.fieldId') }}</span><input v-model="newZone.id" placeholder="vn-da-nang" /></label>
-        <label class="input-field"><span>{{ t('admin.zones.fieldName') }}</span><input v-model="newZone.name" placeholder="Vietnam · Da Nang" /></label>
-        <label class="input-field"><span>{{ t('admin.zones.fieldFlag') }}</span><input v-model="newZone.flag" placeholder="VN" maxlength="8" /></label>
-        <label class="input-field"><span>{{ t('admin.zones.fieldTimezone') }}</span><input v-model="newZone.timezone" placeholder="Asia/Ho_Chi_Minh" /></label>
-      </div>
-      <button class="primary-action small" type="button" @click="addZone">{{ t('admin.zones.add') }}</button>
-    </section>
-  </section>
+    <a-card :title="t('admin.zones.title')" :body-style="{ paddingTop: '12px' }">
+      <a-typography-paragraph type="secondary">
+        <span v-html="t('admin.zones.hint')"></span>
+      </a-typography-paragraph>
+      <a-table
+        :columns="columns"
+        :data-source="zones"
+        :loading="loading"
+        :pagination="false"
+        row-key="id"
+        size="middle"
+        :locale="{ emptyText: t('admin.zones.empty') }"
+      >
+        <template #bodyCell="{ column, record: z }">
+          <template v-if="column.key === 'id'">
+            <span class="mono">{{ z.id }}</span>
+          </template>
+          <template v-else-if="column.key === 'name'">
+            {{ z.flag }} {{ z.name }}
+          </template>
+          <template v-else-if="column.key === 'timezone'">
+            <a-typography-text type="secondary" class="mono">{{ z.timezone }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'onlineNodes'">
+            <a-badge :status="z.onlineNodes ? 'success' : 'default'" :text="String(z.onlineNodes ?? 0)" />
+          </template>
+          <template v-else-if="column.key === 'actions'">
+            <a-button size="small" danger @click="deleteZone(z.id)">
+              <template #icon><DeleteOutlined /></template>
+              {{ t('admin.common.delete') }}
+            </a-button>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-card :title="t('admin.zones.addTitle')">
+      <a-form :model="newZone" layout="vertical" @finish="addZone">
+        <a-row :gutter="[12, 0]">
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('admin.zones.fieldId')" name="id">
+              <a-input v-model:value="newZone.id" class="mono" placeholder="vn-da-nang" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('admin.zones.fieldName')" name="name">
+              <a-input v-model:value="newZone.name" placeholder="Vietnam · Da Nang" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('admin.zones.fieldFlag')" name="flag">
+              <a-input v-model:value="newZone.flag" placeholder="VN" :maxlength="8" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('admin.zones.fieldTimezone')" name="timezone">
+              <a-input v-model:value="newZone.timezone" class="mono" placeholder="Asia/Ho_Chi_Minh" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-button type="primary" html-type="submit" :loading="adding" :disabled="!newZone.id">
+          {{ t('admin.zones.add') }}
+        </a-button>
+      </a-form>
+    </a-card>
+  </div>
 </template>

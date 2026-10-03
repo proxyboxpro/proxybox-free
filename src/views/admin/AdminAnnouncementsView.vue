@@ -1,35 +1,34 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import {
-  AlertOctagon, AlertTriangle, CheckCircle2, Info, Megaphone, Plus, RefreshCw,
-  Trash2, Wrench
-} from 'lucide-vue-next'
+import { onMounted, ref } from 'vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { confirmAsync, message } from '../../ui/feedback'
 
 const { t } = useI18n()
 const list = ref([])
 const err = ref('')
-const flash = ref('')
+const loading = ref(false)
 const busy = ref(false)
 
 const form = ref({
   text: '',
   severity: 'info',     // info | warning | error | success
   visibility: 'public', // public | customer | admin
-  expiresAt: '',
+  expiresAt: null,      // 'YYYY-MM-DDTHH:mm' (local time) or null
   dismissible: true
 })
 
 async function refresh() {
   err.value = ''
+  loading.value = true
   try { list.value = await apiFetch('/api/admin/announcements') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 
 async function create() {
   if (!form.value.text.trim() || busy.value) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true
   try {
     const body = {
       text: form.value.text.trim(),
@@ -39,37 +38,23 @@ async function create() {
       expiresAt: form.value.expiresAt ? new Date(form.value.expiresAt).toISOString() : null
     }
     await apiFetch('/api/admin/announcements', { method: 'POST', body })
-    flash.value = t('admin.ann.created')
-    form.value.text = ''; form.value.expiresAt = ''
+    message.success(t('admin.ann.created'))
+    form.value.text = ''; form.value.expiresAt = null
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { busy.value = false }
 }
 
 async function remove(id) {
-  if (!confirm(t('admin.ann.confirmDel'))) return
+  if (!(await confirmAsync({ title: t('admin.ann.confirmDel'), danger: true }))) return
   try { await apiFetch(`/api/admin/announcements/${id}`, { method: 'DELETE' }); await refresh() }
-  catch (e) { err.value = e.message }
+  catch (e) { message.error(e.message) }
 }
 
 function fmtTs(s) { return s ? String(s).slice(0, 16).replace('T', ' ') : '—' }
-function iconOf(sev) {
-  if (sev === 'error') return AlertOctagon
-  if (sev === 'warning') return AlertTriangle
-  if (sev === 'success') return CheckCircle2
-  return Info
-}
-function colorOf(sev) {
-  if (sev === 'error')   return 'var(--red)'
-  if (sev === 'warning') return 'var(--yellow)'
-  if (sev === 'success') return 'var(--green)'
-  return 'var(--blue)'
-}
-function bgOf(sev) {
-  if (sev === 'error')   return 'var(--red-soft)'
-  if (sev === 'warning') return 'var(--yellow-soft)'
-  if (sev === 'success') return 'var(--green-soft)'
-  return 'var(--blue-soft)'
+// Severity values map 1:1 onto <a-alert type>.
+function alertType(sev) {
+  return ['error', 'warning', 'success'].includes(sev) ? sev : 'info'
 }
 function isExpired(a) {
   return a.expiresAt && new Date(a.expiresAt).getTime() < Date.now()
@@ -79,91 +64,119 @@ onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow"><Megaphone :size="13" style="vertical-align:-2px" /> {{ t('admin.ann.title') }}</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="13" /></button>
-    </div>
-    <p style="color: var(--muted); font-size: 12.5px; margin: 0">{{ t('admin.ann.subtitle') }}</p>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <!-- admin.ann.title equals the layout header title (page.announcements) -->
+      <a-typography-text type="secondary">{{ t('admin.ann.subtitle') }}</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+      </a-button>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color: var(--green); font-size: 13px">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <section class="surface">
-      <div class="section-head"><h2><Plus :size="14" style="vertical-align:-2px" /> {{ t('admin.ann.createTitle') }}</h2></div>
+    <a-card>
+      <template #title><PlusOutlined /> {{ t('admin.ann.createTitle') }}</template>
+      <a-form :model="form" layout="vertical" @finish="create">
+        <a-form-item :label="t('admin.ann.text')" name="text">
+          <a-textarea
+            v-model:value="form.text"
+            :rows="3"
+            :maxlength="600"
+            show-count
+            :placeholder="t('admin.ann.textPlaceholder')"
+          />
+        </a-form-item>
 
-      <label class="input-field" style="margin-bottom: 12px">
-        <span>{{ t('admin.ann.text') }} ({{ form.text.length }}/600)</span>
-        <textarea v-model="form.text" rows="3" maxlength="600" :placeholder="t('admin.ann.textPlaceholder')" style="font-family: inherit; resize: vertical"></textarea>
-      </label>
+        <a-row :gutter="16">
+          <a-col :xs="24" :md="8">
+            <a-form-item :label="t('admin.ann.severity')" name="severity">
+              <a-select v-model:value="form.severity">
+                <a-select-option value="info">{{ t('admin.ann.sevInfoOpt') }}</a-select-option>
+                <a-select-option value="success">{{ t('admin.ann.sevSuccessOpt') }}</a-select-option>
+                <a-select-option value="warning">{{ t('admin.ann.sevWarningOpt') }}</a-select-option>
+                <a-select-option value="error">{{ t('admin.ann.sevErrorOpt') }}</a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="8">
+            <a-form-item :label="t('admin.ann.visibility')" name="visibility">
+              <a-select v-model:value="form.visibility">
+                <a-select-option value="public">{{ t('admin.ann.visPublicOpt') }}</a-select-option>
+                <a-select-option value="customer">{{ t('admin.ann.visCustomerOpt') }}</a-select-option>
+                <a-select-option value="admin">{{ t('admin.ann.visAdminOpt') }}</a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="8">
+            <a-form-item :label="`${t('admin.ann.expiresAt')} (${t('cust.buy.optional')})`" name="expiresAt">
+              <a-date-picker
+                v-model:value="form.expiresAt"
+                show-time
+                format="YYYY-MM-DD HH:mm"
+                value-format="YYYY-MM-DDTHH:mm"
+                class="full-width"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
 
-      <div class="form-grid" style="grid-template-columns: 1fr 1fr 1fr; gap: 14px">
-        <label class="input-field">
-          <span>{{ t('admin.ann.severity') }}</span>
-          <select v-model="form.severity">
-            <option value="info">{{ t('admin.ann.sevInfoOpt') }}</option>
-            <option value="success">{{ t('admin.ann.sevSuccessOpt') }}</option>
-            <option value="warning">{{ t('admin.ann.sevWarningOpt') }}</option>
-            <option value="error">{{ t('admin.ann.sevErrorOpt') }}</option>
-          </select>
-        </label>
-        <label class="input-field">
-          <span>{{ t('admin.ann.visibility') }}</span>
-          <select v-model="form.visibility">
-            <option value="public">{{ t('admin.ann.visPublicOpt') }}</option>
-            <option value="customer">{{ t('admin.ann.visCustomerOpt') }}</option>
-            <option value="admin">{{ t('admin.ann.visAdminOpt') }}</option>
-          </select>
-        </label>
-        <label class="input-field">
-          <span>{{ t('admin.ann.expiresAt') }} ({{ t('cust.buy.optional') }})</span>
-          <input v-model="form.expiresAt" type="datetime-local" />
-        </label>
-      </div>
+        <a-form-item name="dismissible">
+          <a-checkbox v-model:checked="form.dismissible">{{ t('admin.ann.dismissible') }}</a-checkbox>
+        </a-form-item>
 
-      <label class="check-line" style="margin-bottom: 12px">
-        <input v-model="form.dismissible" type="checkbox" />
-        <span style="color: var(--text); font-size: 13px">{{ t('admin.ann.dismissible') }}</span>
-      </label>
+        <a-alert
+          :type="alertType(form.severity)"
+          show-icon
+          :message="form.text || t('admin.ann.previewEmpty')"
+          class="preview"
+        />
 
-      <div style="margin: 8px 0; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid;" :style="{ background: bgOf(form.severity), borderColor: colorOf(form.severity) }">
-        <div style="display: flex; align-items: center; gap: 10px">
-          <component :is="iconOf(form.severity)" :size="16" :style="{ color: colorOf(form.severity) }" />
-          <span style="color: var(--text); font-size: 13px">{{ form.text || t('admin.ann.previewEmpty') }}</span>
-        </div>
-      </div>
+        <a-button type="primary" html-type="submit" :loading="busy" :disabled="!form.text.trim()">
+          <template #icon><PlusOutlined /></template>
+          {{ t('admin.ann.create') }}
+        </a-button>
+      </a-form>
+    </a-card>
 
-      <button class="primary-action" type="button" :disabled="!form.text.trim() || busy" @click="create">
-        <Plus :size="15" /> {{ busy ? t('common.loading') : t('admin.ann.create') }}
-      </button>
-    </section>
-
-    <section v-if="list.length" class="surface">
-      <div class="section-head"><h2>{{ t('admin.ann.active') }} ({{ list.length }})</h2></div>
-      <div style="display: flex; flex-direction: column; gap: 8px">
-        <div
-          v-for="a in list" :key="a.id"
-          :style="{ display:'flex', alignItems:'center', gap:'10px', padding:'10px 14px', borderRadius:'var(--radius-sm)', border:'1px solid', borderColor: colorOf(a.severity), background: bgOf(a.severity), opacity: isExpired(a) ? 0.5 : 1 }"
+    <a-card v-if="list.length" :title="`${t('admin.ann.active')} (${list.length})`">
+      <a-flex vertical gap="small">
+        <a-alert
+          v-for="a in list"
+          :key="a.id"
+          :type="alertType(a.severity)"
+          show-icon
+          :class="{ expired: isExpired(a) }"
         >
-          <component :is="iconOf(a.severity)" :size="16" :style="{ color: colorOf(a.severity) }" />
-          <div style="flex: 1; min-width: 0">
-            <div style="color: var(--text); font-size: 13px">{{ a.text }}</div>
-            <div style="display: flex; gap: 10px; margin-top: 4px; font-size: 11px; color: var(--muted)">
-              <span class="cell-mono">{{ a.id }}</span>
-              <span><span class="tag">{{ a.visibility }}</span></span>
-              <span v-if="a.expiresAt" :style="{ color: isExpired(a) ? 'var(--red)' : 'var(--muted)' }">
+          <template #message>{{ a.text }}</template>
+          <template #description>
+            <a-space wrap :size="[12, 2]" class="meta">
+              <a-typography-text type="secondary" class="mono">{{ a.id }}</a-typography-text>
+              <a-tag :bordered="false">{{ a.visibility }}</a-tag>
+              <a-typography-text v-if="a.expiresAt" :type="isExpired(a) ? 'danger' : 'secondary'">
                 {{ isExpired(a) ? t('admin.ann.expired') : t('admin.ann.expiresOn') }}: {{ fmtTs(a.expiresAt) }}
-              </span>
-              <span v-else>{{ t('admin.ann.noExpiry') }}</span>
-              <span v-if="!a.dismissible" style="color: var(--yellow)">{{ t('admin.ann.notDismissible') }}</span>
-              <span class="cell-mono">{{ t('admin.ann.created') }}: {{ fmtTs(a.createdAt) }}</span>
-            </div>
-          </div>
-          <button class="ghost-button" type="button" @click="remove(a.id)"><Trash2 :size="13" /></button>
-        </div>
-      </div>
-    </section>
-    <p v-else class="empty-text">{{ t('admin.ann.empty') }}</p>
-  </section>
+              </a-typography-text>
+              <a-typography-text v-else type="secondary">{{ t('admin.ann.noExpiry') }}</a-typography-text>
+              <a-typography-text v-if="!a.dismissible" type="warning">{{ t('admin.ann.notDismissible') }}</a-typography-text>
+              <a-typography-text type="secondary" class="mono">{{ t('admin.ann.created') }}: {{ fmtTs(a.createdAt) }}</a-typography-text>
+            </a-space>
+          </template>
+          <template #action>
+            <a-button size="small" danger @click="remove(a.id)">
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </template>
+        </a-alert>
+      </a-flex>
+    </a-card>
+    <a-card v-else>
+      <a-empty :description="t('admin.ann.empty')" />
+    </a-card>
+  </div>
 </template>
+
+<style scoped>
+.preview { margin-bottom: 16px; }
+.meta { font-size: 12px; }
+.expired { opacity: 0.5; }
+</style>

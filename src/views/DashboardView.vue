@@ -2,18 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
-import {
-  Activity, AlertTriangle, ArrowRight, ArrowUpRight, ChevronRight, Cpu, Database, FileText,
-  Gauge, Globe, HardDrive, KeyRound, Network, Plus, RefreshCw, Server, ShieldAlert,
-  ShieldCheck, Users, Zap
-} from 'lucide-vue-next'
-import { useI18n } from '../i18n'
+import { Empty } from 'ant-design-vue'
 import { formatBytes, formatNumber } from '../utils/format'
 import { apiFetch } from '../api'
+import { isDark } from '../theme'
+import StatusTag from '../components/ui/StatusTag.vue'
 
 const apexchart = VueApexCharts.component || VueApexCharts
-const { t } = useI18n()
 const router = useRouter()
+const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 
 // ── State ──────────────────────────────────────────────────────────────────
 const dashboard = ref(null)
@@ -46,7 +43,7 @@ const px = computed(() => dashboard.value?.proxies || { total: 0, active: 0, exp
 const nd = computed(() => dashboard.value?.nodes || { total: 0, online: 0, offline: 0, list: [] })
 const tr = computed(() => dashboard.value?.traffic || { liveConns: 0, totalConns: 0, uploadBytes: 0, downloadBytes: 0, monthBytes: 0 })
 const tops = computed(() => dashboard.value?.topTargets || [])
-const audit = computed(() => dashboard.value?.recentAudit || [])
+const audit = computed(() => (dashboard.value?.recentAudit || []).map((a, i) => ({ ...a, _k: i })))
 const saturation = computed(() => dashboard.value?.saturation || [])
 const caps = computed(() => dashboard.value?.caps || { maxConnsPerProxy: 100, maxConnsPerSrcIp: 60, newConnsPerSecPerIp: 30 })
 
@@ -55,6 +52,7 @@ const verdict = computed(() => {
   if (px.value.expiringSoon > 0 || px.value.grace > 0) return 'warn'
   return 'ok'
 })
+const verdictBadge = computed(() => ({ ok: 'success', warn: 'warning', alert: 'error' })[verdict.value])
 
 function fmtUptime(s) {
   if (!s) return '—'
@@ -65,24 +63,28 @@ function pct(num, den) { return den > 0 ? Math.min(100, Math.round((num / den) *
 
 // ── Chart configs ──────────────────────────────────────────────────────────
 const COLORS = { green: '#22c55e', blue: '#3b82f6', purple: '#8b5cf6', yellow: '#f59e0b', red: '#ef4444', cyan: '#06b6d4', grey: '#64748b' }
-const CHART_BASE = {
+const chartText = computed(() => (isDark.value ? '#94a3b8' : '#64748b'))
+const chartStrong = computed(() => (isDark.value ? '#e2e8f0' : '#1f2937'))
+const chartBase = computed(() => ({
   chart: { toolbar: { show: false }, animations: { enabled: false }, background: 'transparent', fontFamily: 'inherit' },
-  theme: { mode: 'dark' },
+  theme: { mode: isDark.value ? 'dark' : 'light' },
   dataLabels: { enabled: false },
-  grid: { borderColor: 'rgba(255,255,255,0.06)', strokeDashArray: 2 },
-  tooltip: { theme: 'dark' }
-}
+  grid: { borderColor: isDark.value ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)', strokeDashArray: 2 },
+  tooltip: { theme: isDark.value ? 'dark' : 'light' }
+}))
+const axisLabels = computed(() => ({ style: { colors: chartText.value, fontSize: '11px' } }))
+const xFormat = computed(() => (tsRange.value === '1h' ? 'HH:mm' : 'dd/MM HH:mm'))
 
 const connSeries = computed(() => [{ name: 'Kết nối live', data: tsPoints.value.map((p) => [p.ts, p.active || 0]) }])
 const connOptions = computed(() => ({
-  ...CHART_BASE,
-  chart: { ...CHART_BASE.chart, type: 'area' },
+  ...chartBase.value,
+  chart: { ...chartBase.value.chart, type: 'area' },
   stroke: { curve: 'smooth', width: 2 },
   colors: [COLORS.green],
   fill: { type: 'gradient', gradient: { shadeIntensity: 0.8, opacityFrom: 0.4, opacityTo: 0.02 } },
-  xaxis: { type: 'datetime', labels: { style: { colors: '#94a3b8', fontSize: '11px' } } },
-  yaxis: { labels: { style: { colors: '#94a3b8', fontSize: '11px' }, formatter: (v) => formatNumber(Math.round(v)) } },
-  tooltip: { ...CHART_BASE.tooltip, x: { format: tsRange.value === '1h' ? 'HH:mm' : 'dd/MM HH:mm' } }
+  xaxis: { type: 'datetime', labels: axisLabels.value },
+  yaxis: { labels: { ...axisLabels.value, formatter: (v) => formatNumber(Math.round(v)) } },
+  tooltip: { ...chartBase.value.tooltip, x: { format: xFormat.value } }
 }))
 
 const bwSeries = computed(() => [
@@ -90,40 +92,56 @@ const bwSeries = computed(() => [
   { name: 'Upload',   data: tsPoints.value.map((p) => [p.ts, (p.up   ?? p.bpsOut) || 0]) }
 ])
 const bwOptions = computed(() => ({
-  ...CHART_BASE,
-  chart: { ...CHART_BASE.chart, type: 'area', stacked: true },
+  ...chartBase.value,
+  chart: { ...chartBase.value.chart, type: 'area', stacked: true },
   stroke: { curve: 'smooth', width: 1.5 },
   colors: [COLORS.blue, COLORS.purple],
   fill: { type: 'gradient', gradient: { shadeIntensity: 0.6, opacityFrom: 0.35, opacityTo: 0.05 } },
-  xaxis: { type: 'datetime', labels: { style: { colors: '#94a3b8', fontSize: '11px' } } },
-  yaxis: { labels: { style: { colors: '#94a3b8', fontSize: '11px' }, formatter: (v) => formatBytes(v) } },
-  tooltip: { ...CHART_BASE.tooltip, y: { formatter: (v) => formatBytes(v) }, x: { format: tsRange.value === '1h' ? 'HH:mm' : 'dd/MM HH:mm' } },
-  legend: { labels: { colors: '#94a3b8' }, fontSize: '11px' }
+  xaxis: { type: 'datetime', labels: axisLabels.value },
+  yaxis: { labels: { ...axisLabels.value, formatter: (v) => formatBytes(v) } },
+  tooltip: { ...chartBase.value.tooltip, y: { formatter: (v) => formatBytes(v) }, x: { format: xFormat.value } },
+  legend: { labels: { colors: chartText.value }, fontSize: '11px' }
 }))
+
+function donutOptions(labels, colors, totalLabel) {
+  return {
+    ...chartBase.value,
+    chart: { ...chartBase.value.chart, type: 'donut' },
+    labels,
+    colors,
+    legend: { position: 'bottom', labels: { colors: chartText.value }, fontSize: '11px', itemMargin: { horizontal: 6, vertical: 4 } },
+    plotOptions: { pie: { donut: { size: '68%', labels: { show: true, name: { color: chartText.value, fontSize: '11px' }, value: { color: chartStrong.value, fontSize: '20px', fontWeight: 700 }, total: { show: true, label: totalLabel, color: chartText.value, formatter: () => px.value.total } } } } },
+    stroke: { width: 0 }
+  }
+}
 
 // Status donut
 const statusDonutSeries = computed(() => [px.value.active, px.value.expiringSoon, px.value.grace, px.value.expired, px.value.error])
-const statusDonutOptions = computed(() => ({
-  ...CHART_BASE,
-  chart: { ...CHART_BASE.chart, type: 'donut' },
-  labels: ['Active', 'Sắp hết hạn', 'Grace', 'Hết hạn', 'Lỗi'],
-  colors: [COLORS.green, COLORS.yellow, COLORS.cyan, COLORS.red, COLORS.grey],
-  legend: { position: 'bottom', labels: { colors: '#94a3b8' }, fontSize: '11px', itemMargin: { horizontal: 6, vertical: 4 } },
-  plotOptions: { pie: { donut: { size: '68%', labels: { show: true, name: { color: '#94a3b8', fontSize: '11px' }, value: { color: '#e2e8f0', fontSize: '20px', fontWeight: 700 }, total: { show: true, label: 'Tổng', color: '#94a3b8', formatter: () => px.value.total } } } } },
-  stroke: { width: 0 }
-}))
+const statusDonutOptions = computed(() => donutOptions(['Active', 'Sắp hết hạn', 'Grace', 'Hết hạn', 'Lỗi'], [COLORS.green, COLORS.yellow, COLORS.cyan, COLORS.red, COLORS.grey], 'Tổng'))
 
 // Family donut
 const familyDonutSeries = computed(() => [px.value.ipv4, px.value.ipv6])
-const familyDonutOptions = computed(() => ({
-  ...CHART_BASE,
-  chart: { ...CHART_BASE.chart, type: 'donut' },
-  labels: ['IPv4', 'IPv6'],
-  colors: [COLORS.blue, COLORS.purple],
-  legend: { position: 'bottom', labels: { colors: '#94a3b8' }, fontSize: '11px' },
-  plotOptions: { pie: { donut: { size: '68%', labels: { show: true, name: { color: '#94a3b8', fontSize: '11px' }, value: { color: '#e2e8f0', fontSize: '20px', fontWeight: 700 }, total: { show: true, label: 'Pool', color: '#94a3b8', formatter: () => px.value.total } } } } },
-  stroke: { width: 0 }
-}))
+const familyDonutOptions = computed(() => donutOptions(['IPv4', 'IPv6'], [COLORS.blue, COLORS.purple], 'Pool'))
+
+// ── Tables ─────────────────────────────────────────────────────────────────
+const FAMILY_COLOR = { ipv4: 'blue', ipv6: 'purple', dual: 'cyan' }
+const METHOD_COLOR = { GET: 'green', POST: 'blue', PATCH: 'orange', PUT: 'orange', DELETE: 'red' }
+function statusType(s) { return s >= 400 ? 'danger' : s >= 300 ? 'warning' : 'success' }
+
+const topColumns = [
+  { title: '#', key: 'rank', width: 44, align: 'right' },
+  { title: 'Host', key: 'host', dataIndex: 'host', ellipsis: true },
+  { title: '', key: 'share', width: 110 },
+  { title: 'Bytes', key: 'bytes', width: 100, align: 'right' },
+  { title: 'Req', key: 'count', width: 90, align: 'right' }
+]
+const auditColumns = [
+  { title: 'Method', key: 'method', width: 84 },
+  { title: 'Path', key: 'path', dataIndex: 'path', ellipsis: true },
+  { title: 'Status', key: 'status', width: 70, align: 'center' },
+  { title: 'Actor', key: 'actor', width: 140, ellipsis: true },
+  { title: 'Time', key: 'ts', width: 84, align: 'right' }
+]
 
 // ── Nav helpers ────────────────────────────────────────────────────────────
 function goNodes()   { router.push({ name: 'admin-nodes' }) }
@@ -143,361 +161,252 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="dash">
-    <!-- ── Header bar: status pill + refresh + version ─────────────────────── -->
-    <div class="dash-head">
-      <div class="dh-left">
-        <span :class="['health-dot', verdict]"></span>
-        <h1>Dashboard</h1>
-        <span class="muted-sm">{{ verdict === 'ok' ? 'Tất cả ổn định' : verdict === 'warn' ? 'Cần chú ý' : 'Có sự cố' }}</span>
-      </div>
-      <div class="dh-right">
-        <span v-if="sys" class="muted-sm">v{{ sys.version }} · uptime {{ fmtUptime(sys.uptimeSeconds) }}</span>
-        <button class="ghost-button" type="button" :disabled="refreshing" @click="loadDashboard">
-          <RefreshCw :size="13" :class="{ spin: refreshing }" />
-        </button>
-      </div>
-    </div>
+  <div class="page">
+    <!-- ── Header bar: health verdict + version + refresh ─────────────────── -->
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-badge :status="verdictBadge" :text="verdict === 'ok' ? 'Tất cả ổn định' : verdict === 'warn' ? 'Cần chú ý' : 'Có sự cố'" />
+      <a-space wrap>
+        <a-typography-text v-if="sys" type="secondary" class="mono">v{{ sys.version }} · uptime {{ fmtUptime(sys.uptimeSeconds) }}</a-typography-text>
+        <a-button :loading="refreshing" @click="loadDashboard">
+          <template #icon><ReloadOutlined /></template>
+        </a-button>
+      </a-space>
+    </a-flex>
 
     <!-- ── 6-card KPI hero ──────────────────────────────────────────────────── -->
-    <div class="kpi-row">
-      <article class="kpi" @click="goProxies">
-        <div class="kpi-icon" style="background:rgba(34,197,94,0.12);color:#22c55e"><Network :size="16" /></div>
-        <div class="kpi-body">
-          <span class="kpi-label">Proxies</span>
-          <strong class="kpi-val">{{ formatNumber(px.active) }} <small>/ {{ formatNumber(px.total) }}</small></strong>
-          <span class="kpi-sub"><span class="cell-mono">{{ px.ipv4 }}</span> v4 · <span class="cell-mono">{{ px.ipv6 }}</span> v6</span>
-        </div>
-      </article>
-      <article class="kpi" @click="goNodes">
-        <div class="kpi-icon" style="background:rgba(139,92,246,0.12);color:#a78bfa"><Server :size="16" /></div>
-        <div class="kpi-body">
-          <span class="kpi-label">Nodes</span>
-          <strong class="kpi-val">{{ nd.online }} <small>/ {{ nd.total }}</small></strong>
-          <span class="kpi-sub" :class="{ 'err-text': nd.offline > 0 }">{{ nd.offline === 0 ? 'all online' : `${nd.offline} offline` }}</span>
-        </div>
-      </article>
-      <article class="kpi">
-        <div class="kpi-icon" style="background:rgba(59,130,246,0.12);color:#60a5fa"><Activity :size="16" /></div>
-        <div class="kpi-body">
-          <span class="kpi-label">Live connections</span>
-          <strong class="kpi-val">{{ formatNumber(tr.liveConns) }}</strong>
-          <span class="kpi-sub">{{ formatNumber(tr.totalConns) }} all-time</span>
-        </div>
-      </article>
-      <article class="kpi">
-        <div class="kpi-icon" style="background:rgba(245,158,11,0.12);color:#fbbf24"><AlertTriangle :size="16" /></div>
-        <div class="kpi-body">
-          <span class="kpi-label">Sắp hết hạn 7d</span>
-          <strong class="kpi-val">{{ px.expiringSoon }}</strong>
-          <span class="kpi-sub" :class="{ 'err-text': px.expired > 0 }">{{ px.expired }} expired</span>
-        </div>
-      </article>
-      <article class="kpi">
-        <div class="kpi-icon" style="background:rgba(6,182,212,0.12);color:#22d3ee"><HardDrive :size="16" /></div>
-        <div class="kpi-body">
-          <span class="kpi-label">Băng thông tháng</span>
-          <strong class="kpi-val">{{ formatBytes(tr.monthBytes) }}</strong>
-          <span class="kpi-sub">↑ {{ formatBytes(tr.uploadBytes) }} · ↓ {{ formatBytes(tr.downloadBytes) }}</span>
-        </div>
-      </article>
-      <article class="kpi" @click="goSettings">
-        <div class="kpi-icon" style="background:rgba(239,68,68,0.12);color:#f87171"><ShieldAlert :size="16" /></div>
-        <div class="kpi-body">
-          <span class="kpi-label">Cap (A/B/C)</span>
-          <strong class="kpi-val cell-mono">{{ caps.maxConnsPerProxy }}/{{ caps.maxConnsPerSrcIp }}/{{ caps.newConnsPerSecPerIp }}</strong>
-          <span class="kpi-sub">proxy · IP · /s</span>
-        </div>
-      </article>
-    </div>
+    <a-row :gutter="[12, 12]">
+      <a-col :xs="12" :md="8" :xl="4">
+        <a-card size="small" hoverable class="kpi" @click="goProxies">
+          <a-statistic title="Proxies" :value="formatNumber(px.active)" :suffix="`/ ${formatNumber(px.total)}`">
+            <template #prefix><ClusterOutlined class="kpi-icon" /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub"><span class="mono">{{ px.ipv4 }}</span> v4 · <span class="mono">{{ px.ipv6 }}</span> v6</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="8" :xl="4">
+        <a-card size="small" hoverable class="kpi" @click="goNodes">
+          <a-statistic title="Nodes" :value="nd.online" :suffix="`/ ${nd.total}`">
+            <template #prefix><CloudServerOutlined class="kpi-icon" /></template>
+          </a-statistic>
+          <a-typography-text :type="nd.offline > 0 ? 'danger' : 'secondary'" class="kpi-sub">{{ nd.offline === 0 ? 'all online' : `${nd.offline} offline` }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="8" :xl="4">
+        <a-card size="small" class="kpi">
+          <a-statistic title="Live connections" :value="formatNumber(tr.liveConns)">
+            <template #prefix><LinkOutlined class="kpi-icon" /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ formatNumber(tr.totalConns) }} all-time</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="8" :xl="4">
+        <a-card size="small" class="kpi">
+          <a-statistic title="Sắp hết hạn 7d" :value="px.expiringSoon">
+            <template #prefix><WarningOutlined class="kpi-icon" /></template>
+          </a-statistic>
+          <a-typography-text :type="px.expired > 0 ? 'danger' : 'secondary'" class="kpi-sub">{{ px.expired }} expired</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="8" :xl="4">
+        <a-card size="small" class="kpi">
+          <a-statistic title="Băng thông tháng" :value="formatBytes(tr.monthBytes)">
+            <template #prefix><HddOutlined class="kpi-icon" /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">↑ {{ formatBytes(tr.uploadBytes) }} · ↓ {{ formatBytes(tr.downloadBytes) }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="8" :xl="4">
+        <a-card size="small" hoverable class="kpi" @click="goSettings">
+          <a-statistic title="Cap (A/B/C)" :value="`${caps.maxConnsPerProxy}/${caps.maxConnsPerSrcIp}/${caps.newConnsPerSecPerIp}`" :value-style="{ fontFamily: 'var(--pb-mono)', fontSize: '20px' }">
+            <template #prefix><SafetyOutlined class="kpi-icon" /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">proxy · IP · /s</a-typography-text>
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- ── Main timeseries (tabbed: conns | bandwidth) ──────────────────────── -->
-    <section class="surface chart-panel">
-      <header class="ch-head">
-        <div class="ch-tabs">
-          <button type="button" :class="{ active: tsTab === 'conns' }" @click="tsTab = 'conns'"><Activity :size="12" /> Kết nối live</button>
-          <button type="button" :class="{ active: tsTab === 'bandwidth' }" @click="tsTab = 'bandwidth'"><HardDrive :size="12" /> Băng thông</button>
+    <a-card size="small">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <a-segmented
+            v-model:value="tsTab"
+            :options="[{ label: 'Kết nối live', value: 'conns' }, { label: 'Băng thông', value: 'bandwidth' }]"
+          />
+          <a-segmented
+            :value="tsRange"
+            :options="['1h', '24h', '7d', '30d']"
+            @change="setTsRange"
+          />
+        </a-flex>
+      </template>
+      <a-spin :spinning="tsLoading && !tsPoints.length">
+        <div class="chart-body">
+          <a-empty v-if="!tsPoints.length">
+            <template #description>Chưa có dữ liệu cho khoảng <strong>{{ tsRange }}</strong>. Biểu đồ tự cập nhật khi có request.</template>
+          </a-empty>
+          <apexchart v-else-if="tsTab === 'conns'" type="area" :options="connOptions" :series="connSeries" :height="280" />
+          <apexchart v-else type="area" :options="bwOptions" :series="bwSeries" :height="280" />
         </div>
-        <div class="seg-range">
-          <button v-for="r in ['1h','24h','7d','30d']" :key="r" type="button" :class="{ active: tsRange === r }" @click="setTsRange(r)">{{ r }}</button>
-        </div>
-      </header>
-      <div class="ch-body">
-        <p v-if="!tsPoints.length" class="empty-text">Chưa có dữ liệu cho khoảng <strong>{{ tsRange }}</strong>. Biểu đồ tự cập nhật khi có request.</p>
-        <apexchart v-else-if="tsTab === 'conns'" type="area" :options="connOptions" :series="connSeries" :height="280" />
-        <apexchart v-else type="area" :options="bwOptions" :series="bwSeries" :height="280" />
-      </div>
-    </section>
+      </a-spin>
+    </a-card>
 
     <!-- ── 3-col mid row: status donut + family donut + cap saturation ──────── -->
-    <div class="mid-grid">
-      <section class="surface mid-card">
-        <header class="card-h"><span>Trạng thái proxy</span></header>
-        <apexchart v-if="px.total" type="donut" :options="statusDonutOptions" :series="statusDonutSeries" :height="240" />
-        <p v-else class="empty-text">Chưa có proxy nào.</p>
-      </section>
-      <section class="surface mid-card">
-        <header class="card-h"><span>Phân bổ family</span></header>
-        <apexchart v-if="px.total" type="donut" :options="familyDonutOptions" :series="familyDonutSeries" :height="240" />
-        <p v-else class="empty-text">Chưa có proxy nào.</p>
-      </section>
-      <section class="surface mid-card">
-        <header class="card-h">
-          <span>Cap saturation</span>
-          <small class="muted-sm">≥50% cap A</small>
-        </header>
-        <div v-if="saturation.length" class="sat-list">
-          <button v-for="s in saturation" :key="s.id" type="button" class="sat-row" :class="{ near: s.pct >= 80 }" @click="goConn(s.id)">
-            <code class="cell-mono">{{ s.id }}</code>
-            <span class="sat-bar"><span :style="{ width: s.pct + '%' }"></span></span>
-            <span class="sat-num cell-mono">{{ s.active }}/{{ s.max }}</span>
-          </button>
-        </div>
-        <p v-else class="empty-text" style="padding-top:20px">Không có proxy nào đang gần cap.</p>
-      </section>
-    </div>
+    <a-row :gutter="[12, 12]">
+      <a-col :xs="24" :md="12" :xl="7">
+        <a-card size="small" title="Trạng thái proxy" class="full-height">
+          <apexchart v-if="px.total" type="donut" :options="statusDonutOptions" :series="statusDonutSeries" :height="240" />
+          <a-empty v-else :image="simpleImage" description="Chưa có proxy nào." />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :md="12" :xl="7">
+        <a-card size="small" title="Phân bổ family" class="full-height">
+          <apexchart v-if="px.total" type="donut" :options="familyDonutOptions" :series="familyDonutSeries" :height="240" />
+          <a-empty v-else :image="simpleImage" description="Chưa có proxy nào." />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :xl="10">
+        <a-card size="small" title="Cap saturation" class="full-height">
+          <template #extra><a-typography-text type="secondary">≥50% cap A</a-typography-text></template>
+          <a-list v-if="saturation.length" size="small" :data-source="saturation" :split="false">
+            <template #renderItem="{ item: s }">
+              <a-list-item class="clickable" @click="goConn(s.id)">
+                <a-flex align="center" gap="small" class="full-width">
+                  <a-typography-text class="mono sat-id" :ellipsis="{ tooltip: s.id }" :content="s.id" />
+                  <a-progress
+                    :percent="s.pct"
+                    :show-info="false"
+                    size="small"
+                    :status="s.pct >= 80 ? 'exception' : 'success'"
+                    class="sat-bar"
+                  />
+                  <a-typography-text :type="s.pct >= 80 ? 'warning' : 'secondary'" class="mono sat-num">{{ s.active }}/{{ s.max }}</a-typography-text>
+                </a-flex>
+              </a-list-item>
+            </template>
+          </a-list>
+          <a-empty v-else :image="simpleImage" description="Không có proxy nào đang gần cap." />
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- ── Per-node load grid ───────────────────────────────────────────────── -->
-    <section class="surface">
-      <header class="card-h">
-        <span><Server :size="13" style="vertical-align:-2px" /> Nodes ({{ nd.list.length }})</span>
-        <button class="text-mini" type="button" @click="goNodes">Xem chi tiết <ChevronRight :size="12" /></button>
-      </header>
-      <div v-if="nd.list.length" class="node-grid">
-        <article v-for="n in nd.list" :key="n.id" class="node-card" :class="{ offline: n.status !== 'online' }">
-          <div class="nc-head">
-            <span :class="['node-fam', n.family]">{{ (n.family || 'dual').toUpperCase() }}</span>
-            <strong class="nc-name">{{ n.name }}</strong>
-            <span :class="['nc-status', n.status === 'online' ? 'on' : 'off']">{{ n.status }}</span>
-          </div>
-          <p class="nc-host cell-mono">{{ n.host }}</p>
-          <div class="nc-metrics">
-            <div>
-              <small>Proxies</small>
-              <strong>{{ n.proxies }}</strong>
-            </div>
-            <div>
-              <small>Active conn</small>
-              <strong style="color:var(--green)">{{ formatNumber(n.activeConns) }}</strong>
-            </div>
-            <div>
-              <small>Bandwidth</small>
-              <strong>{{ formatBytes(n.monthBytes) }}</strong>
-            </div>
-          </div>
-          <div class="nc-bar">
-            <span :style="{ width: pct(n.activeConns, Math.max(1, n.proxies * caps.maxConnsPerProxy)) + '%' }"></span>
-          </div>
-        </article>
-      </div>
-      <p v-else class="empty-text">Chưa có node nào.</p>
-    </section>
+    <a-card size="small">
+      <template #title><CloudServerOutlined /> Nodes ({{ nd.list.length }})</template>
+      <template #extra>
+        <a-button type="link" size="small" @click="goNodes">Xem chi tiết <RightOutlined /></a-button>
+      </template>
+      <a-row v-if="nd.list.length" :gutter="[10, 10]">
+        <a-col v-for="n in nd.list" :key="n.id" :xs="24" :sm="12" :xl="8" :xxl="6">
+          <a-card size="small" :class="{ 'node-offline': n.status !== 'online' }">
+            <a-flex align="center" gap="small">
+              <a-tag :color="FAMILY_COLOR[n.family || 'dual'] || 'cyan'" :bordered="false" class="mono">{{ (n.family || 'dual').toUpperCase() }}</a-tag>
+              <a-typography-text strong :ellipsis="{ tooltip: n.name }" :content="n.name" class="node-name" />
+              <StatusTag :status="n.status" :color="n.status === 'online' ? 'success' : 'error'" />
+            </a-flex>
+            <a-typography-text type="secondary" class="mono node-host">{{ n.host }}</a-typography-text>
+            <a-row :gutter="6" class="node-metrics">
+              <a-col :span="8"><a-statistic title="Proxies" :value="n.proxies" :value-style="{ fontSize: '14px' }" /></a-col>
+              <a-col :span="8"><a-statistic title="Active conn" :value="formatNumber(n.activeConns)" :value-style="{ fontSize: '14px', color: 'var(--pb-success)' }" /></a-col>
+              <a-col :span="8"><a-statistic title="Bandwidth" :value="formatBytes(n.monthBytes)" :value-style="{ fontSize: '14px' }" /></a-col>
+            </a-row>
+            <a-progress :percent="pct(n.activeConns, Math.max(1, n.proxies * caps.maxConnsPerProxy))" :show-info="false" size="small" status="success" />
+          </a-card>
+        </a-col>
+      </a-row>
+      <a-empty v-else :image="simpleImage" description="Chưa có node nào." />
+    </a-card>
 
     <!-- ── 2-col bottom: top destinations + recent activity ─────────────────── -->
-    <div class="bot-grid">
-      <section class="surface">
-        <header class="card-h"><span><Globe :size="13" style="vertical-align:-2px" /> Top destination hosts</span></header>
-        <div v-if="tops.length" class="dst-list">
-          <div v-for="(t, i) in tops" :key="t.host" class="dst-row">
-            <span class="dst-rank">{{ i + 1 }}</span>
-            <code class="dst-host cell-mono">{{ t.host }}</code>
-            <span class="dst-bar"><span :style="{ width: pct(t.bytes, tops[0]?.bytes) + '%' }"></span></span>
-            <span class="dst-bytes cell-mono">{{ formatBytes(t.bytes) }}</span>
-            <span class="dst-count">{{ formatNumber(t.count) }} req</span>
-          </div>
-        </div>
-        <p v-else class="empty-text">Chưa có traffic.</p>
-      </section>
-
-      <section class="surface">
-        <header class="card-h"><span><FileText :size="13" style="vertical-align:-2px" /> Recent activity</span></header>
-        <div v-if="audit.length" class="audit-list">
-          <div v-for="(a, i) in audit" :key="i" class="audit-row">
-            <span :class="['audit-method', `m-${(a.method || '').toLowerCase()}`]">{{ a.method }}</span>
-            <code class="audit-path cell-mono" :title="a.path">{{ a.path }}</code>
-            <span :class="['audit-status', a.status >= 400 ? 'err' : a.status >= 300 ? 'warn' : 'ok']">{{ a.status || '—' }}</span>
-            <span class="audit-actor muted-sm">{{ a.actor || '—' }}</span>
-            <span class="audit-ts muted-sm">{{ a.ts ? a.ts.slice(11,19) : '' }}</span>
-          </div>
-        </div>
-        <p v-else class="empty-text">Chưa có hoạt động.</p>
-      </section>
-    </div>
+    <a-row :gutter="[12, 12]">
+      <a-col :xs="24" :xl="12">
+        <a-card size="small" :body-style="{ padding: 0 }" class="full-height">
+          <template #title><GlobalOutlined /> Top destination hosts</template>
+          <a-table
+            :columns="topColumns"
+            :data-source="tops"
+            row-key="host"
+            size="small"
+            :pagination="false"
+            :scroll="{ x: 480 }"
+            :locale="{ emptyText: 'Chưa có traffic.' }"
+          >
+            <template #bodyCell="{ column, record, index }">
+              <template v-if="column.key === 'rank'"><a-typography-text type="secondary" class="mono">{{ index + 1 }}</a-typography-text></template>
+              <template v-else-if="column.key === 'host'"><span class="mono">{{ record.host }}</span></template>
+              <template v-else-if="column.key === 'share'">
+                <a-progress :percent="pct(record.bytes, tops[0]?.bytes)" :show-info="false" size="small" />
+              </template>
+              <template v-else-if="column.key === 'bytes'"><span class="mono">{{ formatBytes(record.bytes) }}</span></template>
+              <template v-else-if="column.key === 'count'"><a-typography-text type="secondary">{{ formatNumber(record.count) }} req</a-typography-text></template>
+            </template>
+          </a-table>
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :xl="12">
+        <a-card size="small" :body-style="{ padding: 0 }" class="full-height">
+          <template #title><FileTextOutlined /> Recent activity</template>
+          <a-table
+            :columns="auditColumns"
+            :data-source="audit"
+            row-key="_k"
+            size="small"
+            :pagination="false"
+            :scroll="{ x: 520 }"
+            :locale="{ emptyText: 'Chưa có hoạt động.' }"
+          >
+            <template #bodyCell="{ column, record: a }">
+              <template v-if="column.key === 'method'">
+                <a-tag :color="METHOD_COLOR[(a.method || '').toUpperCase()] || 'default'" :bordered="false" class="mono">{{ a.method }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'path'">
+                <a-tooltip :title="a.path"><span class="mono">{{ a.path }}</span></a-tooltip>
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <a-typography-text v-if="a.status" :type="statusType(a.status)" class="mono">{{ a.status }}</a-typography-text>
+                <a-typography-text v-else type="secondary">—</a-typography-text>
+              </template>
+              <template v-else-if="column.key === 'actor'"><a-typography-text type="secondary">{{ a.actor || '—' }}</a-typography-text></template>
+              <template v-else-if="column.key === 'ts'"><a-typography-text type="secondary" class="mono">{{ a.ts ? a.ts.slice(11, 19) : '' }}</a-typography-text></template>
+            </template>
+          </a-table>
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- ── System health strip (footer) ─────────────────────────────────────── -->
-    <section v-if="sys" class="surface sys-strip">
-      <div class="ss-item">
-        <span class="muted-sm">Heap RAM</span>
-        <strong class="cell-mono">{{ formatBytes(sys.memory.heapUsed) }} <small>/ {{ formatBytes(sys.memory.heapTotal) }}</small></strong>
-        <div class="mini-bar"><span :style="{ width: pct(sys.memory.heapUsed, sys.memory.heapTotal) + '%' }"></span></div>
-      </div>
-      <div class="ss-item">
-        <span class="muted-sm">RSS</span>
-        <strong class="cell-mono">{{ formatBytes(sys.memory.rss) }}</strong>
-      </div>
-      <div class="ss-item">
-        <span class="muted-sm">Listeners</span>
-        <strong class="cell-mono">{{ sys.listeners }}</strong>
-      </div>
-      <div class="ss-item">
-        <span class="muted-sm">Sessions</span>
-        <strong class="cell-mono">{{ sys.sessions.active }}</strong>
-      </div>
-      <div class="ss-item">
-        <span class="muted-sm">Users</span>
-        <strong class="cell-mono">{{ formatNumber(sys.users) }}</strong>
-      </div>
-      <div class="ss-item">
-        <span class="muted-sm">DB size</span>
-        <strong class="cell-mono">{{ formatBytes(sys.dbSize) }}</strong>
-      </div>
-    </section>
-  </section>
+    <a-card v-if="sys" size="small">
+      <a-row :gutter="[16, 12]">
+        <a-col :xs="12" :sm="8" :lg="4">
+          <a-statistic title="Heap RAM" :value="formatBytes(sys.memory.heapUsed)" :suffix="`/ ${formatBytes(sys.memory.heapTotal)}`" :value-style="{ fontSize: '15px' }" class="mono-stat" />
+          <a-progress :percent="pct(sys.memory.heapUsed, sys.memory.heapTotal)" :show-info="false" size="small" status="success" />
+        </a-col>
+        <a-col :xs="12" :sm="8" :lg="4"><a-statistic title="RSS" :value="formatBytes(sys.memory.rss)" :value-style="{ fontSize: '15px' }" class="mono-stat" /></a-col>
+        <a-col :xs="12" :sm="8" :lg="4"><a-statistic title="Listeners" :value="sys.listeners" :value-style="{ fontSize: '15px' }" class="mono-stat" /></a-col>
+        <a-col :xs="12" :sm="8" :lg="4"><a-statistic title="Sessions" :value="sys.sessions.active" :value-style="{ fontSize: '15px' }" class="mono-stat" /></a-col>
+        <a-col :xs="12" :sm="8" :lg="4"><a-statistic title="Users" :value="formatNumber(sys.users)" :value-style="{ fontSize: '15px' }" class="mono-stat" /></a-col>
+        <a-col :xs="12" :sm="8" :lg="4"><a-statistic title="DB size" :value="formatBytes(sys.dbSize)" :value-style="{ fontSize: '15px' }" class="mono-stat" /></a-col>
+      </a-row>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.dash { display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
-.muted-sm { color: var(--muted); font-size: 11.5px; }
-.err-text { color: var(--red); }
-
-/* Head bar */
-.dash-head { display: flex; align-items: center; gap: 14px; }
-.dash-head h1 { font-size: 22px; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
-.dh-left { display: flex; align-items: center; gap: 12px; }
-.dh-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.health-dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
-.health-dot.ok    { background: var(--green); color: var(--green); }
-.health-dot.warn  { background: var(--yellow); color: var(--yellow); }
-.health-dot.alert { background: var(--red); color: var(--red); animation: pulse 1.4s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: 0.45; } }
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* KPI strip */
-.kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
-@media (max-width: 1100px) { .kpi-row { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 640px)  { .kpi-row { grid-template-columns: repeat(2, 1fr); } }
-.kpi {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; padding: 12px 14px;
-  cursor: pointer; transition: border-color 120ms, transform 120ms;
-}
-.kpi:hover { border-color: var(--muted); transform: translateY(-1px); }
-.kpi-icon { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; flex-shrink: 0; }
-.kpi-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.kpi-label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
-.kpi-val { font-size: 22px; font-weight: 700; color: var(--text); font-family: var(--mono); letter-spacing: -0.01em; }
-.kpi-val small { font-size: 13px; color: var(--muted); font-weight: 400; }
-.kpi-sub { font-size: 11px; color: var(--muted); }
-
-/* Charts */
-.chart-panel { padding: 0; overflow: hidden; }
-.ch-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 10px; }
-.ch-tabs, .seg-range { display: inline-flex; gap: 2px; background: var(--surface-2); padding: 3px; border-radius: 7px; border: 1px solid var(--border); }
-.ch-tabs button, .seg-range button {
-  background: transparent; border: none; color: var(--muted);
-  font-size: 11.5px; padding: 4px 10px; border-radius: 5px;
-  cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
-}
-.ch-tabs button:hover, .seg-range button:hover { color: var(--text); }
-.ch-tabs button.active, .seg-range button.active { background: var(--surface); color: var(--green); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
-.ch-body { padding: 6px 8px; min-height: 280px; }
-
-/* Mid grid: 2 donuts + saturation */
-.mid-grid { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 12px; }
-@media (max-width: 900px) { .mid-grid { grid-template-columns: 1fr; } }
-.mid-card { padding: 12px 14px; }
-.card-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.card-h span { font-size: 13px; color: var(--text); font-weight: 600; }
-.card-h .text-mini { font-size: 11.5px; color: var(--muted); background: none; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 2px; }
-.card-h .text-mini:hover { color: var(--green); }
-
-.sat-list { display: flex; flex-direction: column; gap: 4px; }
-.sat-row {
-  display: grid; grid-template-columns: 100px 1fr 70px; gap: 8px;
-  align-items: center; background: transparent; border: none; padding: 5px 8px;
-  border-radius: 5px; cursor: pointer; color: var(--text); font-size: 11.5px;
-}
-.sat-row:hover { background: var(--surface-2); }
-.sat-bar { height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
-.sat-bar span { display: block; height: 100%; background: var(--green); transition: width 0.3s; }
-.sat-row.near .sat-bar span { background: var(--yellow); }
-.sat-row.near.near .sat-bar span { background: var(--red); }
-.sat-num { text-align: right; color: var(--muted); }
-.sat-row.near .sat-num { color: var(--yellow); }
-
-/* Node grid */
-.node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
-.node-card {
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 8px; padding: 12px 14px;
-  display: flex; flex-direction: column; gap: 8px;
-}
-.node-card.offline { opacity: 0.55; border-color: var(--red); }
-.nc-head { display: flex; align-items: center; gap: 8px; }
-.node-fam {
-  font-family: var(--mono); font-size: 9.5px; font-weight: 700;
-  padding: 2px 6px; border-radius: 4px;
-  background: rgba(59,130,246,0.16); color: #60a5fa;
-}
-.node-fam.ipv6 { background: rgba(139,92,246,0.16); color: #a78bfa; }
-.node-fam.dual { background: rgba(6,182,212,0.16); color: #22d3ee; }
-.nc-name { font-size: 13px; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nc-status { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 4px; }
-.nc-status.on { background: rgba(34,197,94,0.16); color: var(--green); }
-.nc-status.off { background: rgba(239,68,68,0.16); color: var(--red); }
-.nc-host { font-size: 11px; color: var(--muted); margin: 0; }
-.nc-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.nc-metrics > div { display: flex; flex-direction: column; gap: 1px; }
-.nc-metrics small { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.nc-metrics strong { font-size: 13px; color: var(--text); font-family: var(--mono); }
-.nc-bar { height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
-.nc-bar span { display: block; height: 100%; background: var(--green); }
-
-/* Bottom 2-col */
-.bot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 900px) { .bot-grid { grid-template-columns: 1fr; } }
-
-.dst-list { display: flex; flex-direction: column; gap: 5px; }
-.dst-row { display: grid; grid-template-columns: 24px 1fr 80px 90px 80px; gap: 8px; align-items: center; font-size: 11.5px; padding: 4px 0; }
-.dst-rank { font-family: var(--mono); color: var(--muted); font-size: 10.5px; text-align: right; }
-.dst-host { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dst-bar { height: 5px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
-.dst-bar span { display: block; height: 100%; background: var(--blue); }
-.dst-bytes { text-align: right; color: var(--text); }
-.dst-count { text-align: right; color: var(--muted); font-size: 10.5px; }
-
-.audit-list { display: flex; flex-direction: column; gap: 3px; }
-.audit-row {
-  display: grid; grid-template-columns: 50px 1fr 50px 100px 60px; gap: 8px;
-  align-items: center; font-size: 11.5px;
-  padding: 4px 6px; border-radius: 4px;
-}
-.audit-row:hover { background: var(--surface-2); }
-.audit-method { font-family: var(--mono); font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 3px; text-align: center; }
-.audit-method.m-get    { background: rgba(34,197,94,0.16);  color: #22c55e; }
-.audit-method.m-post   { background: rgba(59,130,246,0.16); color: #60a5fa; }
-.audit-method.m-patch  { background: rgba(245,158,11,0.16); color: #f59e0b; }
-.audit-method.m-delete { background: rgba(239,68,68,0.16);  color: #ef4444; }
-.audit-method.m-put    { background: rgba(245,158,11,0.16); color: #f59e0b; }
-.audit-path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.audit-status { font-family: var(--mono); font-size: 10.5px; text-align: center; }
-.audit-status.ok   { color: var(--green); }
-.audit-status.warn { color: var(--yellow); }
-.audit-status.err  { color: var(--red); }
-.audit-actor { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.audit-ts { text-align: right; font-family: var(--mono); font-size: 10.5px; }
-
-/* System strip footer */
-.sys-strip {
-  display: grid; grid-template-columns: repeat(6, 1fr);
-  gap: 14px; padding: 12px 16px;
-}
-@media (max-width: 800px) { .sys-strip { grid-template-columns: repeat(3, 1fr); } }
-.ss-item { display: flex; flex-direction: column; gap: 2px; }
-.ss-item strong { font-size: 13px; color: var(--text); font-family: var(--mono); }
-.ss-item strong small { color: var(--muted); font-size: 11px; font-weight: 400; }
-.mini-bar { height: 3px; background: rgba(255,255,255,0.05); border-radius: 2px; margin-top: 4px; overflow: hidden; }
-.mini-bar span { display: block; height: 100%; background: var(--green); }
+.kpi { height: 100%; }
+.kpi-icon { font-size: 16px; margin-inline-end: 4px; opacity: 0.75; }
+.kpi-sub { font-size: 12px; }
+.card-head-controls { padding: 8px 0; }
+.card-head-controls :deep(.ant-segmented) { font-weight: 400; }
+.chart-body { min-height: 280px; display: flex; flex-direction: column; justify-content: center; }
+.full-height { height: 100%; }
+.clickable { cursor: pointer; }
+.sat-id { width: 110px; flex-shrink: 0; }
+.sat-bar { flex: 1; margin: 0; }
+.sat-num { width: 70px; flex-shrink: 0; text-align: right; }
+.node-offline { opacity: 0.6; }
+.node-name { flex: 1; min-width: 0; }
+.node-host { display: block; margin: 4px 0 8px; font-size: 12px; }
+.node-metrics { margin-bottom: 6px; }
+.node-metrics :deep(.ant-statistic-title) { font-size: 11px; margin-bottom: 0; }
+.mono-stat :deep(.ant-statistic-content) { font-family: var(--pb-mono); }
 </style>

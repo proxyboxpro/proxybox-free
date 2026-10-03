@@ -1,8 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Activity, Download, Globe, RefreshCw, Server, Users } from 'lucide-vue-next'
+import VueApexCharts from 'vue3-apexcharts'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { isDark } from '../../theme'
+
+// Local registration — this route is lazy-loaded, so ApexCharts stays out of
+// the initial bundle.
+const apexchart = VueApexCharts.component || VueApexCharts
 
 const { t } = useI18n()
 const stats = ref(null)
@@ -38,12 +43,13 @@ const KIND_LABEL_KEYS = {
   'agent-other':       'admin.dl.kindAgentOther'
 }
 function kindLabel(k) { return KIND_LABEL_KEYS[k] ? t(KIND_LABEL_KEYS[k]) : k }
+// Data-series colours (badge dot + share bar), same in both themes.
 function kindColor(k) {
   if (k === 'install-panel') return '#22d3ee'
   if (k.startsWith('agent-binary')) return '#a78bfa'
   if (k.startsWith('agent-script')) return '#4ade80'
   if (k === 'agent-code') return '#f59e0b'
-  return 'var(--muted)'
+  return '#94a3b8'
 }
 
 // Fill missing days in the daily series so the chart shows continuous bars
@@ -62,7 +68,49 @@ const dailySeries = computed(() => {
   return out
 })
 
-const maxDaily = computed(() => dailySeries.value.reduce((m, d) => Math.max(m, d.count), 0) || 1)
+const chartText = computed(() => (isDark.value ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)'))
+const chartSeries = computed(() => [{ name: t('admin.dl.colCount'), data: dailySeries.value.map((d) => d.count) }])
+const chartOptions = computed(() => ({
+  chart: { type: 'bar', background: 'transparent', toolbar: { show: false }, fontFamily: 'inherit', animations: { enabled: false } },
+  theme: { mode: isDark.value ? 'dark' : 'light' },
+  colors: ['#16a34a'],
+  plotOptions: { bar: { borderRadius: 3, columnWidth: '70%' } },
+  dataLabels: { enabled: false },
+  grid: { borderColor: isDark.value ? '#1f2631' : '#f0f0f0', strokeDashArray: 3 },
+  xaxis: {
+    categories: dailySeries.value.map((d) => d.day.slice(5)),
+    labels: { style: { colors: chartText.value, fontSize: '10px' }, rotate: -45, hideOverlappingLabels: true },
+    axisBorder: { show: false },
+    axisTicks: { show: false },
+    tooltip: { enabled: false }
+  },
+  yaxis: { min: 0, forceNiceScale: true, labels: { style: { colors: chartText.value }, formatter: (v) => Math.round(v) } },
+  tooltip: {
+    theme: isDark.value ? 'dark' : 'light',
+    x: { formatter: (_, opts) => dailySeries.value[opts?.dataPointIndex]?.day || '' }
+  }
+}))
+
+const uniqByKind = computed(() => new Map((stats.value?.byKindUniq || []).map((x) => [x.kind, x.uniqIps || 0])))
+function sharePct(count) {
+  const total = stats.value?.totals?.lifetime || 0
+  return total ? (count / total) * 100 : 0
+}
+
+const kindColumns = computed(() => [
+  { title: t('admin.dl.colKind'), key: 'kind', dataIndex: 'kind' },
+  { title: t('admin.dl.colCount'), key: 'count', dataIndex: 'count', align: 'right', width: 110 },
+  { title: t('admin.dl.colUniqIp'), key: 'uniq', align: 'right', width: 130 },
+  { title: t('admin.dl.colShare'), key: 'share', width: 240 }
+])
+const recentColumns = computed(() => [
+  { title: t('admin.dl.colWhen'), key: 'ts', dataIndex: 'ts', width: 180 },
+  { title: t('admin.dl.colKind'), key: 'kind', dataIndex: 'kind' },
+  { title: t('admin.dl.colIp'), key: 'ip', dataIndex: 'ip', width: 150 },
+  { title: t('admin.dl.colClient'), key: 'ua', dataIndex: 'ua', width: 130 },
+  { title: t('admin.dl.colReferer'), key: 'referer', dataIndex: 'referer', ellipsis: true }
+])
+const recentRows = computed(() => (stats.value?.recent || []).map((r, i) => ({ ...r, _k: i })))
 
 function fmtTs(ms) {
   const d = new Date(Number(ms) || 0)
@@ -83,194 +131,139 @@ function shortUa(ua) {
 </script>
 
 <template>
-  <section class="page-stack">
-    <header class="page-head">
-      <div>
-        <h1><Download :size="20" style="vertical-align:-3px; color:var(--green)" /> {{ t('admin.dl.title') }}</h1>
-        <p class="sub">{{ t('admin.dl.subtitle') }}</p>
-      </div>
-      <button class="ghost-button" type="button" :disabled="loading" @click="refresh">
-        <RefreshCw :size="13" :class="{ spin: loading }" /> {{ t('admin.dl.refresh') }}
-      </button>
-    </header>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.dl.subtitle') }}</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+        {{ t('admin.dl.refresh') }}
+      </a-button>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
     <template v-if="stats">
       <!-- KPI strip -->
-      <div class="kpi-grid">
-        <article class="kpi">
-          <span class="ico" style="background:rgba(34,197,94,0.14); color:var(--green)"><Download :size="18" /></span>
-          <div><span class="lbl">{{ t('admin.dl.kpiTotal') }}</span><strong>{{ stats.totals.lifetime.toLocaleString() }}</strong></div>
-        </article>
-        <article class="kpi">
-          <span class="ico" style="background:rgba(34,211,238,0.14); color:#22d3ee"><Activity :size="18" /></span>
-          <div><span class="lbl">{{ t('admin.dl.kpi24h') }}</span><strong>{{ stats.totals.last24h.toLocaleString() }}</strong><small>{{ t('admin.dl.uniqIpSub', { n: stats.totals.uniqIp24h }) }}</small></div>
-        </article>
-        <article class="kpi">
-          <span class="ico" style="background:rgba(139,92,246,0.14); color:#a78bfa"><Activity :size="18" /></span>
-          <div><span class="lbl">{{ t('admin.dl.kpi7d') }}</span><strong>{{ stats.totals.last7d.toLocaleString() }}</strong><small>{{ t('admin.dl.uniqIpSub', { n: stats.totals.uniqIp7d }) }}</small></div>
-        </article>
-        <article class="kpi">
-          <span class="ico" style="background:rgba(245,158,11,0.14); color:#f59e0b"><Globe :size="18" /></span>
-          <div><span class="lbl">{{ t('admin.dl.kpi30d') }}</span><strong>{{ stats.totals.last30d.toLocaleString() }}</strong></div>
-        </article>
-        <article class="kpi">
-          <span class="ico" style="background:rgba(96,165,250,0.14); color:#60a5fa"><Users :size="18" /></span>
-          <div><span class="lbl">{{ t('admin.dl.kpiUniqIp') }}</span><strong>{{ stats.totals.uniqIpAll.toLocaleString() }}</strong></div>
-        </article>
-      </div>
+      <a-flex wrap="wrap" gap="middle">
+        <a-card size="small" class="kpi">
+          <a-statistic :title="t('admin.dl.kpiTotal')" :value="stats.totals.lifetime">
+            <template #prefix><DownloadOutlined /></template>
+          </a-statistic>
+        </a-card>
+        <a-card size="small" class="kpi">
+          <a-statistic :title="t('admin.dl.kpi24h')" :value="stats.totals.last24h">
+            <template #prefix><ThunderboltOutlined /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.dl.uniqIpSub', { n: stats.totals.uniqIp24h }) }}</a-typography-text>
+        </a-card>
+        <a-card size="small" class="kpi">
+          <a-statistic :title="t('admin.dl.kpi7d')" :value="stats.totals.last7d">
+            <template #prefix><LineChartOutlined /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.dl.uniqIpSub', { n: stats.totals.uniqIp7d }) }}</a-typography-text>
+        </a-card>
+        <a-card size="small" class="kpi">
+          <a-statistic :title="t('admin.dl.kpi30d')" :value="stats.totals.last30d">
+            <template #prefix><GlobalOutlined /></template>
+          </a-statistic>
+        </a-card>
+        <a-card size="small" class="kpi">
+          <a-statistic :title="t('admin.dl.kpiUniqIp')" :value="stats.totals.uniqIpAll">
+            <template #prefix><TeamOutlined /></template>
+          </a-statistic>
+        </a-card>
+      </a-flex>
 
-      <!-- 30-day bar chart (lightweight CSS bars, no chart lib needed) -->
-      <section class="surface chart-card">
-        <div class="section-head">
-          <h2><Activity :size="14" style="vertical-align:-2px" /> {{ t('admin.dl.chart30d') }}</h2>
-        </div>
-        <div class="bar-chart">
-          <div v-for="d in dailySeries" :key="d.day" class="bar-col" :title="`${d.day}: ${d.count}`">
-            <span class="bar" :style="{ height: (d.count / maxDaily * 100) + '%' }" :data-count="d.count"></span>
-            <small>{{ d.day.slice(5) }}</small>
-          </div>
-        </div>
-      </section>
+      <!-- 30-day bar chart -->
+      <a-card size="small">
+        <template #title><BarChartOutlined /> {{ t('admin.dl.chart30d') }}</template>
+        <apexchart type="bar" height="200" :options="chartOptions" :series="chartSeries" />
+      </a-card>
 
       <!-- Breakdown by kind -->
-      <section class="surface">
-        <div class="section-head"><h2><Server :size="14" style="vertical-align:-2px" /> {{ t('admin.dl.byKind') }}</h2></div>
-        <div v-if="!stats.byKind.length" class="empty-text">{{ t('admin.dl.byKindEmpty') }}</div>
-        <table v-else class="kind-table">
-          <thead>
-            <tr><th>{{ t('admin.dl.colKind') }}</th><th style="text-align:right">{{ t('admin.dl.colCount') }}</th><th style="text-align:right">{{ t('admin.dl.colUniqIp') }}</th><th>{{ t('admin.dl.colShare') }}</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in stats.byKind" :key="row.kind">
-              <td>
-                <span class="kind-dot" :style="{ background: kindColor(row.kind) }"></span>
-                {{ kindLabel(row.kind) }}
-              </td>
-              <td class="cell-mono num">{{ row.count.toLocaleString() }}</td>
-              <td class="cell-mono num">{{ (stats.byKindUniq.find((x) => x.kind === row.kind)?.uniqIps || 0).toLocaleString() }}</td>
-              <td>
-                <span class="bar-mini" :style="{ width: (row.count / stats.totals.lifetime * 100) + '%', background: kindColor(row.kind) }"></span>
-                <small style="margin-left:8px; color:var(--muted)">{{ ((row.count / stats.totals.lifetime) * 100).toFixed(1) }}%</small>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+      <a-card size="small" :body-style="{ padding: 0 }">
+        <template #title><CloudServerOutlined /> {{ t('admin.dl.byKind') }}</template>
+        <a-table
+          :columns="kindColumns"
+          :data-source="stats.byKind"
+          :pagination="false"
+          row-key="kind"
+          size="middle"
+          :scroll="{ x: 640 }"
+          :locale="{ emptyText: t('admin.dl.byKindEmpty') }"
+        >
+          <template #bodyCell="{ column, record: row }">
+            <template v-if="column.key === 'kind'">
+              <a-badge :color="kindColor(row.kind)" :text="kindLabel(row.kind)" />
+            </template>
+            <template v-else-if="column.key === 'count'">
+              <span class="mono">{{ row.count.toLocaleString() }}</span>
+            </template>
+            <template v-else-if="column.key === 'uniq'">
+              <span class="mono">{{ (uniqByKind.get(row.kind) || 0).toLocaleString() }}</span>
+            </template>
+            <template v-else-if="column.key === 'share'">
+              <a-progress
+                :percent="sharePct(row.count)"
+                :stroke-color="kindColor(row.kind)"
+                :format="(p) => `${p.toFixed(1)}%`"
+                size="small"
+              />
+            </template>
+          </template>
+        </a-table>
+      </a-card>
 
       <!-- Recent 100 hits -->
-      <section class="surface">
-        <div class="section-head">
-          <h2><Activity :size="14" style="vertical-align:-2px" /> {{ t('admin.dl.recent', { n: stats.recent.length }) }}</h2>
-          <small style="color:var(--muted); margin-left:8px">{{ t('admin.dl.recentNote') }}</small>
-        </div>
-        <div v-if="!stats.recent.length" class="empty-text">{{ t('admin.dl.recentEmpty') }}</div>
-        <div v-else class="recent-table">
-          <div class="r-head">
-            <span>{{ t('admin.dl.colWhen') }}</span><span>{{ t('admin.dl.colKind') }}</span><span>{{ t('admin.dl.colIp') }}</span><span>{{ t('admin.dl.colClient') }}</span><span>{{ t('admin.dl.colReferer') }}</span>
-          </div>
-          <div v-for="(r, i) in stats.recent" :key="i" class="r-row">
-            <span class="cell-mono">{{ fmtTs(r.ts) }}</span>
-            <span><span class="kind-dot" :style="{ background: kindColor(r.kind) }"></span> {{ kindLabel(r.kind) }}</span>
-            <span class="cell-mono">{{ r.ip || '-' }}</span>
-            <span>{{ shortUa(r.ua) }}</span>
-            <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ r.referer || '-' }}</span>
-          </div>
-        </div>
-      </section>
+      <a-card size="small" :body-style="{ padding: 0 }">
+        <template #title>
+          <a-space wrap :size="[8, 0]">
+            <span><HistoryOutlined /> {{ t('admin.dl.recent', { n: stats.recent.length }) }}</span>
+            <a-typography-text type="secondary" class="note">{{ t('admin.dl.recentNote') }}</a-typography-text>
+          </a-space>
+        </template>
+        <a-table
+          :columns="recentColumns"
+          :data-source="recentRows"
+          :pagination="{ pageSize: 25, hideOnSinglePage: true, showSizeChanger: false }"
+          row-key="_k"
+          size="small"
+          :scroll="{ x: 860 }"
+          :locale="{ emptyText: t('admin.dl.recentEmpty') }"
+        >
+          <template #bodyCell="{ column, record: r }">
+            <template v-if="column.key === 'ts'">
+              <span class="mono">{{ fmtTs(r.ts) }}</span>
+            </template>
+            <template v-else-if="column.key === 'kind'">
+              <a-badge :color="kindColor(r.kind)" :text="kindLabel(r.kind)" />
+            </template>
+            <template v-else-if="column.key === 'ip'">
+              <span class="mono">{{ r.ip || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'ua'">
+              <a-tooltip v-if="r.ua" :title="r.ua"><span>{{ shortUa(r.ua) }}</span></a-tooltip>
+            </template>
+            <template v-else-if="column.key === 'referer'">
+              <a-typography-text type="secondary" class="mono">{{ r.referer || '-' }}</a-typography-text>
+            </template>
+          </template>
+        </a-table>
+      </a-card>
     </template>
 
-    <p v-else-if="!err" class="empty-text" style="padding:40px">{{ t('admin.dl.loading') }}</p>
-  </section>
+    <a-card v-else-if="!err">
+      <a-flex justify="center" class="loading-box">
+        <a-spin :tip="t('admin.dl.loading')"><div class="spin-pad" /></a-spin>
+      </a-flex>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.error-text { color: var(--red); font-size: 13px; margin: 4px 0 10px; padding: 10px 14px; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25); border-radius: 8px; }
-.empty-text { text-align: center; color: var(--muted); font-size: 13px; padding: 14px; }
-.page-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
-.page-head > div { flex: 1; min-width: 0; }
-.page-head h1 { margin: 0; font-size: 22px; font-weight: 700; }
-.page-head .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-
-.kpi-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px;
-  margin-bottom: 16px;
-}
-.kpi {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; padding: 14px 16px;
-}
-.kpi .ico {
-  width: 36px; height: 36px; border-radius: 8px;
-  display: grid; place-items: center; flex-shrink: 0;
-}
-.kpi .lbl { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-.kpi strong { display: block; font-size: 22px; color: var(--text); font-family: var(--mono); font-weight: 700; }
-.kpi small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
-
-/* 30-day bar chart — pure CSS bars, snappy for monitoring during a launch */
-.chart-card { padding: 16px 18px; }
-.bar-chart {
-  display: grid;
-  grid-template-columns: repeat(30, 1fr);
-  align-items: end;
-  gap: 4px;
-  height: 160px;
-  padding: 12px 0 0;
-}
-.bar-col {
-  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  height: 100%;
-}
-.bar-col .bar {
-  flex: 1; min-height: 2px;
-  background: linear-gradient(180deg, var(--green) 0%, rgba(34,197,94,0.4) 100%);
-  border-radius: 3px 3px 0 0;
-  position: relative;
-  transition: opacity 120ms;
-  align-self: stretch;
-}
-.bar-col:hover .bar { opacity: 0.75; }
-.bar-col small {
-  font-size: 9px; color: var(--muted);
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-}
-@media (max-width: 700px) {
-  .bar-col small { display: none; }
-  .bar-chart { height: 100px; }
-}
-
-/* Kind table */
-.kind-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.kind-table th, .kind-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; }
-.kind-table th { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
-.kind-table .num { text-align: right; font-family: var(--mono); }
-.kind-dot {
-  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-right: 8px; vertical-align: middle;
-}
-.bar-mini { display: inline-block; height: 6px; border-radius: 3px; min-width: 2px; max-width: 200px; vertical-align: middle; }
-
-/* Recent table (flex rows so columns can wrap on phone) */
-.recent-table { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
-.r-head, .r-row {
-  display: grid; grid-template-columns: 1.3fr 1.4fr 1fr 0.8fr 1.5fr;
-  gap: 10px; padding: 6px 10px; align-items: center;
-  font-size: 12.5px;
-}
-.r-head { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; border-bottom: 1px solid var(--border); }
-.r-row { border-bottom: 1px solid var(--pxl-bd-soft); }
-.r-row:hover { background: rgba(255,255,255,0.02); }
-@media (max-width: 800px) {
-  .r-head { display: none; }
-  .r-row { grid-template-columns: 1fr; gap: 2px; padding: 8px 10px; }
-  .r-row span:first-child { font-weight: 600; }
-}
-
-.spin { animation: spin 1.2s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.kpi { flex: 1 1 170px; min-width: 0; }
+.kpi-sub { font-size: 12px; }
+.note { font-size: 12px; font-weight: 400; }
+.loading-box { padding: 24px 0; }
+.spin-pad { width: 120px; height: 48px; }
 </style>

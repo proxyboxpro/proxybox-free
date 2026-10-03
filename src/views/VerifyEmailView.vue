@@ -1,9 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Box, MailCheck, AlertTriangle, ArrowLeft } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 import { verifyEmail } from '../api'
+import BrandLogo from '../components/ui/BrandLogo.vue'
+import ThemeLangSwitch from '../components/ui/ThemeLangSwitch.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,32 +28,57 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="auth-shell">
-    <section class="auth-card auth-card-narrow">
-      <div class="auth-form">
-        <div class="logo-block">
-          <span class="logo-mark"><Box :size="22" /></span>
-          <strong>ProxyBox</strong>
-        </div>
+  <a-layout class="auth-shell">
+    <a-flex class="auth-top" justify="space-between" align="center" gap="small">
+      <RouterLink to="/" class="auth-brand"><BrandLogo :size="30" /></RouterLink>
+      <ThemeLangSwitch />
+    </a-flex>
 
-        <div v-if="state === 'loading'" class="success-block">
-          <p style="color:var(--muted)">{{ t('auth.verify.loading') }}</p>
-        </div>
-        <div v-else-if="state === 'ok'" class="success-block">
-          <MailCheck :size="32" style="color:var(--green)" />
-          <h3>{{ t('auth.verify.ok') }}</h3>
-          <p v-if="message">{{ message }}</p>
-        </div>
-        <div v-else class="success-block">
-          <AlertTriangle :size="32" style="color:var(--red)" />
-          <h3>{{ t('auth.verify.error') }}</h3>
-          <p>{{ message }}</p>
-        </div>
-
-        <button class="text-action" type="button" @click="router.push({ name: 'login' })">
-          <ArrowLeft :size="14" /> {{ t('auth.recover.backToLogin') }}
-        </button>
-      </div>
-    </section>
-  </main>
+    <a-layout-content class="auth-main">
+      <a-card class="auth-card">
+        <a-result v-if="state === 'loading'" :title="t('auth.verify.loading')">
+          <template #icon><a-spin size="large" /></template>
+          <template #extra>
+            <a-button @click="router.push({ name: 'login' })">
+              <template #icon><ArrowLeftOutlined /></template>
+              {{ t('auth.recover.backToLogin') }}
+            </a-button>
+          </template>
+        </a-result>
+        <a-result v-else-if="state === 'ok'" status="success" :title="t('auth.verify.ok')">
+          <template v-if="message" #subTitle><span class="mono">{{ message }}</span></template>
+          <template #extra>
+            <a-button type="primary" @click="router.push({ name: 'login' })">
+              <template #icon><ArrowLeftOutlined /></template>
+              {{ t('auth.recover.backToLogin') }}
+            </a-button>
+          </template>
+        </a-result>
+        <a-result v-else status="error" :title="t('auth.verify.error')" :sub-title="message">
+          <template #extra>
+            <a-button type="primary" @click="router.push({ name: 'login' })">
+              <template #icon><ArrowLeftOutlined /></template>
+              {{ t('auth.recover.backToLogin') }}
+            </a-button>
+          </template>
+        </a-result>
+      </a-card>
+    </a-layout-content>
+  </a-layout>
 </template>
+
+<style scoped>
+.auth-shell { min-height: 100vh; }
+.auth-top { padding: 16px 24px; }
+.auth-brand { display: inline-flex; }
+.auth-main {
+  display: flex; align-items: center; justify-content: center;
+  padding: 8px 16px 64px;
+}
+.auth-card { width: 100%; max-width: 480px; }
+
+@media (max-width: 575px) {
+  .auth-top { padding: 12px 16px; }
+  .auth-main { padding: 4px 12px 32px; }
+}
+</style>
