@@ -129,7 +129,9 @@ function hasDefaultIpv6Route() {
       if (f.length < 10) continue
       if (f[0] === '00000000000000000000000000000000' && f[1] === '00') {
         const flags = parseInt(f[8], 16)
-        if (!(flags & 0x01000000)) return true   // skip RTF_CACHE entries
+        // skip RTF_CACHE entries and RTF_REJECT ones (the kernel's "::/0 dev lo"
+        // null route is listed even when the host has no real default route)
+        if (!(flags & 0x01000000) && !(flags & 0x0200)) return true
       }
     }
   } catch { /* fall through */ }

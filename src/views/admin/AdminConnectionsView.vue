@@ -35,7 +35,8 @@ const liveDelta = ref(0) // count of live events received since last refresh
 let timer = null
 let sse = null
 let sseRetry = null      // pending reconnect timeout
-let sseDelay = 5_000     // reconnect backoff, doubles up to 60 s, reset on "hello"
+let sseDelay = 5_000     // reconnect backoff, doubles up to 60 s, reset once a stream stayed up 60 s
+let sseHelloAt = 0      // when the current stream said "hello" (0 = not yet)
 let unmounted = false
 
 async function refresh() {
@@ -147,7 +148,7 @@ async function openSse() {
   if (unmounted) return
   try {
     sse = new EventSource(url)
-    sse.addEventListener('hello', () => { sseConnected.value = true; sseDelay = 5_000 })
+    sse.addEventListener('hello', () => { sseConnected.value = true; sseHelloAt = Date.now() })
     sse.addEventListener('connection', (ev) => {
       try {
         const c = JSON.parse(ev.data)
@@ -191,7 +192,13 @@ async function openSse() {
     })
     // The browser's built-in retry would reuse the spent ticket and get a 401
     // (fatal for EventSource), so close and reconnect with a new ticket instead.
-    sse.onerror = () => { closeSse(); scheduleSseReconnect() }
+    // Only a stream that stayed up a while resets the backoff: one dropped right
+    // after "hello" (e.g. a buffering proxy/CDN) must not re-mint every 5 s.
+    sse.onerror = () => {
+      if (sseHelloAt && Date.now() - sseHelloAt >= 60_000) sseDelay = 5_000
+      sseHelloAt = 0
+      closeSse(); scheduleSseReconnect()
+    }
   } catch { sse = null; sseConnected.value = false; scheduleSseReconnect() }
 }
 function scheduleSseReconnect() {
