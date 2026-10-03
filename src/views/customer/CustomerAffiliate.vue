@@ -171,7 +171,7 @@ onMounted(refresh)
         <a-col :xs="24" :lg="9" :xl="8">
           <a-flex vertical gap="middle" class="aside">
             <a-card size="small" :title="t('cust.aff.howTitle')">
-              <a-steps direction="vertical" size="small" :items="howSteps" class="how-steps" />
+              <a-steps direction="vertical" size="small" :items="howSteps" />
             </a-card>
 
             <a-card size="small" :title="t('cust.aff.tipsTitle')">
@@ -194,7 +194,6 @@ onMounted(refresh)
 .share-text { margin-bottom: 0; }
 .share-text pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.55; }
 .tip { display: flex; gap: 8px; align-items: baseline; }
-.how-steps :deep(.ant-steps-item-description) { font-size: 12px; }
 
 @media (min-width: 992px) {
   .aside { position: sticky; top: 84px; }

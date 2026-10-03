@@ -1,5 +1,5 @@
 <script setup>
-import { computed, h, ref, onMounted } from 'vue'
+import { computed, h, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Grid } from 'ant-design-vue'
 import {
@@ -184,12 +184,15 @@ function curlSample(method, path, body) {
   return `curl -X ${method} ${url} \\\n  ${headers.join(' \\\n  ')}${dataFlag}`
 }
 
-onMounted(() => {
+function applyHash() {
   if (route.hash) {
     const id = route.hash.slice(1)
     if (groups.value.some((g) => g.id === id)) activeGroup.value = id
   }
-})
+}
+onMounted(applyHash)
+// Same-page links such as /api-docs#orders reuse this component instance.
+watch(() => route.hash, applyHash)
 </script>
 
 <template>
