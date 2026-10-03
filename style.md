@@ -91,7 +91,8 @@ pick colours/`theme.mode` from `isDark` (`src/theme.js`).
 ## 4. Typography & data
 
 * Technical strings (IP, port, host, hash, id, order id, API key, command) →
-  `class="mono"` (JetBrains Mono). Labels stay sans (Inter).
+  `class="mono"` (JetBrains Mono). Labels stay sans (Inter). Put `.mono` on
+  text elements only, never on an `a-button` / `a-radio-button`.
 * Money: keep the existing formatting helpers; right-align numeric table columns (`align: 'right'`).
 * Status: green = active/ok, orange = pending/warning/expiring, red = error/suspended, grey = expired/disabled — `StatusTag` handles the mapping.
 

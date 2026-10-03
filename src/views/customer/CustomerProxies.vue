@@ -409,6 +409,10 @@ async function copyText(text, label) {
   } catch { /* noop */ }
 }
 
+// On-screen QR codes stay dark-on-light in both themes: phone scanners
+// (v2rayNG / Shadowrocket) often fail on inverted codes.
+const QR_FG = '#000000'
+const QR_BG = '#ffffff'
 // QR popup — small-icon click expands to large QR + download SVG button.
 const qrModal = ref(null) // { url, label }
 function openQrModal(url, label) { if (url) qrModal.value = { url, label } }
@@ -1966,7 +1970,7 @@ onBeforeUnmount(() => {
           <a-row :gutter="[16, 12]">
             <a-col :xs="24" :sm="10">
               <a-flex vertical align="center" gap="small">
-                <a-qrcode :value="drawerProxy.connectUrls.trojan" :size="180" :color="token.colorText" :bg-color="token.colorBgContainer" />
+                <a-qrcode :value="drawerProxy.connectUrls.trojan" :size="180" :color="QR_FG" :bg-color="QR_BG" />
                 <a-button size="small" @click="downloadQr(drawerProxy.connectUrls.trojan, 'trojan-' + drawerProxy.id)">
                   <template #icon><DownloadOutlined /></template>Download QR
                 </a-button>
@@ -2167,7 +2171,7 @@ onBeforeUnmount(() => {
     <a-modal :open="!!qrModal" :footer="null" :width="420" @cancel="closeQrModal">
       <template #title><QrcodeOutlined /> {{ qrModal?.label }}</template>
       <a-flex v-if="qrModal" vertical align="center" gap="middle">
-        <a-qrcode :value="qrModal.url" :size="280" :color="token.colorText" :bg-color="token.colorBgContainer" />
+        <a-qrcode :value="qrModal.url" :size="280" :color="QR_FG" :bg-color="QR_BG" />
         <a-typography-paragraph class="mono small-text qr-url" :copyable="{ text: qrModal.url }">{{ qrModal.url }}</a-typography-paragraph>
         <a-space wrap>
           <a-button @click="copyText(qrModal.url, qrModal.label)"><template #icon><CopyOutlined /></template>Copy URL</a-button>

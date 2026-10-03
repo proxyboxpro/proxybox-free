@@ -18,7 +18,6 @@
     "@ant-design/icons-vue": "^7.0.1",
     "ant-design-vue": "^4.2.6",
     "apexcharts": "^5.11.0",
-    "lucide-vue-next": "^0.561.0",
     "node-forge": "^1.4.0",
     "qrcode": "^1.5.4",
     "ssh2": "^1.17.0",

@@ -50,11 +50,10 @@ export default defineConfig({
           if (id.includes('node_modules')) {
             if (id.includes('apexcharts')) return 'vendor-apexcharts'
             if (id.includes('vue3-apexcharts')) return 'vendor-apexcharts'
-            if (id.includes('lucide-vue-next')) return 'vendor-icons'
-            if (id.includes('@ant-design/icons')) return 'vendor-icons'
-            if (id.includes('ant-design-vue') || id.includes('@ant-design') || id.includes('dayjs') || id.includes('@ctrl') || id.includes('@emotion') || id.includes('stylis')) return 'vendor-antd'
             if (id.includes('vue-router')) return 'vendor-vue'
             if (id.includes('@vue') || /\/vue\//.test(id)) return 'vendor-vue'
+            // ant-design-vue, its icons and helper deps (lodash-es, dayjs, cssinjs…)
+            // stay together in `vendor`: splitting them creates circular chunks.
             return 'vendor'
           }
           // App splits — admin vs customer
