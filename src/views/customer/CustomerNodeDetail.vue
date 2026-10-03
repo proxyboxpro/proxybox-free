@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber } from '../../utils/format'
@@ -150,11 +150,15 @@ const typeOptions = computed(() => {
   if (!fam || fam === 'dual' || fam === 'ipv6') out.push({ value: 'ipv6', label: `IPv6 ${ipv6PrefixHint.value ? `(${ipv6PrefixHint.value})` : ''}` })
   return out
 })
+// Keep the type select on a value the node supports (e.g. IPv6-only nodes).
+watch(typeOptions, (opts) => {
+  if (opts.length && !opts.some((o) => o.value === buyForm.value.type)) buyForm.value.type = opts[0].value
+})
 
 const proxyColumns = [
-  { key: 'id', width: 230 },
+  { key: 'id', width: 170 },
   { key: 'endpoint' },
-  { key: 'stats', width: 170 },
+  { key: 'stats', width: 140 },
   { key: 'actions', width: 120, align: 'right' }
 ]
 const proxyPagination = { pageSize: 20, hideOnSinglePage: true, size: 'small' }
@@ -224,7 +228,7 @@ function proxyRowClass(p) { return p.status === 'expired' || p.status === 'error
         <!-- LEFT: proxies + create form -->
         <a-col :xs="24" :lg="16">
           <a-flex vertical gap="middle">
-            <a-card size="small">
+            <a-card size="small" class="wrap-head">
               <template #title>
                 <a-space :size="6" wrap>
                   <PlusOutlined />
@@ -273,34 +277,39 @@ function proxyRowClass(p) { return p.status === 'expired' || p.status === 'error
                 :show-header="false"
                 :pagination="proxyPagination"
                 :row-class-name="proxyRowClass"
-                :scroll="{ x: 720 }"
+                :scroll="{ x: 600 }"
                 :locale="{ emptyText: t('cust.nodeDetail.emptyProxies') }"
               >
                 <template #bodyCell="{ column, record: p }">
                   <template v-if="column.key === 'id'">
-                    <a-space wrap :size="4">
+                    <a-flex vertical :gap="4" align="flex-start">
                       <a-typography-text strong class="mono">{{ p.id }}</a-typography-text>
-                      <StatusTag :status="p.status" />
-                      <a-tag :color="p.type === 'IPv6' ? 'purple' : 'blue'" :bordered="false" class="mono">{{ p.type }}</a-tag>
-                    </a-space>
+                      <a-space :size="4">
+                        <StatusTag :status="p.status" />
+                        <a-tag :color="p.type === 'IPv6' ? 'purple' : 'blue'" :bordered="false" class="mono">{{ p.type }}</a-tag>
+                      </a-space>
+                    </a-flex>
                   </template>
                   <template v-else-if="column.key === 'endpoint'">
-                    <a-space wrap :size="4">
+                    <a-flex vertical :gap="4" align="flex-start">
                       <span class="mono">{{ (p.ip || p.host) }}:{{ p.port }}</span>
-                      <a-button size="small" @click="copyToClipboard(p.http || `http://${p.username}:${p.password}@${p.ip}:${p.port}`, p.id)">
-                        <template #icon><CopyOutlined /></template>
-                        http
-                      </a-button>
-                      <a-button size="small" @click="copyToClipboard(p.socks5 || `socks5://${p.username}:${p.password}@${p.ip}:${p.port}`, p.id + '-s5')">
-                        <template #icon><CopyOutlined /></template>
-                        socks5
-                      </a-button>
-                    </a-space>
+                      <a-space :size="4">
+                        <a-button size="small" @click="copyToClipboard(p.http || `http://${p.username}:${p.password}@${p.ip}:${p.port}`, p.id)">
+                          <template #icon><CopyOutlined /></template>
+                          http
+                        </a-button>
+                        <a-button size="small" @click="copyToClipboard(p.socks5 || `socks5://${p.username}:${p.password}@${p.ip}:${p.port}`, p.id + '-s5')">
+                          <template #icon><CopyOutlined /></template>
+                          socks5
+                        </a-button>
+                      </a-space>
+                    </a-flex>
                   </template>
                   <template v-else-if="column.key === 'stats'">
-                    <a-typography-text type="secondary" class="mono small">
-                      conns: {{ p.stats?.activeConnections || 0 }} · bw: {{ formatBytes((p.stats?.uploadBytes || 0) + (p.stats?.downloadBytes || 0)) }}
-                    </a-typography-text>
+                    <a-flex vertical>
+                      <a-typography-text type="secondary" class="small nowrap">conns: <span class="mono">{{ p.stats?.activeConnections || 0 }}</span></a-typography-text>
+                      <a-typography-text type="secondary" class="small nowrap">bw: <span class="mono">{{ formatBytes((p.stats?.uploadBytes || 0) + (p.stats?.downloadBytes || 0)) }}</span></a-typography-text>
+                    </a-flex>
                   </template>
                   <template v-else-if="column.key === 'actions'">
                     <a-space :size="4">
@@ -403,6 +412,7 @@ function proxyRowClass(p) { return p.status === 'expired' || p.status === 'error
 
 <style scoped>
 .head { min-width: 0; }
+.wrap-head :deep(.ant-card-head-title) { white-space: normal; padding: 8px 0; }
 .node-title { margin: 0 !important; }
 .small { font-size: 12px; }
 .mono-stat :deep(.ant-statistic-content) { font-family: var(--pb-mono); }

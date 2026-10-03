@@ -47,7 +47,7 @@ curl -x http://USER:PASS@HOST:PORT https://api64.ipify.org
         </a-button>
       </template>
       <a-typography-paragraph>
-        <a-typography-text code class="mono">pk_live_proxyhub_8f42****************</a-typography-text>
+        <a-typography-text code class="mono key">pk_live_proxyhub_8f42****************</a-typography-text>
       </a-typography-paragraph>
       <a-descriptions bordered size="small" :column="{ xs: 1, sm: 1, md: 3 }">
         <a-descriptions-item :label="t('api.rateLimit')"><span class="mono">600 req/min</span></a-descriptions-item>
@@ -91,6 +91,7 @@ curl -x http://USER:PASS@HOST:PORT https://api64.ipify.org
 </template>
 
 <style scoped>
+.key { font-size: 14px; }
 .snippet { position: relative; margin-bottom: 0; }
 .snippet pre { margin: 0; overflow-x: auto; white-space: pre; }
 .snippet :deep(.ant-typography-copy) { position: absolute; top: 8px; right: 8px; }

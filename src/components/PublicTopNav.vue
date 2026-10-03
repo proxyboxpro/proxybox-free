@@ -128,12 +128,11 @@ const selectedKeys = computed(() => [route.path])
   gap: 24px;
   padding-inline: 32px;
   border-bottom: 1px solid var(--pb-border-soft);
-  line-height: normal;
 }
 .ptn-brand { display: inline-flex; align-items: center; flex-shrink: 0; color: inherit; }
 .ptn-sub { margin-inline: 8px 0; font-size: 11px; font-weight: 500; vertical-align: 2px; }
-.ptn-menu { flex: 1; min-width: 0; line-height: 62px; }
-.ptn-menu.ant-menu-horizontal { border-bottom: none; }
+.ptn-menu { flex: 1; min-width: 0; }
+.ptn-bar .ptn-menu.ant-menu-horizontal { line-height: 62px; border-bottom: none; }
 .ptn-spacer { flex: 1; }
 .ptn-actions { flex-shrink: 0; }
 

@@ -148,9 +148,12 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     </a-card>
 
     <!-- Errors table -->
-    <a-card :title="t('admin.errors.tableTitle', { n: errors.length })" :body-style="{ padding: 0 }">
-      <template #extra>
-        <a-typography-text type="secondary" class="card-note">{{ t('admin.errors.tableNote') }}</a-typography-text>
+    <a-card :body-style="{ padding: 0 }">
+      <template #title>
+        <a-flex justify="space-between" align="baseline" wrap="wrap" gap="small" class="card-title">
+          <span>{{ t('admin.errors.tableTitle', { n: errors.length }) }}</span>
+          <a-typography-text type="secondary" class="card-note">{{ t('admin.errors.tableNote') }}</a-typography-text>
+        </a-flex>
       </template>
       <a-table
         v-model:expanded-row-keys="expandedKeys"
@@ -222,6 +225,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 <style scoped>
 .intro { margin: 0; max-width: 900px; }
 .kpi-sub { font-size: 12px; }
+.card-title { white-space: normal; padding: 10px 0; }
 .card-note { font-size: 12px; font-weight: 400; }
 .filters { row-gap: 8px; }
 .small { font-size: 11.5px; }

@@ -332,12 +332,14 @@ onMounted(async () => {
           <span class="tab-label">{{ t('admin.hubs.tabVz') }}<small>{{ t('admin.hubs.tabVzDesc') }}</small></span>
         </template>
         <a-card :body-style="{ paddingTop: '12px' }">
-          <template #title><KeyOutlined /> {{ t('admin.hubs.vzTitle', { n: vzInstances.length }) }}</template>
-          <template #extra>
-            <a-button type="primary" @click="startVzEdit(null)">
-              <template #icon><PlusOutlined /></template>
-              {{ t('admin.hubs.vzAdd') }}
-            </a-button>
+          <template #title>
+            <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-title">
+              <span><KeyOutlined /> {{ t('admin.hubs.vzTitle', { n: vzInstances.length }) }}</span>
+              <a-button type="primary" @click="startVzEdit(null)">
+                <template #icon><PlusOutlined /></template>
+                {{ t('admin.hubs.vzAdd') }}
+              </a-button>
+            </a-flex>
           </template>
           <a-typography-paragraph type="secondary" class="hint">
             <span v-html="t('admin.hubs.vzHint')"></span>
@@ -408,12 +410,14 @@ onMounted(async () => {
           <span class="tab-label">{{ t('admin.hubs.tabPlans') }}<small>{{ t('admin.hubs.tabPlansDesc') }}</small></span>
         </template>
         <a-card :body-style="{ padding: 0 }">
-          <template #title><CloudOutlined /> {{ t('admin.hubs.plansTitle', { n: hubPlans.length }) }}</template>
-          <template #extra>
-            <a-button type="primary" @click="startEdit(null)">
-              <template #icon><PlusOutlined /></template>
-              {{ t('admin.hubs.planNew') }}
-            </a-button>
+          <template #title>
+            <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-title">
+              <span><CloudOutlined /> {{ t('admin.hubs.plansTitle', { n: hubPlans.length }) }}</span>
+              <a-button type="primary" @click="startEdit(null)">
+                <template #icon><PlusOutlined /></template>
+                {{ t('admin.hubs.planNew') }}
+              </a-button>
+            </a-flex>
           </template>
           <a-table
             :columns="planColumns"
@@ -458,12 +462,14 @@ onMounted(async () => {
           <span class="tab-label">{{ t('admin.hubs.tabVms') }}<small>{{ t('admin.hubs.tabVmsDesc', { n: provisionedHubs.length }) }}</small></span>
         </template>
         <a-card>
-          <template #title><CloudServerOutlined /> {{ t('admin.hubs.vmsTitle', { n: provisionedHubs.length }) }}</template>
-          <template #extra>
-            <a-button :loading="hubsLoading" @click="loadHubs">
-              <template #icon><ReloadOutlined /></template>
-              {{ t('admin.hubs.vmsRefresh') }}
-            </a-button>
+          <template #title>
+            <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-title">
+              <span><CloudServerOutlined /> {{ t('admin.hubs.vmsTitle', { n: provisionedHubs.length }) }}</span>
+              <a-button :loading="hubsLoading" @click="loadHubs">
+                <template #icon><ReloadOutlined /></template>
+                {{ t('admin.hubs.vmsRefresh') }}
+              </a-button>
+            </a-flex>
           </template>
           <a-empty v-if="!provisionedHubs.length" :description="t('admin.hubs.vmsEmpty')" />
           <a-flex v-else vertical gap="middle">
@@ -789,6 +795,7 @@ onMounted(async () => {
 .hub-tabs :deep(.ant-tabs-nav) { margin-bottom: 12px; }
 .tab-label { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 1.3; }
 .tab-label small { font-size: 11px; color: var(--pb-text-3); font-weight: 400; }
+.card-title { white-space: normal; padding: 10px 0; }
 .hint { margin-bottom: 12px; }
 .small { font-size: 11.5px; }
 .grow { flex: 1; min-width: 0; }

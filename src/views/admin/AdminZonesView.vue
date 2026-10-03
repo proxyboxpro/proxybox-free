@@ -70,11 +70,12 @@ onMounted(refresh)
         :pagination="false"
         row-key="id"
         size="middle"
+        :scroll="{ x: 560 }"
         :locale="{ emptyText: t('admin.zones.empty') }"
       >
         <template #bodyCell="{ column, record: z }">
           <template v-if="column.key === 'id'">
-            <span class="mono">{{ z.id }}</span>
+            <span class="mono nowrap">{{ z.id }}</span>
           </template>
           <template v-else-if="column.key === 'name'">
             {{ z.flag }} {{ z.name }}

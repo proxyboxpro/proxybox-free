@@ -64,9 +64,9 @@ const lossType = computed(() => {
 })
 
 const sampleColumns = [
-  { key: 'seq', dataIndex: 'seq', width: 90 },
-  { key: 'ttl', dataIndex: 'ttl', width: 90 },
-  { key: 'time', dataIndex: 'time', width: 100, align: 'right' },
+  { key: 'seq', dataIndex: 'seq', width: 72 },
+  { key: 'ttl', dataIndex: 'ttl', width: 80 },
+  { key: 'time', dataIndex: 'time', width: 96, align: 'right' },
   { key: 'bar' }
 ]
 </script>
@@ -171,7 +171,6 @@ const sampleColumns = [
         size="small"
         :show-header="false"
         :pagination="false"
-        :scroll="{ x: 420 }"
       >
         <template #bodyCell="{ column, record: s }">
           <template v-if="column.key === 'seq' || column.key === 'ttl'">

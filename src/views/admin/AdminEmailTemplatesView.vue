@@ -91,10 +91,10 @@ onMounted(refresh)
       destroy-on-close
       @cancel="closePreview"
     >
-      <a-typography-paragraph>
+      <a-space :size="6" wrap class="preview-subject">
         <a-typography-text type="secondary">Subject:</a-typography-text>
-        <a-typography-text strong> {{ previewSubject }}</a-typography-text>
-      </a-typography-paragraph>
+        <a-typography-text strong>{{ previewSubject }}</a-typography-text>
+      </a-space>
       <!-- Email HTML is designed for a white mail-client canvas, so the frame
            keeps a white background in both themes. -->
       <iframe class="preview-frame" :srcdoc="previewHtml" sandbox="allow-same-origin"></iframe>
@@ -108,6 +108,7 @@ onMounted(refresh)
 <style scoped>
 .html-input { font-size: 12px; }
 .last-item { margin-bottom: 0; }
+.preview-subject { margin-bottom: 12px; }
 .preview-frame { display: block; width: 100%; min-height: 60vh; border: 1px solid var(--pb-border); border-radius: 8px; background: #fff; }
 .preview-foot { margin-top: 12px; }
 </style>

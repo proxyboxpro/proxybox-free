@@ -153,16 +153,16 @@ const memberStatusColor = (s) => (s === 'active' ? 'success' : s === 'expired' ?
 const TYPE_TAG = { ipv6: { color: 'green', label: 'IPv6' }, ipv4: { color: 'blue', label: 'IPv4' }, mixed: { color: 'orange', label: 'MIX' } }
 
 const columns = computed(() => [
-  { key: 'id', title: t('admin.orders.colId'), width: 130, ellipsis: true },
-  { key: 'owner', title: t('admin.orders.colOwner'), width: 200, ellipsis: true },
+  { key: 'id', title: t('admin.orders.colId'), width: 120, ellipsis: true },
+  { key: 'owner', title: t('admin.orders.colOwner'), ellipsis: true },
   { key: 'item', title: t('admin.orders.colItem') },
-  { key: 'type', title: t('admin.orders.colType'), width: 80 },
-  { key: 'zone', title: t('admin.orders.colZone'), width: 130 },
-  { key: 'node', title: t('admin.orders.colNodeC'), width: 130, ellipsis: true },
-  { key: 'revenue', title: t('admin.orders.colRevenue'), width: 120, align: 'right' },
-  { key: 'created', title: t('admin.orders.colCreatedAt'), width: 150 },
+  { key: 'type', title: t('admin.orders.colType'), width: 72 },
+  { key: 'zone', title: t('admin.orders.colZone'), width: 110 },
+  { key: 'node', title: t('admin.orders.colNodeC'), width: 100, ellipsis: true },
+  { key: 'revenue', title: t('admin.orders.colRevenue'), width: 110, align: 'right' },
+  { key: 'created', title: t('admin.orders.colCreatedAt'), width: 140 },
   { key: 'status', title: t('admin.orders.colStatus'), width: 110 },
-  { key: 'actions', width: 92, fixed: 'right', align: 'center' }
+  { key: 'actions', width: 84, fixed: 'right', align: 'center' }
 ])
 const memberColumns = computed(() => [
   { key: 'proxy', title: t('admin.orders.colProxy') },
@@ -239,27 +239,27 @@ onMounted(refresh)
       </a-flex>
       <a-divider dashed class="filter-divider" />
       <a-row :gutter="[12, 12]" align="bottom">
-        <a-col :xs="24" :sm="12" :lg="5">
+        <a-col :xs="24" :sm="12" :lg="4">
           <div class="filter-label"><CloudServerOutlined /> {{ t('admin.orders.filterNode') }}</div>
           <a-select :value="filters.nodeId" :options="nodeOptions" show-search option-filter-prop="label" class="full-width" @change="(v) => setFilter('nodeId', v)" />
         </a-col>
-        <a-col :xs="24" :sm="12" :lg="5">
+        <a-col :xs="24" :sm="12" :lg="4">
           <div class="filter-label"><GlobalOutlined /> {{ t('admin.orders.filterZone') }}</div>
           <a-select :value="filters.zone" :options="zoneOptions" show-search option-filter-prop="label" class="full-width" @change="(v) => setFilter('zone', v)" />
         </a-col>
-        <a-col :xs="24" :sm="12" :lg="5">
+        <a-col :xs="24" :sm="12" :lg="4">
           <div class="filter-label"><TeamOutlined /> {{ t('admin.orders.filterOwner') }}</div>
           <a-select :value="filters.ownerId" :options="ownerOptions" show-search option-filter-prop="label" class="full-width" @change="(v) => setFilter('ownerId', v)" />
         </a-col>
-        <a-col :xs="12" :sm="6" :lg="3">
+        <a-col :xs="12" :sm="6" :lg="4">
           <div class="filter-label"><CalendarOutlined /> {{ t('admin.orders.filterFrom') }}</div>
           <a-date-picker :value="filters.from" value-format="YYYY-MM-DD" class="full-width" @change="(v) => setFilter('from', v)" />
         </a-col>
-        <a-col :xs="12" :sm="6" :lg="3">
+        <a-col :xs="12" :sm="6" :lg="4">
           <div class="filter-label"><CalendarOutlined /> {{ t('admin.orders.filterTo') }}</div>
           <a-date-picker :value="filters.to" value-format="YYYY-MM-DD" class="full-width" @change="(v) => setFilter('to', v)" />
         </a-col>
-        <a-col v-if="hasActiveFilters" :xs="24" :sm="12" :lg="3">
+        <a-col v-if="hasActiveFilters" :xs="24" :sm="12" :lg="4">
           <a-button danger block @click="clearFilters">
             <template #icon><CloseOutlined /></template>
             {{ t('admin.orders.clear') }}
@@ -276,7 +276,7 @@ onMounted(refresh)
         :loading="loading"
         row-key="id"
         size="middle"
-        :scroll="{ x: 1260 }"
+        :scroll="{ x: 1180 }"
         :pagination="{ defaultPageSize: 50, showSizeChanger: true, pageSizeOptions: ['25', '50', '100', '200'], hideOnSinglePage: false }"
         :locale="{ emptyText: loading ? t('admin.orders.loading') : t('admin.orders.empty') }"
         :expanded-row-keys="expandedKeys"

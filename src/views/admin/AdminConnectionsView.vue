@@ -421,9 +421,12 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
             </a-form>
           </a-card>
 
-          <a-card :title="t('admin.conn.proxiesTitle', { n: filtered.length })" :body-style="{ padding: 0 }">
-            <template #extra>
-              <a-typography-text type="secondary" class="card-note">{{ t('admin.conn.proxiesNote') }}</a-typography-text>
+          <a-card :body-style="{ padding: 0 }">
+            <template #title>
+              <a-flex justify="space-between" align="baseline" wrap="wrap" gap="small" class="card-title">
+                <span>{{ t('admin.conn.proxiesTitle', { n: filtered.length }) }}</span>
+                <a-typography-text type="secondary" class="card-note">{{ t('admin.conn.proxiesNote') }}</a-typography-text>
+              </a-flex>
             </template>
             <a-table
               v-model:expanded-row-keys="expandedKeys"
@@ -604,6 +607,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
 .tab-count { margin-inline: 6px 0; }
 .sse-tag { margin-inline-end: 0; }
 .card-pad { padding: 12px 16px; }
+.card-title { white-space: normal; padding: 10px 0; }
 .card-note { font-size: 12px; font-weight: 400; }
 .kpi-sub { font-size: 12px; }
 .fill { height: 100%; }

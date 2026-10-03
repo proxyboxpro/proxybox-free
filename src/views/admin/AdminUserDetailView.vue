@@ -115,7 +115,7 @@ const sessionRows = computed(() => sessionsList.value.map((s, i) => ({ ...s, row
 
 const sessionColumns = [
   { key: 'token', title: 'Token' },
-  { key: 'expires', title: 'Expires', width: 260 }
+  { key: 'expires', title: 'Expires', align: 'right' }
 ]
 const orderColumns = [
   { key: 'id', title: 'ID', width: 180 },
@@ -247,7 +247,6 @@ onMounted(refresh)
           row-key="rowKey"
           size="small"
           :show-header="false"
-          :scroll="{ x: 560 }"
           :pagination="{ pageSize: 10, hideOnSinglePage: true }"
           :locale="{ emptyText: 'No active sessions.' }"
         >

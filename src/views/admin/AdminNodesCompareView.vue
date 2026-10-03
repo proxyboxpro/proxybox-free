@@ -94,7 +94,7 @@ onMounted(async () => { await loadNodes(); if (a.value && b.value) runCompare() 
     </a-flex>
 
     <a-card size="small">
-      <a-form layout="vertical">
+      <a-form layout="vertical" class="pick-form">
         <a-row :gutter="16">
           <a-col :xs="24" :md="12">
             <a-form-item :label="t('admin.nodesCmp.nodeA')">
@@ -153,6 +153,7 @@ onMounted(async () => { await loadNodes(); if (a.value && b.value) runCompare() 
 
 <style scoped>
 .small { font-size: 12px; }
+.pick-form :deep(.ant-form-item) { margin-bottom: 4px; }
 .spin-box { min-height: 80px; }
 .detail-links { padding: 16px; }
 </style>

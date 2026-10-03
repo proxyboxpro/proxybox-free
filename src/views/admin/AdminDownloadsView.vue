@@ -88,7 +88,9 @@ const chartOptions = computed(() => ({
   tooltip: {
     theme: isDark.value ? 'dark' : 'light',
     x: { formatter: (_, opts) => dailySeries.value[opts?.dataPointIndex]?.day || '' }
-  }
+  },
+  // Phones: hide the 30 date labels (tooltip still shows the day), shorter chart.
+  responsive: [{ breakpoint: 700, options: { chart: { height: 140 }, xaxis: { labels: { show: false } } } }]
 }))
 
 const uniqByKind = computed(() => new Map((stats.value?.byKindUniq || []).map((x) => [x.kind, x.uniqIps || 0])))

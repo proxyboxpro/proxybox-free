@@ -179,9 +179,12 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
     </a-card>
 
     <!-- Ranking table -->
-    <a-card :title="t('admin.bw.rankTitle', { n: filtered.length })" :body-style="{ padding: 0 }">
-      <template #extra>
-        <a-typography-text type="secondary" class="card-note">{{ t('admin.bw.rankNote') }}</a-typography-text>
+    <a-card :body-style="{ padding: 0 }">
+      <template #title>
+        <a-flex justify="space-between" align="baseline" wrap="wrap" gap="small" class="card-title">
+          <span>{{ t('admin.bw.rankTitle', { n: filtered.length }) }}</span>
+          <a-typography-text type="secondary" class="card-note">{{ t('admin.bw.rankNote') }}</a-typography-text>
+        </a-flex>
       </template>
       <a-table
         :columns="columns"
@@ -246,6 +249,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 <style scoped>
 .intro { margin: 0; max-width: 760px; }
 .kpi-sub { font-size: 12px; }
+.card-title { white-space: normal; padding: 10px 0; }
 .card-note { font-size: 12px; font-weight: 400; }
 .card-footer { padding: 10px 16px 14px; }
 .filters { row-gap: 8px; }

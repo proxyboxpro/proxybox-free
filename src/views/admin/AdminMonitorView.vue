@@ -111,7 +111,7 @@ function ago() {
 const tick = ref(0)
 const liveTimer = setInterval(() => { tick.value++ }, 1000)
 onUnmounted(() => clearInterval(liveTimer))
-const agoLive = computed(() => { /* eslint-disable-next-line no-unused-expressions */ tick.value; return ago() })
+const agoLive = computed(() => { tick.value; return ago() })
 </script>
 
 
@@ -216,6 +216,7 @@ const agoLive = computed(() => { /* eslint-disable-next-line no-unused-expressio
 
 <style scoped>
 .card-head-controls { padding: 6px 0; }
+.card-head-controls :deep(.ant-typography) { font-weight: 400; }
 .small { font-size: 12px; }
 .foot { display: block; font-size: 12px; margin-top: 2px; }
 .cell { height: 100%; }

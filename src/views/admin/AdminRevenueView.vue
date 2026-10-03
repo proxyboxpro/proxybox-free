@@ -128,7 +128,7 @@ const mainOptions = computed(() => ({
     gradient: { shadeIntensity: 1, opacityFrom: 0.45, opacityTo: 0.0, stops: [0, 90, 100] }
   },
   dataLabels: { enabled: false },
-  legend: { position: 'top', horizontalAlign: 'right', fontSize: '12px', markers: { width: 8, height: 8, radius: 4 } },
+  legend: { position: 'top', horizontalAlign: 'left', fontSize: '12px', markers: { width: 8, height: 8, radius: 4 } },
   grid: baseGrid.value,
   xaxis: {
     categories: series.value.map((r) => String(r.bucket || '').slice(-5)),
@@ -283,6 +283,7 @@ const heatmapOptions = computed(() => ({
   plotOptions: {
     heatmap: {
       shadeIntensity: 0.7,
+      enableShades: false,
       radius: 3,
       colorScale: {
         ranges: [
@@ -323,7 +324,7 @@ onMounted(refresh)
     <a-row :gutter="[16, 16]">
       <a-col v-for="k in kpiCards" :key="k.key" :xs="24" :sm="12" :xl="6">
         <a-card size="small" class="kpi-card" :body-style="{ paddingBottom: 0 }">
-          <a-flex justify="space-between" align="center" gap="small">
+          <a-flex justify="space-between" align="center" gap="small" class="kpi-head">
             <a-typography-text type="secondary" class="kpi-label">
               <component :is="k.icon" /> {{ k.label }}
             </a-typography-text>
@@ -420,6 +421,7 @@ onMounted(refresh)
 <style scoped>
 .full-height { height: 100%; }
 .kpi-card { height: 100%; overflow: hidden; }
+.kpi-head { min-height: 24px; }
 .kpi-label { font-size: 12px; }
 .kpi-delta { margin-inline-end: 0; font-weight: 600; }
 .kpi-stat { margin-top: 6px; }

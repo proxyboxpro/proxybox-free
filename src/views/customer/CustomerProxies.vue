@@ -1,43 +1,51 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { Grid, theme } from 'ant-design-vue'
 import {
-  Activity, AlertOctagon, ArrowLeft, Check, ChevronDown, ChevronUp, Clock, Copy,
-  Download, ExternalLink, Eye, Gauge, Globe, KeyRound, Layers, Link, ListChecks,
-  Pencil, Play, Plus, QrCode, Radio, RefreshCw, RotateCw, Search, ShieldAlert, ShieldCheck,
-  Smartphone, Tag, Terminal, Timer, Trash2, Wrench, X, Zap
-} from 'lucide-vue-next'
+  CopyOutlined, DashboardOutlined, DeleteOutlined, EyeOutlined, GlobalOutlined, KeyOutlined,
+  MobileOutlined, SecurityScanOutlined, TagsOutlined, UnorderedListOutlined, WifiOutlined
+} from '@ant-design/icons-vue'
+import QRCode from 'qrcode'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message, confirmAsync, promptAsync } from '../../ui/feedback'
 import CountryFlag from '../../components/CountryFlag.vue'
 import SpeedGauge from '../../components/SpeedGauge.vue'
-import QRCode from 'qrcode'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const { token } = theme.useToken()
+const screens = Grid.useBreakpoint()
 
 const list = ref([])                   // proxies of groups that have been expanded/loaded
 const groupSummaries = ref([])         // lightweight per-order summaries (counts only)
 const summaryCounts = ref({ total: 0, active: 0, expiring: 0, expired: 0 })
 const loadedGroups = ref(new Set())    // group ids whose proxies are in `list`
+const loading = ref(false)
 function groupIdOf(p) { return p.shared ? `shared-${p.id}` : (p.orderId || `single-${p.id}`) }
 // Per-group pagination of the in-group proxy list (10 rows/page) — a 500-proxy
-// order would otherwise render every row at once. Keyed by group id.
+// order would otherwise render every row at once. Keyed by group id (0-based).
 const PROXY_PAGE_SIZE = 10
 const proxyPage = reactive({})
 function proxyPageOf(gid) { return proxyPage[gid] || 0 }
-function proxyPageCount(g) { return Math.max(1, Math.ceil((g.proxies?.length || 0) / PROXY_PAGE_SIZE)) }
-function pagedProxiesOf(g) { const pg = proxyPage[g.id] || 0; return (g.proxies || []).slice(pg * PROXY_PAGE_SIZE, pg * PROXY_PAGE_SIZE + PROXY_PAGE_SIZE) }
 function setProxyPage(gid, pg) { proxyPage[gid] = Math.max(0, pg) }
+function proxyPagination(g) {
+  return { current: proxyPageOf(g.id) + 1, pageSize: PROXY_PAGE_SIZE, hideOnSinglePage: true, showSizeChanger: false, size: 'small' }
+}
+function onProxyTableChange(g, pag) { setProxyPage(g.id, (pag?.current || 1) - 1) }
 // Tool tabs (test/speed/blacklist/ip-info/ping) pick ONE proxy via a dropdown
 // (not a chip per proxy — a 500-proxy order rendered 500 chips).
 function onPickIpInfo(g, pid) { const p = (g.proxies || []).find((x) => x.id === pid); if (p) pickIpInfo(g, p) }
+function proxyOptions(g) {
+  return (g.proxies || []).map((p) => ({ value: p.id, label: `${p.label ? p.label + ' · ' : ''}${p.ip || p.bindIp}:${portOf(p)}` }))
+}
 const search = ref('')
 const filterType = ref('all')         // 'all' | 'ipv4' | 'ipv6'
-const filterStatus = ref('all')        // 'all' | 'active' | 'expiring' | 'expired'
-const err = ref('')
-const flash = ref('')
+const filterStatus = ref('all')        // 'all' | 'active' | 'expiring' | 'expired' | 'failed'
+const err = ref('')                    // load errors (kept visible as an alert)
 const expanded = ref(new Set())        // expanded group ids
 const busy = reactive({})              // busy[groupId] = 'check'|'extend'|'delete'
 const checkResults = reactive({})      // checkResults[groupId] = { ok, fail }
@@ -52,10 +60,10 @@ const labelDraft = ref('')
 const credsEditing = ref('')                    // proxy id being edited
 const credsDraft = reactive({ username: '', password: '' })
 const credsErr = ref('')
+const credsSaving = ref(false)
 
 // ── Tier-2/3 additions ────────────────────────────────────────────────
 const filterTag = ref('')                       // tag filter chip
-const exportMenuOpen = ref('')                  // groupId whose format menu is open
 const sparkData = reactive({})                  // sparkData[proxyId] = { up: [], down: [] }
 const statsData = reactive({})                  // statsData[groupId] = { uptime, bandwidth, latency }
 const testModal = ref(null)                     // proxy object being tested
@@ -63,19 +71,15 @@ const testResult = ref(null)                    // result of quick-test
 const testBusy = ref(false)
 const timelineModal = ref(null)                 // group whose activity timeline is open
 const timelineEvents = ref([])
+const timelineLoading = ref(false)
 const tagEditing = ref('')                      // proxy id whose tags are being edited
 const tagDraft = ref('')
 
 // ── Embedded Tools (per-proxy speed test / blacklist / ip-info / ping) ─
-const toolsMenuFor = ref('')                    // proxy id whose tools menu is open
 const toolsModal = ref(null)                    // { proxy, tool, busy, result, error }
 
-// ── Group-level tabs + batch tool results ─────────────────────────────
-// Each group keeps its own active tab. Batch results are stored under
-// composite keys `${groupId}|${tool}|${proxyId}` so they don't collide.
+// ── Group-level tabs ──────────────────────────────────────────────────
 const activeTabByGroup = reactive({})           // groupId -> tab id ('list' | 'test' | ...)
-const batchResults = reactive({})               // composite key -> result
-const batchBusy = reactive({})                  // composite key -> boolean
 const bulkTagDraft = reactive({})               // groupId -> draft tag string
 
 // Load lightweight group summaries only (instant even for 1000+ proxy accounts).
@@ -83,6 +87,7 @@ const bulkTagDraft = reactive({})               // groupId -> draft tag string
 // group that was already expanded so a manual refresh keeps it populated.
 async function refresh() {
   err.value = ''
+  loading.value = true
   try {
     const data = await apiFetch('/api/v1/user/proxies/groups')
     groupSummaries.value = data?.groups || []
@@ -95,6 +100,7 @@ async function refresh() {
     // immediately via loadGroup() regardless of how far the prefetch has got.
     prefetchAllGroups()
   } catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 let prefetchToken = 0
 async function prefetchAllGroups() {
@@ -157,6 +163,12 @@ function fmtCountdown(at) {
   else if (ms < 7 * 86400_000) tier = 'soon'
   return { text, tier }
 }
+// Countdown tier → antd tag preset / token colour.
+const TIER_TAG = { active: 'success', soon: 'processing', expiring: 'warning', critical: 'error', expired: 'default', muted: 'default' }
+function tierColor(tier) {
+  const tk = token.value
+  return ({ active: tk.colorSuccess, soon: tk.colorInfo, expiring: tk.colorWarning, critical: tk.colorError, expired: tk.colorError })[tier] || tk.colorTextTertiary
+}
 
 // ── Grouping ────────────────────────────────────────────────────────────
 // Each group = one order (proxy.orderId). Proxies without orderId fall into
@@ -204,18 +216,26 @@ function groupStatus(g) {
 function statusLabel(s) {
   return ({ active: t('cust.proxies.statusActive'), expiring: t('cust.proxies.statusExpiring'), expired: t('cust.proxies.statusExpired'), mixed: t('cust.proxies.statusMixed') })[s] || s
 }
+const GROUP_STATUS_COLOR = { active: 'success', expiring: 'warning', expired: 'default', mixed: 'processing' }
 
 const counts = computed(() => summaryCounts.value)
 
-const filteredGroups = computed(() => groups.value.filter((g) => {
-  if (filterType.value !== 'all' && (g.type || '').toLowerCase() !== filterType.value) return false
-  if (filterStatus.value !== 'all' && groupStatus(g) !== filterStatus.value) return false
-  if (search.value) {
-    const q = search.value.toLowerCase()
-    if (!g.proxies.some((p) => `${p.ip || p.bindIp} ${p.bindIp} ${p.port} ${p.username} ${g.orderId || ''}`.toLowerCase().includes(q))) return false
-  }
-  return true
-}))
+const typeOptions = computed(() => [
+  { label: t('cust.proxies.typeAll'), value: 'all' },
+  { label: 'IPv4', value: 'ipv4' },
+  { label: 'IPv6', value: 'ipv6' }
+])
+const statusOptions = computed(() => [
+  { label: t('cust.proxies.statusAll'), value: 'all' },
+  { label: t('cust.proxies.statusActive'), value: 'active' },
+  { label: t('cust.proxies.statusExpiring'), value: 'expiring' },
+  { label: t('cust.proxies.statusExpired'), value: 'expired' },
+  { label: t('cust.proxies.statusFailed'), value: 'failed' }
+])
+const ROTATE_OPTIONS = computed(() => [
+  { label: t('cust.proxies.rotateOff2'), value: 0 },
+  ...[[60, '1m'], [180, '3m'], [300, '5m'], [600, '10m'], [900, '15m'], [1800, '30m'], [3600, '1h'], [7200, '2h']].map(([value, label]) => ({ value, label }))
+])
 
 // ── Per-group actions ───────────────────────────────────────────────────
 function isExpanded(gid) { return expanded.value.has(gid) }
@@ -223,6 +243,19 @@ function toggleGroup(gid) {
   const next = new Set(expanded.value)
   if (next.has(gid)) next.delete(gid); else next.add(gid)
   expanded.value = next
+}
+function hasExpired(g) { return g.proxies.some((p) => p.status === 'expired') }
+function allAutoRenew(g) { return g.proxies.every((p) => p.autoRenew) }
+
+// Blob download helper shared by every export / QR / rotate-URL download.
+function downloadText(text, filename, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 function proxyLine(p, fmt = 'colon') {
@@ -240,19 +273,8 @@ function proxyLine(p, fmt = 'colon') {
 }
 async function copyGroup(g, fmt = 'colon') {
   const text = g.proxies.map((p) => proxyLine(p, fmt)).join('\n')
-  try { await navigator.clipboard.writeText(text); flash.value = t('cust.proxies.copied', { n: g.proxies.length }) }
+  try { await navigator.clipboard.writeText(text); message.success(t('cust.proxies.copied', { n: g.proxies.length })) }
   catch { /* no clipboard — fall through */ }
-  setTimeout(() => { if (flash.value.includes(String(g.proxies.length))) flash.value = '' }, 2000)
-}
-function exportGroup(g, fmt = 'txt') {
-  const lines = g.proxies.map((p) => proxyLine(p, 'colon'))
-  const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `proxies-${g.orderId || g.id}.${fmt}`
-  a.click()
-  URL.revokeObjectURL(url)
 }
 async function checkGroup(g) {
   if (busy[g.id]) return
@@ -265,71 +287,76 @@ async function checkGroup(g) {
     })
     checkResults[g.id] = { ok: r.ok, fail: r.total - r.ok, results: r.results }
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { busy[g.id] = null }
 }
+function clearCheckResult(g) { delete checkResults[g.id] }
 async function extendGroup(g) {
   const hours = Math.max(1, Math.min(8760, Number(extendHours[g.id]) || 24))
-  if (!confirm(t('cust.proxies.confirmExtend', { n: g.proxies.length, h: hours }))) return
+  if (!(await confirmAsync({ title: t('cust.proxies.confirmExtend', { n: g.proxies.length, h: hours }) }))) return
   busy[g.id] = 'extend'
   try {
     for (const p of g.proxies) {
       await apiFetch(`/api/v1/user/proxies/${p.id}/extend`, { method: 'POST', body: { hours } })
     }
-    flash.value = t('cust.proxies.extended', { n: g.proxies.length, h: hours })
+    message.success(t('cust.proxies.extended', { n: g.proxies.length, h: hours }))
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { busy[g.id] = null }
 }
 async function deleteGroup(g) {
-  if (!confirm(t('cust.proxies.confirmDelete', { n: g.proxies.length }))) return
+  if (!(await confirmAsync({ title: t('cust.proxies.confirmDelete', { n: g.proxies.length }), danger: true }))) return
   busy[g.id] = 'delete'
   try {
     for (const p of g.proxies) {
       await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'DELETE' })
     }
-    flash.value = t('cust.proxies.deleted', { n: g.proxies.length })
+    message.success(t('cust.proxies.deleted', { n: g.proxies.length }))
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { busy[g.id] = null }
 }
 async function deleteProxy(g, p) {
-  if (!confirm(t('cust.proxies.confirmDeleteOne'))) return
+  if (!(await confirmAsync({ title: t('cust.proxies.confirmDeleteOne'), danger: true }))) return
   try {
     await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'DELETE' })
+    message.success(t('cust.proxies.deleted', { n: 1 }))
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 const rotating = ref('')
 const checking = ref('')
-const expandedProxies = reactive(new Set())
-function toggleProxyExpand(p) {
-  if (expandedProxies.has(p.id)) expandedProxies.delete(p.id)
-  else expandedProxies.add(p.id)
-}
-const flashMsg = ref('')
+
+// ── Per-proxy connect drawer (sessions, Trojan QR, protocol URLs) ──────
+const drawerProxyId = ref('')
+const drawerProxyRef = ref(null)
+// Resolve by id so the drawer follows refreshed data; fall back to the
+// clicked object while a refresh is re-hydrating `list`.
+const drawerProxy = computed(() => (drawerProxyId.value ? (list.value.find((p) => p.id === drawerProxyId.value) || drawerProxyRef.value) : null))
+function openProxyDrawer(p) { drawerProxyRef.value = p; drawerProxyId.value = p.id }
+function closeProxyDrawer() { drawerProxyId.value = ''; drawerProxyRef.value = null }
+
 async function rotateProxy(p) {
   if (rotating.value) return
   rotating.value = p.id
   try {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}/rotate`, { method: 'POST' })
     p.bindIp = r.bindIp
-    flashMsg.value = t('cust.proxies.ipChanged', { id: p.id, ip: r.bindIp })
-    setTimeout(() => { flashMsg.value = '' }, 3000)
+    message.success(t('cust.proxies.ipChanged', { id: p.id, ip: r.bindIp }))
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { rotating.value = '' }
 }
 async function disconnectAllSessions(p) {
-  if (!confirm(t('cust.proxies.disconnectConfirm', { id: p.id }))) return
+  const [title, ...rest] = t('cust.proxies.disconnectConfirm', { id: p.id }).split('\n\n')
+  if (!(await confirmAsync({ title, content: rest.join('\n\n') || undefined, danger: true }))) return
   try {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}/disconnect-all`, { method: 'POST' })
     const n = r.kickedLocal ?? 0
     p.session = r.session || p.session
-    flashMsg.value = t('cust.proxies.disconnected', { n, id: p.id })
-    setTimeout(() => { flashMsg.value = '' }, 3000)
+    message.success(t('cust.proxies.disconnected', { n, id: p.id }))
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 async function checkProxy(p) {
   if (checking.value) return
@@ -338,17 +365,16 @@ async function checkProxy(p) {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}/check`, { method: 'POST' })
     p.status = r.proxy?.status || p.status
     p.lastCheckOk = r.ok
-    flashMsg.value = r.ok ? `${p.id} OK (${r.latencyMs}ms)` : `${p.id} fail: ${r.error || 'error'}`
-    setTimeout(() => { flashMsg.value = '' }, 3000)
-  } catch (e) { err.value = e.message }
+    if (r.ok) message.success(`${p.id} OK (${r.latencyMs}ms)`)
+    else message.error(`${p.id} fail: ${r.error || 'error'}`)
+  } catch (e) { message.error(e.message) }
   finally { checking.value = '' }
 }
-async function copyRotateUrl(p, ev) {
+async function copyRotateUrl(p) {
   if (!p.rotateUrl) return
   try {
     await navigator.clipboard.writeText(p.rotateUrl)
-    flashMsg.value = `Copied rotate URL: ${p.rotateUrl}`
-    setTimeout(() => { flashMsg.value = '' }, 3500)
+    message.success(`Copied rotate URL: ${p.rotateUrl}`)
   } catch { /* noop */ }
 }
 
@@ -363,63 +389,37 @@ function groupRotateUrls(g) {
 }
 async function copyGroupRotateUrls(g) {
   const urls = groupRotateUrls(g)
-  if (urls.length === 0) { flash.value = t('cust.proxies.noRotateUrls') || 'no rotate URLs in this group'; return }
+  if (urls.length === 0) { message.warning(t('cust.proxies.noRotateUrls')); return }
   try {
     await navigator.clipboard.writeText(urls.join('\n'))
-    flash.value = (t('cust.proxies.rotateUrlsCopied') || 'Copied {n} rotate URLs').replace('{n}', urls.length)
-    setTimeout(() => { flash.value = '' }, 3500)
+    message.success(t('cust.proxies.rotateUrlsCopied', { n: urls.length }))
   } catch { /* noop */ }
 }
 function downloadGroupRotateUrls(g) {
   const urls = groupRotateUrls(g)
   if (urls.length === 0) return
-  const blob = new Blob([urls.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `rotate-urls-${g.orderId || g.id || 'group'}.txt`
-  document.body.appendChild(a); a.click(); a.remove()
-  URL.revokeObjectURL(url)
+  downloadText(urls.join('\n') + '\n', `rotate-urls-${g.orderId || g.id || 'group'}.txt`)
 }
 
-// QR cache so each proxy×mode renders only once per session.
-const qrCache = reactive({})
-async function qrFor(url, size = 140) {
-  const key = `${size}:${url}`
-  if (qrCache[key]) return qrCache[key]
-  try {
-    const svg = await QRCode.toString(url, { type: 'svg', margin: 1, width: size, color: { dark: '#22c55e', light: '#0f1419' } })
-    qrCache[key] = svg
-    return svg
-  } catch { return '' }
-}
-function qrSvg(url, size = 140) {
-  if (!url) return ''
-  const key = `${size}:${url}`
-  if (!qrCache[key]) { qrFor(url, size); return '' }
-  return qrCache[key]
-}
-async function copyText(text, label, ev) {
+async function copyText(text, label) {
+  if (!text) return
   try {
     await navigator.clipboard.writeText(text)
-    flashMsg.value = `Copied ${label}: ${text.slice(0, 60)}${text.length > 60 ? '…' : ''}`
-    setTimeout(() => { flashMsg.value = '' }, 2500)
+    message.success(`Copied ${label}: ${text.slice(0, 60)}${text.length > 60 ? '…' : ''}`)
   } catch { /* noop */ }
 }
 
 // QR popup — small-icon click expands to large QR + download SVG button.
 const qrModal = ref(null) // { url, label }
-function openQrModal(url, label) { qrModal.value = { url, label } }
+function openQrModal(url, label) { if (url) qrModal.value = { url, label } }
 function closeQrModal() { qrModal.value = null }
-function downloadQr(url, label) {
-  const svg = qrCache[`360:${url}`] || qrCache[`140:${url}`]
-  if (!svg) return
-  const blob = new Blob([svg], { type: 'image/svg+xml' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `${label.replace(/[^a-z0-9_-]+/gi, '_')}.svg`
-  document.body.appendChild(a); a.click(); a.remove()
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+// Downloaded SVG keeps the original green-on-dark rendering.
+async function downloadQr(url, label) {
+  if (!url) return
+  try {
+    const svg = await QRCode.toString(url, { type: 'svg', margin: 1, width: 360, color: { dark: '#22c55e', light: '#0f1419' } })
+    downloadText(svg, `${label.replace(/[^a-z0-9_-]+/gi, '_')}.svg`, 'image/svg+xml')
+  } catch { /* noop */ }
 }
 
 // ── IP whitelist (auth bypass) ──────────────────────────────────────────
@@ -443,7 +443,7 @@ async function addWhitelistIp(g) {
       p.allowedSrcIps = next
     }
     whitelistInput.value = ''
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 async function removeWhitelistIp(g, ip) {
   try {
@@ -454,7 +454,7 @@ async function removeWhitelistIp(g, ip) {
       await apiFetch(`/api/v1/user/proxies/${p.id}/whitelist`, { method: 'PUT', body: { allowedSrcIps: next } })
       p.allowedSrcIps = next
     }
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 
 // Aggregate the whitelist of a group (union of all proxies' whitelists — they
@@ -465,15 +465,21 @@ function groupWhitelist(g) {
   return [...set]
 }
 
-// Currently editing group object (for the inline whitelist panel).
+// Currently editing group object (for the whitelist modal).
 const editingGroup = computed(() => groups.value.find((g) => g.id === whitelistEditing.value) || null)
 
 // ── Bulk selection across groups ────────────────────────────────────────
-function isSelected(id) { return selected.value.has(id) }
-function toggleProxySel(id) {
-  const next = new Set(selected.value)
-  if (next.has(id)) next.delete(id); else next.add(id)
-  selected.value = next
+// Each group's table reports its own selection; merge it into the global set.
+function rowSelectionOf(g) {
+  return {
+    selectedRowKeys: g.proxies.filter((p) => selected.value.has(p.id)).map((p) => p.id),
+    onChange: (keys) => {
+      const next = new Set(selected.value)
+      for (const p of g.proxies) next.delete(p.id)
+      for (const k of keys) next.add(k)
+      selected.value = next
+    }
+  }
 }
 async function toggleGroupSel(g) {
   await loadGroup(g)   // need the proxy ids — fetch them if the group isn't loaded yet
@@ -486,22 +492,20 @@ async function toggleGroupSel(g) {
 function isGroupAllSelected(g) {
   return g.loaded && g.proxies.length > 0 && g.proxies.every((p) => selected.value.has(p.id))
 }
+function isGroupPartSelected(g) {
+  return g.loaded && !isGroupAllSelected(g) && g.proxies.some((p) => selected.value.has(p.id))
+}
 function clearSelection() { selected.value = new Set() }
 const selectedProxies = computed(() => list.value.filter((p) => selected.value.has(p.id)))
 
 async function bulkCopy(fmt = 'colon') {
   const text = selectedProxies.value.map((p) => proxyLine(p, fmt)).join('\n')
-  try { await navigator.clipboard.writeText(text); flash.value = t('cust.proxies.copied', { n: selectedProxies.value.length }) }
+  try { await navigator.clipboard.writeText(text); message.success(t('cust.proxies.copied', { n: selectedProxies.value.length })) }
   catch { /* noop */ }
-  setTimeout(() => { flash.value = '' }, 2000)
 }
 function bulkExport() {
   const lines = selectedProxies.value.map((p) => proxyLine(p, 'colon'))
-  const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `proxies-selected-${Date.now()}.txt`; a.click()
-  URL.revokeObjectURL(url)
+  downloadText(lines.join('\n') + '\n', `proxies-selected-${Date.now()}.txt`)
 }
 async function bulkCheck() {
   try {
@@ -509,38 +513,42 @@ async function bulkCheck() {
       method: 'POST',
       body: { ids: [...selected.value] }
     })
-    flash.value = t('cust.proxies.checkDone', { ok: r.ok, fail: r.total - r.ok })
+    message.success(t('cust.proxies.checkDone', { ok: r.ok, fail: r.total - r.ok }))
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 async function bulkExtend() {
-  const hours = Number(prompt(t('cust.proxies.bulkExtendPrompt'), '24'))
+  const hours = Number(await promptAsync({ title: t('cust.proxies.bulkExtendPrompt'), defaultValue: '24', inputType: 'number' }))
   if (!hours || hours < 1) return
   try {
     for (const id of selected.value) {
       await apiFetch(`/api/v1/user/proxies/${id}/extend`, { method: 'POST', body: { hours } })
     }
-    flash.value = t('cust.proxies.extended', { n: selected.value.size, h: hours })
+    message.success(t('cust.proxies.extended', { n: selected.value.size, h: hours }))
     clearSelection()
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 async function bulkDelete() {
-  if (!confirm(t('cust.proxies.confirmDelete', { n: selected.value.size }))) return
+  if (!(await confirmAsync({ title: t('cust.proxies.confirmDelete', { n: selected.value.size }), danger: true }))) return
   try {
     for (const id of selected.value) {
       await apiFetch(`/api/v1/user/proxies/${id}`, { method: 'DELETE' })
     }
-    flash.value = t('cust.proxies.deleted', { n: selected.value.size })
+    message.success(t('cust.proxies.deleted', { n: selected.value.size }))
     clearSelection()
     await refresh()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 
 // ── Inline label edit ──────────────────────────────────────────────────
 function openLabelEdit(p) {
   labelEditing.value = p.id
   labelDraft.value = p.label || ''
+}
+function openGroupLabelEdit(g) {
+  labelEditing.value = 'grp-' + g.id
+  labelDraft.value = groupLabel(g)
 }
 function cancelLabelEdit() { labelEditing.value = ''; labelDraft.value = '' }
 async function saveLabel(p) {
@@ -551,7 +559,7 @@ async function saveLabel(p) {
     })
     p.label = labelDraft.value.slice(0, 64)
     cancelLabelEdit()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 // Group label = apply same label to every proxy in the group (so they all
 // share an identifier when listed).
@@ -565,7 +573,7 @@ async function saveGroupLabel(g) {
       p.label = labelDraft.value.slice(0, 64)
     }
     cancelLabelEdit()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 function groupLabel(g) {
   // If every proxy shares the same label, surface it; else show empty.
@@ -574,6 +582,7 @@ function groupLabel(g) {
 }
 
 // ── Credentials editor ─────────────────────────────────────────────────
+const credsProxy = computed(() => list.value.find((p) => p.id === credsEditing.value) || null)
 function openCredsEdit(p) {
   credsEditing.value = p.id
   credsDraft.username = p.username
@@ -582,7 +591,9 @@ function openCredsEdit(p) {
 }
 function closeCredsEdit() { credsEditing.value = ''; credsErr.value = '' }
 async function saveCreds(p) {
+  if (!p) return
   credsErr.value = ''
+  credsSaving.value = true
   try {
     const r = await apiFetch(`/api/v1/user/proxies/${p.id}`, {
       method: 'PATCH',
@@ -591,9 +602,9 @@ async function saveCreds(p) {
     p.username = r.username
     p.password = r.password
     closeCredsEdit()
-    flash.value = t('cust.proxies.credsSaved')
-    setTimeout(() => { flash.value = '' }, 2000)
+    message.success(t('cust.proxies.credsSaved'))
   } catch (e) { credsErr.value = e.data?.error || e.message }
+  finally { credsSaving.value = false }
 }
 
 // ── Multi-format export ────────────────────────────────────────────────
@@ -602,6 +613,7 @@ async function saveCreds(p) {
 // because v4-only clients can't dial a v6 host.
 function hostOf(p) { return p.ip || p.bindIp }
 function portOf(p) { return p.unifiedPort && p.unifiedPort > 0 ? p.unifiedPort : p.port }
+function endpointOf(p) { return `${hostOf(p)}:${portOf(p)}` }
 function formatProxies(proxies, fmt) {
   switch (fmt) {
     case 'colon':       return proxies.map((p) => `${hostOf(p)}:${portOf(p)}:${p.username}:${p.password}`).join('\n')
@@ -629,18 +641,17 @@ function formatProxies(proxies, fmt) {
 function exportFormat(g, fmt) {
   const text = formatProxies(g.proxies, fmt)
   const ext = fmt === 'json' ? 'json' : fmt === 'switchyomega' ? 'pac' : fmt === 'foxyproxy' ? 'xml' : fmt === 'env' ? 'env' : 'txt'
-  const blob = new Blob([text + '\n'], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `proxies-${g.orderId || g.id}-${fmt}.${ext}`; a.click()
-  URL.revokeObjectURL(url)
-  exportMenuOpen.value = ''
+  downloadText(text + '\n', `proxies-${g.orderId || g.id}-${fmt}.${ext}`)
 }
 async function copyFormat(g, fmt) {
-  try { await navigator.clipboard.writeText(formatProxies(g.proxies, fmt)); flash.value = t('cust.proxies.copied', { n: g.proxies.length }) }
+  try { await navigator.clipboard.writeText(formatProxies(g.proxies, fmt)); message.success(t('cust.proxies.copied', { n: g.proxies.length })) }
   catch { /* noop */ }
-  setTimeout(() => { flash.value = '' }, 2000)
-  exportMenuOpen.value = ''
+}
+// Export dropdown: keys are "copy:<fmt>" or "dl:<fmt>".
+function onExportMenu(g, key) {
+  const [kind, fmt] = String(key).split(':')
+  if (kind === 'copy') copyFormat(g, fmt)
+  else exportFormat(g, fmt)
 }
 
 // ── Sparkline (24h history) ────────────────────────────────────────────
@@ -717,7 +728,6 @@ function closeTest() { testModal.value = null; testResult.value = null }
 
 // ── Embedded tools per proxy row ───────────────────────────────────────
 async function runTool(p, tool) {
-  toolsMenuFor.value = ''
   toolsModal.value = { proxy: p, tool, busy: true, result: null, error: null }
   try {
     let result = null
@@ -748,79 +758,58 @@ async function runTool(p, tool) {
   }
 }
 function closeToolsModal() { toolsModal.value = null }
+const TOOL_TITLE_KEYS = { 'speed-test': 'cust.proxies.toolSpeed', blacklist: 'cust.proxies.toolBlacklist', 'ip-info': 'cust.proxies.toolIpInfo', ping: 'cust.proxies.toolPing' }
+function speedColor(mbps) {
+  const tk = token.value
+  return mbps >= 50 ? tk.colorSuccess : mbps >= 10 ? tk.colorWarning : tk.colorError
+}
+
+// Per-proxy row "more" menu.
+function onRowMenu(g, p, key) {
+  if (key === 'test') runQuickTest(p)
+  else if (key === 'creds') openCredsEdit(p)
+  else if (key === 'tags') openTagEdit(p)
+  else if (key === 'delete') deleteProxy(g, p)
+  else if (TOOL_TITLE_KEYS[key]) runTool(p, key)
+}
 
 // ── Group tabs ─────────────────────────────────────────────────────────
 const GROUP_TABS = [
-  { id: 'list',       labelKey: 'cust.proxies.tabList',      icon: Layers },
-  { id: 'apps',       labelKey: 'cust.proxies.tabApps',      icon: Smartphone },
-  { id: 'copy',       labelKey: 'cust.proxies.tabCopy',      icon: Copy },
-  { id: 'test',       labelKey: 'cust.proxies.tabTest',      icon: Eye },
-  { id: 'speed-test', labelKey: 'cust.proxies.tabSpeed',     icon: Gauge },
-  { id: 'blacklist',  labelKey: 'cust.proxies.tabBlacklist', icon: ShieldAlert },
-  { id: 'ip-info',    labelKey: 'cust.proxies.tabIpInfo',    icon: Globe },
-  { id: 'ping',       labelKey: 'cust.proxies.tabPing',      icon: Radio },
-  { id: 'creds',      labelKey: 'cust.proxies.tabCreds',     icon: KeyRound },
-  { id: 'tags',       labelKey: 'cust.proxies.tabTags',      icon: Tag },
-  { id: 'delete',     labelKey: 'cust.proxies.tabDelete',    icon: Trash2, danger: true }
+  { id: 'list',       labelKey: 'cust.proxies.tabList',      icon: UnorderedListOutlined },
+  { id: 'apps',       labelKey: 'cust.proxies.tabApps',      icon: MobileOutlined },
+  { id: 'copy',       labelKey: 'cust.proxies.tabCopy',      icon: CopyOutlined },
+  { id: 'test',       labelKey: 'cust.proxies.tabTest',      icon: EyeOutlined },
+  { id: 'speed-test', labelKey: 'cust.proxies.tabSpeed',     icon: DashboardOutlined },
+  { id: 'blacklist',  labelKey: 'cust.proxies.tabBlacklist', icon: SecurityScanOutlined },
+  { id: 'ip-info',    labelKey: 'cust.proxies.tabIpInfo',    icon: GlobalOutlined },
+  { id: 'ping',       labelKey: 'cust.proxies.tabPing',      icon: WifiOutlined },
+  { id: 'creds',      labelKey: 'cust.proxies.tabCreds',     icon: KeyOutlined },
+  { id: 'tags',       labelKey: 'cust.proxies.tabTags',      icon: TagsOutlined },
+  { id: 'delete',     labelKey: 'cust.proxies.tabDelete',    icon: DeleteOutlined, danger: true }
 ]
+const SINGLE_TOOLS = ['test', 'blacklist', 'ping']
 function activeTab(gid) { return activeTabByGroup[gid] || 'list' }
 function selectTab(g, tabId) {
   // No auto-run — user clicks "Chạy check" inside the tab to start.
   activeTabByGroup[g.id] = tabId
 }
-const bkKey = (gid, tool, pid) => `${gid}|${tool}|${pid}`
-const bkStartKey = (gid, tool) => `${gid}|${tool}|started`
-const bkProgressKey = (gid, tool) => `${gid}|${tool}|progress`
 
-function bkResult(gid, tool, pid) { return batchResults[bkKey(gid, tool, pid)] }
-function bkIsBusy(gid, tool, pid) { return batchBusy[bkKey(gid, tool, pid)] }
-function isBatchStarted(gid, tool) { return !!batchResults[bkStartKey(gid, tool)] }
-function batchProgress(gid, tool) { return batchResults[bkProgressKey(gid, tool)] || { done: 0, total: 0 } }
-function isBatchRunning(g, tool) {
-  return g.proxies.some((p) => bkIsBusy(g.id, tool, p.id))
-}
+const proxyColumns = computed(() => [
+  { title: '#', key: 'idx', width: 56 },
+  { title: t('cust.proxies.label'), key: 'label', width: 210 },
+  { title: t('cust.proxies.host'), key: 'endpoint', width: 220 },
+  { title: t('cust.proxies.creds'), key: 'creds', width: 230 },
+  { title: t('cust.proxies.status'), key: 'status', width: 100 },
+  { title: t('cust.proxies.spark24h'), key: 'spark', width: 110 },
+  { title: t('cust.proxies.actions'), key: 'actions', width: 330 }
+])
+const credsColumns = computed(() => [
+  { title: t('cust.proxies.host'), key: 'endpoint' },
+  { title: t('cust.proxies.creds'), key: 'creds' },
+  { title: t('cust.proxies.actions'), key: 'actions', width: 170 }
+])
 
-// Always sequential — gives clear progress and avoids rate-limit issues.
-async function startBatchTool(g, tool) {
-  if (isBatchRunning(g, tool)) return
-  batchResults[bkStartKey(g.id, tool)] = true
-  batchResults[bkProgressKey(g.id, tool)] = { done: 0, total: g.proxies.length }
-  // Pre-mark every proxy as pending (clear previous results)
-  for (const p of g.proxies) {
-    delete batchResults[bkKey(g.id, tool, p.id)]
-    batchBusy[bkKey(g.id, tool, p.id)] = false
-  }
-  // Run one by one — each row visibly transitions Waiting → Running → Done.
-  for (let i = 0; i < g.proxies.length; i++) {
-    const p = g.proxies[i]
-    const key = bkKey(g.id, tool, p.id)
-    batchBusy[key] = true
-    try {
-      let r
-      if (tool === 'test')            r = await apiFetch(`/api/v1/user/proxies/${p.id}/quick-test`, { method: 'POST' })
-      else if (tool === 'speed-test') r = await apiFetch('/api/v1/user/tools/speed-test', { method: 'POST', body: { proxyId: p.id, country: 'VN', isp: 'auto' } })
-      else if (tool === 'blacklist')  r = await apiFetch('/api/v1/user/tools/blacklist', { method: 'POST', body: { ip: p.bindIp } })
-      else if (tool === 'ip-info')    r = await apiFetch('/api/v1/user/tools/ip-info', { method: 'POST', body: { ip: p.bindIp } })
-      else if (tool === 'ping')       r = await apiFetch('/api/v1/user/tools/ping', { method: 'POST', body: { ip: p.bindIp, count: 4 } })
-      batchResults[key] = r
-    } catch (e) {
-      batchResults[key] = { error: e.data?.error || e.message }
-    } finally {
-      batchBusy[key] = false
-      batchResults[bkProgressKey(g.id, tool)] = { done: i + 1, total: g.proxies.length }
-    }
-  }
-}
-function resetBatch(g, tool) {
-  delete batchResults[bkStartKey(g.id, tool)]
-  delete batchResults[bkProgressKey(g.id, tool)]
-  for (const p of g.proxies) {
-    delete batchResults[bkKey(g.id, tool, p.id)]
-    batchBusy[bkKey(g.id, tool, p.id)] = false
-  }
-}
-
-// ── Single-IP tools (test / blacklist / ping) — chip picker + result ──
+// ── Single-IP tools (test / blacklist / ping) — picker + result ──
 const singleToolProxy  = reactive({}) // `${gid}|${tool}` -> proxy id
 const singleToolBusy   = reactive({}) // `${gid}|${tool}|${pid}` -> bool
 const singleToolResult = reactive({}) // `${gid}|${tool}|${pid}` -> result
@@ -860,6 +849,12 @@ function singleBusy(g, tool) {
   const pid = pickedProxy(g, tool)
   return pid ? !!singleToolBusy[stResKey(g.id, tool, pid)] : false
 }
+function pingLossType(loss) { return loss === 0 ? 'success' : loss < 100 ? 'warning' : 'danger' }
+function blTag(r) {
+  if (r.listed === true) return { color: 'error', text: t('cust.proxies.toolBlBad') }
+  if (r.listed === false) return { color: 'success', text: t('cust.proxies.toolBlClean') }
+  return { color: 'default', text: 'ERR' }
+}
 
 // ── Speed test tab — picker (proxy + country + ISP) + gauge animation ──
 const SPEEDTEST_COUNTRIES = [
@@ -872,6 +867,7 @@ const SPEEDTEST_COUNTRIES = [
   { code: 'DE', name: 'Germany' }, { code: 'FR', name: 'France' },
   { code: 'GB', name: 'United Kingdom' }
 ]
+const countryOptions = SPEEDTEST_COUNTRIES.map((c) => ({ value: c.code, label: `${c.name} (${c.code})` }))
 const speedTestProxy   = reactive({}) // groupId -> proxy id
 const speedTestCountry = reactive({}) // groupId -> country code (default 'VN')
 const speedTestIsp     = reactive({}) // groupId -> isp string
@@ -881,8 +877,15 @@ const speedTestRunning = reactive({}) // groupId -> boolean
 const speedTestResult  = reactive({}) // groupId -> result
 const speedTestPhase   = reactive({}) // groupId -> 'idle' | 'download' | 'upload' | 'done'
 const speedTestGauge   = reactive({}) // groupId -> current animated mbps value
-let gaugeAnimTimers = {}              // groupId -> interval handle
+const gaugeAnimTimers = {}            // groupId -> interval handle
 
+function ispOptions(g) {
+  const isps = speedTestIspsCache[speedTestCountry[g.id] || 'VN'] || []
+  return [
+    { value: 'auto', label: t('cust.proxies.stIspAuto') },
+    ...isps.map((isp) => ({ value: isp.sponsor.toLowerCase(), label: `${isp.sponsor} (${isp.serverCount} server${isp.serverCount > 1 ? 's' : ''})` }))
+  ]
+}
 async function loadIspList(country) {
   if (speedTestIspsCache[country]) return
   speedTestIspsBusy[country] = true
@@ -917,14 +920,14 @@ async function runSpeedTest(g) {
     const elapsed = Date.now() - startTime
     if (elapsed < 15000) {
       // Download phase — ramp 0..100 then oscillate near 80-95
-      const t = elapsed / 15000
-      const base = 100 * (1 - Math.exp(-3 * t))
+      const k = elapsed / 15000
+      const base = 100 * (1 - Math.exp(-3 * k))
       const noise = (Math.sin(elapsed / 200) + Math.cos(elapsed / 350)) * 5
       speedTestGauge[g.id] = Math.max(0, base + noise)
     } else if (elapsed < 27000) {
       speedTestPhase[g.id] = 'upload'
-      const t = (elapsed - 15000) / 12000
-      const base = 70 * (1 - Math.exp(-3 * t))
+      const k = (elapsed - 15000) / 12000
+      const base = 70 * (1 - Math.exp(-3 * k))
       const noise = (Math.sin(elapsed / 250) + Math.cos(elapsed / 400)) * 4
       speedTestGauge[g.id] = Math.max(0, base + noise)
     }
@@ -955,38 +958,19 @@ function resetSpeedTest(g) {
   speedTestPhase[g.id] = 'idle'
   speedTestGauge[g.id] = 0
 }
-// Convert mbps → angle (-90° to 90° across 180° arc), capped at 1000 Mbps
-function gaugeAngle(mbps) {
-  const m = Math.min(1000, Math.max(0, mbps || 0))
-  // logarithmic scale: 0=−90, 10=−45, 100=0, 1000=90
-  const logScaled = m === 0 ? 0 : (Math.log10(m + 1) / Math.log10(1001))
-  return -90 + logScaled * 180
+function speedButtonLabel(g) {
+  if (speedTestRunning[g.id]) return speedTestPhase[g.id] === 'upload' ? t('cust.proxies.stRunningUp') : t('cust.proxies.stRunningDown')
+  return speedTestResult[g.id] ? t('cust.proxies.stRerun') : t('cust.proxies.stStart')
 }
-function gaugeNeedlePath(mbps) {
-  const angle = gaugeAngle(mbps) * Math.PI / 180
-  const cx = 100, cy = 100, r = 70
-  const x = cx + r * Math.sin(angle)
-  const y = cy - r * Math.cos(angle)
-  return `M ${cx} ${cy} L ${x.toFixed(1)} ${y.toFixed(1)}`
+function speedGaugeLabel(g) {
+  if (speedTestRunning[g.id]) return speedTestPhase[g.id] === 'upload' ? t('cust.proxies.stPhaseUpload') : t('cust.proxies.stPhaseDownload')
+  return speedTestResult[g.id]?.error || (speedTestResult[g.id] ? t('cust.proxies.stDone') : '')
 }
-function gaugeArc(mbps, color) {
-  const endAngle = gaugeAngle(mbps)
-  const start = -90 * Math.PI / 180
-  const end = endAngle * Math.PI / 180
-  const cx = 100, cy = 100, r = 70
-  const x1 = cx + r * Math.sin(start), y1 = cy - r * Math.cos(start)
-  const x2 = cx + r * Math.sin(end),   y2 = cy - r * Math.cos(end)
-  const largeArc = (endAngle - (-90)) > 180 ? 1 : 0
-  return { x1, y1, x2, y2, largeArc, color }
+function speedGaugeStatus(g) {
+  if (speedTestRunning[g.id]) return 'running'
+  if (speedTestResult[g.id]?.error) return 'error'
+  return speedTestResult[g.id] ? 'done' : 'idle'
 }
-// Watch tab change to init speed test state
-watch(() => activeTabByGroup, (next) => {
-  for (const [gid, tab] of Object.entries(next)) {
-    if (tab !== 'speed-test') continue
-    const g = groups.value.find((x) => x.id === gid)
-    if (g) speedTestInit(g)
-  }
-}, { deep: true })
 
 // ── IP info tab — single-IP picker with full key-value table ──────────
 const ipInfoSelected = reactive({})   // groupId -> proxy id (the picked IP)
@@ -1016,13 +1000,13 @@ async function refreshIpInfo(g) {
   const p = g.proxies.find((x) => x.id === pid)
   if (p) await pickIpInfo(g, p)
 }
-// Auto-select first proxy when ip-info tab opens
+// Tab opened: init speed-test pickers / auto-select the first IP for ip-info.
 watch(() => activeTabByGroup, (next) => {
   for (const [gid, tab] of Object.entries(next)) {
-    if (tab !== 'ip-info') continue
-    if (ipInfoSelected[gid]) continue
     const g = groups.value.find((x) => x.id === gid)
-    if (g && g.proxies.length) pickIpInfo(g, g.proxies[0])
+    if (!g) continue
+    if (tab === 'speed-test') speedTestInit(g)
+    if (tab === 'ip-info' && !ipInfoSelected[gid] && g.proxies.length) pickIpInfo(g, g.proxies[0])
   }
 }, { deep: true })
 
@@ -1036,25 +1020,30 @@ function commonTags(g) {
 async function addBulkTag(g) {
   const tag = (bulkTagDraft[g.id] || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
   if (!tag) return
-  for (const p of g.proxies) {
-    const next = [...new Set([...(p.tags || []), tag])].slice(0, 10)
-    await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { tags: next } })
-    p.tags = next
-  }
-  bulkTagDraft[g.id] = ''
+  try {
+    for (const p of g.proxies) {
+      const next = [...new Set([...(p.tags || []), tag])].slice(0, 10)
+      await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { tags: next } })
+      p.tags = next
+    }
+    bulkTagDraft[g.id] = ''
+  } catch (e) { message.error(e.message) }
 }
 async function removeBulkTag(g, tag) {
-  for (const p of g.proxies) {
-    const next = (p.tags || []).filter((x) => x !== tag)
-    await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { tags: next } })
-    p.tags = next
-  }
+  try {
+    for (const p of g.proxies) {
+      const next = (p.tags || []).filter((x) => x !== tag)
+      await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { tags: next } })
+      p.tags = next
+    }
+  } catch (e) { message.error(e.message) }
 }
 
 // ── Activity timeline ──────────────────────────────────────────────────
 async function openTimeline(g) {
   timelineModal.value = g
   timelineEvents.value = []
+  timelineLoading.value = true
   try {
     const all = await Promise.all(g.proxies.map((p) => apiFetch(`/api/v1/user/proxies/${p.id}/activity?limit=20`).catch(() => ({ events: [] }))))
     const merged = []
@@ -1062,6 +1051,7 @@ async function openTimeline(g) {
     merged.sort((a, b) => String(b.ts).localeCompare(String(a.ts)))
     timelineEvents.value = merged.slice(0, 100)
   } catch { /* noop */ }
+  finally { timelineLoading.value = false }
 }
 function closeTimeline() { timelineModal.value = null; timelineEvents.value = [] }
 
@@ -1073,9 +1063,8 @@ async function setRotateInterval(g, sec) {
       await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { rotateEverySec: Number(sec) } })
       p.rotateEverySec = Number(sec)
     }
-    flash.value = sec > 0 ? t('cust.proxies.rotateOn', { m: Math.round(sec / 60) }) : t('cust.proxies.rotateOff')
-    setTimeout(() => { flash.value = '' }, 2000)
-  } catch (e) { err.value = e.message }
+    message.success(sec > 0 ? t('cust.proxies.rotateOn', { m: Math.round(sec / 60) }) : t('cust.proxies.rotateOff'))
+  } catch (e) { message.error(e.message) }
 }
 async function toggleAutoRenew(g) {
   const target = !g.proxies.every((p) => p.autoRenew)
@@ -1084,9 +1073,8 @@ async function toggleAutoRenew(g) {
       await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { autoRenew: target } })
       p.autoRenew = target
     }
-    flash.value = target ? t('cust.proxies.autoRenewOn') : t('cust.proxies.autoRenewOff')
-    setTimeout(() => { flash.value = '' }, 2000)
-  } catch (e) { err.value = e.message }
+    message.success(target ? t('cust.proxies.autoRenewOn') : t('cust.proxies.autoRenewOff'))
+  } catch (e) { message.error(e.message) }
 }
 
 // ── Tags ───────────────────────────────────────────────────────────────
@@ -1099,23 +1087,23 @@ async function addTag(p) {
   try {
     await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { tags: next } })
     p.tags = next; tagDraft.value = ''
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 async function removeTag(p, tag) {
-  const next = (p.tags || []).filter((t) => t !== tag)
+  const next = (p.tags || []).filter((x) => x !== tag)
   try {
     await apiFetch(`/api/v1/user/proxies/${p.id}`, { method: 'PATCH', body: { tags: next } })
     p.tags = next
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 const allTags = computed(() => {
   const set = new Set()
-  for (const p of list.value) for (const t of (p.tags || [])) set.add(t)
+  for (const p of list.value) for (const tg of (p.tags || [])) set.add(tg)
   return [...set].sort()
 })
 
-// Override filteredGroups to honour tag filter + add "failed" status pseudo.
-const filteredGroupsV2 = computed(() => groups.value.filter((g) => {
+// Visible groups: type / status (+ "failed" pseudo-status) / tag / search.
+const visibleGroups = computed(() => groups.value.filter((g) => {
   // Detail mode: lock to a single orderId, ignore other filters.
   if (isDetailMode.value) return g.orderId === orderIdParam.value
   if (filterType.value !== 'all' && (g.type || '').toLowerCase() !== filterType.value) return false
@@ -1130,33 +1118,6 @@ const filteredGroupsV2 = computed(() => groups.value.filter((g) => {
   }
   return true
 }))
-
-// ── Whitelist with notes ───────────────────────────────────────────────
-const whitelistNotes = reactive({})  // groupId -> { ip: note }
-function ensureNotesFor(g) {
-  if (!whitelistNotes[g.id]) {
-    whitelistNotes[g.id] = {}
-    // Merge any per-proxy notes
-    for (const p of g.proxies) {
-      for (const [ip, note] of Object.entries(p.allowedSrcIpNotes || {})) {
-        whitelistNotes[g.id][ip] = note
-      }
-    }
-  }
-  return whitelistNotes[g.id]
-}
-async function saveWhitelistNote(g, ip, note) {
-  ensureNotesFor(g)[ip] = String(note || '').slice(0, 32)
-  try {
-    for (const p of g.proxies) {
-      await apiFetch(`/api/v1/user/proxies/${p.id}/whitelist`, {
-        method: 'PUT',
-        body: { allowedSrcIps: (p.allowedSrcIps || []), notes: whitelistNotes[g.id] }
-      })
-      p.allowedSrcIpNotes = { ...whitelistNotes[g.id] }
-    }
-  } catch (e) { err.value = e.message }
-}
 
 async function ensureDetailExpanded() {
   if (!isDetailMode.value) return
@@ -1179,16 +1140,15 @@ watch(groups, ensureDetailExpanded)
 const subscription = ref(null)
 async function loadSubscription() {
   try { subscription.value = await apiFetch('/api/v1/user/account/subscription') }
-  catch (e) { /* silent — sub URL is a convenience, not critical */ }
+  catch { /* silent — sub URL is a convenience, not critical */ }
 }
 async function rotateSubscriptionToken() {
-  if (!confirm(t('cust.proxies.subRotateConfirm'))) return
+  if (!(await confirmAsync({ title: t('cust.proxies.subRotateConfirm'), danger: true }))) return
   try {
     await apiFetch('/api/v1/user/account/subscription/rotate', { method: 'POST' })
     await loadSubscription()
-    flash.value = t('cust.proxies.subRotated')
-    setTimeout(() => (flash.value = ''), 2400)
-  } catch (e) { alert(e.message) }
+    message.success(t('cust.proxies.subRotated'))
+  } catch (e) { message.error(e.message) }
 }
 // Build the per-format subscription URL for one group (order). Appends
 // orderId so the link only carries this order's proxies.
@@ -1204,6 +1164,11 @@ const SUB_FORMATS = [
   { id: 'plain', label: 'Plain URLs',   hint: 'curl / scripts' },
   { id: 'json',  label: 'JSON',         hint: 'API automation' }
 ]
+const PROTO_ROWS = [
+  { key: 'http', tag: 'HTTP', qr: 'HTTP' },
+  { key: 'socks5h', tag: 'SOCKS5', qr: 'SOCKS5' },
+  { key: 'httpsProxy', tag: 'HTTPS proxy', qr: 'HTTPSproxy' }
+]
 
 onMounted(async () => {
   applyQueryFilter()
@@ -1213,2141 +1178,1063 @@ onMounted(async () => {
   // Live countdown — tick nowMs every second so expiry timers refresh.
   countdownTimer = setInterval(() => { nowMs.value = Date.now() }, 1000)
 })
-onBeforeUnmount(() => { if (countdownTimer) clearInterval(countdownTimer) })
+onBeforeUnmount(() => {
+  if (countdownTimer) clearInterval(countdownTimer)
+  for (const h of Object.values(gaugeAnimTimers)) clearInterval(h)
+})
 </script>
 
 <template>
-  <Transition name="flash">
-    <div v-if="flashMsg" class="flash-toast">{{ flashMsg }}</div>
-  </Transition>
-  <!-- Detail mode: back button + focused title -->
-  <div v-if="isDetailMode" style="margin-bottom: 14px; display: flex; align-items: center; gap: 12px">
-    <button class="ghost-button" type="button" @click="router.push({ name: 'proxies' })">
-      <ArrowLeft :size="13" /> {{ t('cust.proxies.back') }}
-    </button>
-    <h1 style="margin: 0">
-      <span style="color:var(--muted); font-weight:500; font-size:0.7em">{{ t('cust.proxies.titleFull') }} /</span>
-      <span class="cell-mono" style="margin-left:6px">{{ orderIdParam }}</span>
-    </h1>
-  </div>
+  <div class="page" :class="{ 'has-bulk': selected.size }">
+    <!-- Detail mode: back button + focused title -->
+    <a-flex v-if="isDetailMode" align="center" gap="small" wrap="wrap">
+      <a-button @click="router.push({ name: 'proxies' })">
+        <template #icon><ArrowLeftOutlined /></template>
+        {{ t('cust.proxies.back') }}
+      </a-button>
+      <a-typography-text type="secondary">{{ t('cust.proxies.titleFull') }} /</a-typography-text>
+      <a-typography-text strong class="mono">{{ orderIdParam }}</a-typography-text>
+    </a-flex>
 
-  <template v-else>
-    <h1>{{ t('cust.proxies.titleFull') }}</h1>
-    <p class="sub">{{ t('cust.proxies.subtitle') }}</p>
-  </template>
+    <a-flex v-else justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('cust.proxies.subtitle') }}</a-typography-text>
+      <a-space wrap>
+        <a-button :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+          {{ t('cust.refresh') }}
+        </a-button>
+        <a-button type="primary" @click="router.push({ name: 'buy' })">
+          <template #icon><PlusOutlined /></template>
+          {{ t('cust.product.buy') }}
+        </a-button>
+      </a-space>
+    </a-flex>
 
-  <p v-if="err" class="error-text">{{ err }}</p>
-  <p v-if="flash" class="success-text">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-  <!-- KPI row (hidden in single-order detail mode) -->
-  <div v-if="!isDetailMode" class="kpi-row">
-    <div class="kpi-card-v2">
-      <span class="ico purple"><Layers :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.proxies.kpiTotal') }}</span>
-        <span class="val">{{ counts.total }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico green"><ShieldCheck :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.proxies.kpiActive') }}</span>
-        <span class="val">{{ counts.active }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico amber"><Clock :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.proxies.kpiExpiring') }}</span>
-        <span class="val">{{ counts.expiring }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico rose"><AlertOctagon :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.proxies.kpiExpired') }}</span>
-        <span class="val">{{ counts.expired }}</span>
-      </div>
-    </div>
-  </div>
+    <!-- KPI row (hidden in single-order detail mode) -->
+    <a-row v-if="!isDetailMode" :gutter="[12, 12]">
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('cust.proxies.kpiTotal')" :value="counts.total">
+            <template #prefix><AppstoreOutlined :style="{ color: token.purple }" /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('cust.proxies.kpiActive')" :value="counts.active">
+            <template #prefix><SafetyCertificateOutlined :style="{ color: token.colorSuccess }" /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('cust.proxies.kpiExpiring')" :value="counts.expiring">
+            <template #prefix><ClockCircleOutlined :style="{ color: token.colorWarning }" /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('cust.proxies.kpiExpired')" :value="counts.expired">
+            <template #prefix><ExclamationCircleOutlined :style="{ color: token.colorError }" /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+    </a-row>
 
-  <!-- Filters (hidden in single-order detail mode) -->
-  <div v-if="!isDetailMode" class="filter-bar">
-    <div class="search-wrap">
-      <Search :size="14" />
-      <input v-model="search" type="search" :placeholder="t('cust.proxies.searchPh')" />
-    </div>
-    <select v-model="filterType" class="filter-select">
-      <option value="all">{{ t('cust.proxies.typeAll') }}</option>
-      <option value="ipv4">IPv4</option>
-      <option value="ipv6">IPv6</option>
-    </select>
-    <select v-model="filterStatus" class="filter-select">
-      <option value="all">{{ t('cust.proxies.statusAll') }}</option>
-      <option value="active">{{ t('cust.proxies.statusActive') }}</option>
-      <option value="expiring">{{ t('cust.proxies.statusExpiring') }}</option>
-      <option value="expired">{{ t('cust.proxies.statusExpired') }}</option>
-      <option value="failed">{{ t('cust.proxies.statusFailed') }}</option>
-    </select>
-    <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="13" /> {{ t('cust.refresh') }}</button>
-    <div style="flex:1"></div>
-    <button class="primary-action small" type="button" @click="router.push({ name: 'buy' })">
-      <Plus :size="14" /> {{ t('cust.product.buy') }}
-    </button>
-  </div>
+    <!-- Filters (hidden in single-order detail mode) -->
+    <a-card v-if="!isDetailMode" size="small">
+      <a-flex wrap="wrap" gap="small" align="center">
+        <a-input-search v-model:value="search" allow-clear :placeholder="t('cust.proxies.searchPh')" class="filter-search" />
+        <a-segmented v-model:value="filterType" :options="typeOptions" />
+        <a-select v-model:value="filterStatus" :options="statusOptions" class="filter-select" />
+      </a-flex>
+      <a-flex v-if="allTags.length" wrap="wrap" gap="small" align="center" class="tag-filter">
+        <a-typography-text type="secondary"><TagsOutlined /> {{ t('cust.proxies.tagFilter') }}:</a-typography-text>
+        <a-checkable-tag :checked="!filterTag" @change="filterTag = ''">{{ t('cust.proxies.tagAll') }}</a-checkable-tag>
+        <a-checkable-tag v-for="tg in allTags" :key="tg" :checked="filterTag === tg" @change="filterTag = filterTag === tg ? '' : tg">#{{ tg }}</a-checkable-tag>
+      </a-flex>
+    </a-card>
 
-  <!-- Tag filter bar -->
-  <div v-if="allTags.length" class="tag-bar">
-    <Tag :size="12" style="color:var(--muted)" />
-    <span class="tag-bar-label">{{ t('cust.proxies.tagFilter') }}:</span>
-    <button class="tag-chip" :class="{ active: !filterTag }" @click="filterTag = ''">{{ t('cust.proxies.tagAll') }}</button>
-    <button v-for="t in allTags" :key="t" class="tag-chip" :class="{ active: filterTag === t }" @click="filterTag = filterTag === t ? '' : t">
-      #{{ t }}
-    </button>
-  </div>
+    <!-- First load -->
+    <a-card v-if="loading && !groupSummaries.length"><a-skeleton active /></a-card>
 
-  <!-- Empty state -->
-  <section v-if="!filteredGroupsV2.length" class="surface" style="padding:32px; text-align:center">
-    <p class="empty-text">{{ t('cust.proxies.empty') }}</p>
-    <button class="primary-action small" type="button" style="margin-top:10px" @click="router.push({ name: 'buy' })">
-      <Plus :size="14" /> {{ t('cust.product.buy') }}
-    </button>
-  </section>
+    <!-- Empty state -->
+    <a-card v-else-if="!visibleGroups.length">
+      <a-empty :description="t('cust.proxies.empty')">
+        <a-button type="primary" @click="router.push({ name: 'buy' })">
+          <template #icon><PlusOutlined /></template>
+          {{ t('cust.product.buy') }}
+        </a-button>
+      </a-empty>
+    </a-card>
 
-  <!-- Group cards -->
-  <section v-for="g in filteredGroupsV2" :key="g.id" class="surface group-card">
-    <header class="group-head">
-      <button
-        type="button"
-        class="cbx"
-        :class="{ checked: isGroupAllSelected(g) }"
-        :title="t('cust.proxies.selectAllGroup')"
-        @click="toggleGroupSel(g)"
-      >
-        <Check :size="12" />
-      </button>
-      <button class="group-toggle" type="button" @click="toggleGroupExpanded(g)">
-        <ChevronUp v-if="isExpanded(g.id)" :size="14" />
-        <ChevronDown v-else :size="14" />
-      </button>
-      <div class="group-id">
-        <strong v-if="g.orderId" class="cell-mono">{{ g.orderId }}</strong>
-        <strong v-else class="cell-mono">{{ g.proxies[0]?.id }}</strong>
-        <span class="group-sub">{{ fmtTs(g.createdAt) }}</span>
-      </div>
-      <!-- Group label (editable). Click pencil to edit; all proxies in the group share the label. -->
-      <span class="group-label">
-        <template v-if="labelEditing === ('grp-' + g.id)">
-          <input v-model="labelDraft" maxlength="64" :placeholder="t('cust.proxies.labelPh')" @keydown.enter="saveGroupLabel(g)" @keydown.esc="cancelLabelEdit" />
-          <button class="icon-btn small" type="button" @click="saveGroupLabel(g)"><Check :size="11" /></button>
-          <button class="icon-btn small" type="button" @click="cancelLabelEdit"><X :size="11" /></button>
-        </template>
-        <template v-else>
-          <strong v-if="groupLabel(g)" class="label-text">{{ groupLabel(g) }}</strong>
-          <span v-else class="label-empty">{{ t('cust.proxies.labelEmpty') }}</span>
-          <button class="icon-btn small" type="button" @click="labelEditing = 'grp-' + g.id; labelDraft = groupLabel(g)">
-            <Pencil :size="11" />
-          </button>
-        </template>
-      </span>
-      <span class="tag" :class="'tag-fam-' + (g.type || 'ipv4').toLowerCase()">{{ g.type }}</span>
-      <span class="group-count">
-        <Layers :size="13" /> {{ g.total ?? g.proxies.length }} {{ t('cust.buy.proxyUnit') }}
-      </span>
-      <span class="group-zone">
-        <CountryFlag v-if="g.country" :code="g.country" :size="14" />
-        {{ g.zone || '—' }}
-      </span>
-      <span class="group-exp">
-        <Clock :size="13" /> <span :class="['countdown-live', fmtCountdown(g.expiresAt).tier]">{{ fmtCountdown(g.expiresAt).text }}</span>
-      </span>
-      <span v-if="groupStatus(g) === 'expired'" class="status-pill expired">{{ statusLabel('expired') }}</span>
-      <span v-else-if="groupStatus(g) === 'mixed'" class="status-pill mixed">{{ statusLabel('mixed') }}</span>
-      <span v-else class="status-pill active">{{ statusLabel('active') }}</span>
-      <RouterLink
-        v-if="!isDetailMode && g.orderId"
-        :to="{ name: 'proxy-order', params: { orderId: g.orderId } }"
-        class="group-view-btn"
-        :title="t('cust.proxies.viewDetail')"
-      >
-        <ExternalLink :size="12" /> {{ t('cust.proxies.view') }}
-      </RouterLink>
-    </header>
-
-    <!-- Quick action row, always visible -->
-    <div class="group-actions">
-      <button class="action-pill" type="button" :disabled="busy[g.id]" @click="copyGroup(g, 'colon')">
-        <Copy :size="12" /> {{ t('cust.proxies.copy') }}
-      </button>
-      <div class="export-wrap">
-        <button class="action-pill" type="button" @click="exportMenuOpen = exportMenuOpen === g.id ? '' : g.id">
-          <Download :size="12" /> {{ t('cust.proxies.export') }} <ChevronDown :size="10" />
-        </button>
-        <div v-if="exportMenuOpen === g.id" class="export-menu" @click.stop>
-          <button type="button" @click="copyFormat(g, 'colon')"><Copy :size="11" /> {{ t('cust.proxies.fmtColon') }}</button>
-          <button type="button" @click="copyFormat(g, 'url-http')"><Copy :size="11" /> {{ t('cust.proxies.fmtUrlHttp') }}</button>
-          <button type="button" @click="copyFormat(g, 'url-socks5')"><Copy :size="11" /> {{ t('cust.proxies.fmtUrlSocks5') }}</button>
-          <button type="button" @click="copyFormat(g, 'curl')"><Terminal :size="11" /> {{ t('cust.proxies.fmtCurl') }}</button>
-          <div class="export-sep">{{ t('cust.proxies.download') }}</div>
-          <button type="button" @click="exportFormat(g, 'colon')"><Download :size="11" /> TXT</button>
-          <button type="button" @click="exportFormat(g, 'env')"><Download :size="11" /> .env</button>
-          <button type="button" @click="exportFormat(g, 'json')"><Download :size="11" /> JSON</button>
-          <button type="button" @click="exportFormat(g, 'switchyomega')"><Download :size="11" /> SwitchyOmega .pac</button>
-          <button type="button" @click="exportFormat(g, 'foxyproxy')"><Download :size="11" /> FoxyProxy .xml</button>
+    <!-- Group cards (one per order) -->
+    <a-card v-for="g in visibleGroups" :key="g.id" size="small">
+      <!-- Header: select · expand · order id · label · meta -->
+      <a-flex align="center" gap="small" wrap="wrap">
+        <a-tooltip :title="t('cust.proxies.selectAllGroup')">
+          <a-checkbox :checked="isGroupAllSelected(g)" :indeterminate="isGroupPartSelected(g)" @change="toggleGroupSel(g)" />
+        </a-tooltip>
+        <a-button type="text" size="small" @click="toggleGroupExpanded(g)">
+          <template #icon><UpOutlined v-if="isExpanded(g.id)" /><DownOutlined v-else /></template>
+        </a-button>
+        <div class="group-id">
+          <a-typography-text strong class="mono">{{ g.orderId || g.proxies[0]?.id }}</a-typography-text>
+          <a-typography-text type="secondary" class="small-text">{{ fmtTs(g.createdAt) }}</a-typography-text>
         </div>
-      </div>
-      <button class="action-pill" type="button" :disabled="busy[g.id]" @click="checkGroup(g)">
-        <ShieldCheck :size="12" />
-        <span v-if="busy[g.id] === 'check'">...</span>
-        <span v-else>{{ t('cust.proxies.checkLive') }}</span>
-      </button>
-      <button class="action-pill" type="button" @click="openWhitelist(g.id)">
-        <Zap :size="12" /> {{ t('cust.proxies.ipAuth') }}
-        <span v-if="groupWhitelist(g).length" class="pill-count">{{ groupWhitelist(g).length }}</span>
-      </button>
-      <span :class="['countdown-big', fmtCountdown(g.expiresAt).tier]" :title="t('cust.proxies.expiresAtTitle') + fmtTs(g.expiresAt)">
-        <Clock :size="12" />
-        <small>{{ t('cust.proxies.remaining') }}</small>
-        <strong>{{ fmtCountdown(g.expiresAt).text }}</strong>
-      </span>
-      <div class="extend-inline">
-        <input v-model.number="extendHours[g.id]" type="number" min="1" max="8760" :placeholder="'24h'" />
-        <button class="action-pill primary" :class="{ 'renew-cta': g.proxies.some((p) => p.status === 'expired') }" type="button" :disabled="busy[g.id]" @click="extendGroup(g)">
-          <RotateCw :size="12" />
-          {{ busy[g.id] === 'extend' ? '...' : (g.proxies.some((p) => p.status === 'expired') ? t('cust.proxies.renewNow') : t('cust.proxies.extend')) }}
-        </button>
-      </div>
-      <button v-if="g.type === 'IPv6'" class="action-pill" type="button" :title="t('cust.proxies.rotateSchedHint')" style="position:relative">
-        <Timer :size="12" />
-        <select :value="g.proxies[0]?.rotateEverySec || 0" @change="setRotateInterval(g, $event.target.value)" class="inline-select">
-          <option :value="0">{{ t('cust.proxies.rotateOff2') }}</option>
-          <option :value="60">1m</option>
-          <option :value="180">3m</option>
-          <option :value="300">5m</option>
-          <option :value="600">10m</option>
-          <option :value="900">15m</option>
-          <option :value="1800">30m</option>
-          <option :value="3600">1h</option>
-          <option :value="7200">2h</option>
-        </select>
-      </button>
-      <!-- IPv6 only: bulk copy + download of the magic rotate URLs for
-           this group. Hidden for IPv4 (v4 proxies don't expose a rotate
-           URL — egress IP is fixed). -->
-      <button v-if="g.type === 'IPv6'" class="action-pill" type="button"
-              :title="t('cust.proxies.copyRotateUrlsHint') || 'Copy tất cả URL đổi IP cho nhóm này'"
-              @click="copyGroupRotateUrls(g)">
-        <Copy :size="12" /> {{ t('cust.proxies.copyRotateUrls') || 'Copy URL đổi IP' }}
-      </button>
-      <button v-if="g.type === 'IPv6'" class="action-pill" type="button"
-              :title="t('cust.proxies.downloadRotateUrlsHint') || 'Tải file .txt chứa tất cả URL đổi IP'"
-              @click="downloadGroupRotateUrls(g)">
-        <Download :size="12" /> {{ t('cust.proxies.downloadRotateUrls') || 'Tải URL đổi IP (.txt)' }}
-      </button>
-      <button class="action-pill" type="button" :class="{ primary: g.proxies.every((p) => p.autoRenew) }" @click="toggleAutoRenew(g)">
-        <RotateCw :size="12" /> {{ g.proxies.every((p) => p.autoRenew) ? t('cust.proxies.autoRenewOn2') : t('cust.proxies.autoRenewToggle') }}
-      </button>
-      <button class="action-pill" type="button" @click="openTimeline(g)">
-        <ListChecks :size="12" /> {{ t('cust.proxies.timeline') }}
-      </button>
-      <button class="action-pill danger" type="button" :disabled="busy[g.id]" @click="deleteGroup(g)">
-        <Trash2 :size="12" />
-        {{ busy[g.id] === 'delete' ? '...' : t('cust.proxies.deleteGroup') }}
-      </button>
-    </div>
+        <!-- Group label (editable) — applies to every proxy in the group. -->
+        <a-space-compact v-if="labelEditing === ('grp-' + g.id)" size="small">
+          <a-input v-model:value="labelDraft" :maxlength="64" :placeholder="t('cust.proxies.labelPh')" class="label-input" @press-enter="saveGroupLabel(g)" @keydown.esc="cancelLabelEdit" />
+          <a-button type="primary" @click="saveGroupLabel(g)"><template #icon><CheckOutlined /></template></a-button>
+          <a-button @click="cancelLabelEdit"><template #icon><CloseOutlined /></template></a-button>
+        </a-space-compact>
+        <a-space v-else :size="2">
+          <a-typography-text v-if="groupLabel(g)" strong>{{ groupLabel(g) }}</a-typography-text>
+          <a-typography-text v-else type="secondary" italic>{{ t('cust.proxies.labelEmpty') }}</a-typography-text>
+          <a-tooltip :title="t('cust.proxies.labelEdit')">
+            <a-button type="text" size="small" @click="openGroupLabelEdit(g)"><template #icon><EditOutlined /></template></a-button>
+          </a-tooltip>
+        </a-space>
 
-    <!-- Quick stats (loaded lazily when group is expanded) -->
-    <div v-if="isExpanded(g.id) && statsData[g.id]" class="quick-stats">
-      <div class="qs-cell">
-        <span class="qs-lbl">{{ t('cust.proxies.statsBandwidth') }}</span>
-        <span class="qs-val">{{ fmtBytes(statsData[g.id].bandwidth) }}</span>
-        <span class="qs-sub">{{ t('cust.proxies.stats30d') }}</span>
-      </div>
-      <div class="qs-cell">
-        <span class="qs-lbl">{{ t('cust.proxies.statsUptime') }}</span>
-        <span class="qs-val">{{ statsData[g.id].uptime !== null ? statsData[g.id].uptime.toFixed(1) + '%' : '—' }}</span>
-        <span class="qs-sub">{{ t('cust.proxies.stats7d') }}</span>
-      </div>
-      <div class="qs-cell">
-        <span class="qs-lbl">{{ t('cust.proxies.statsLatency') }}</span>
-        <span class="qs-val">{{ statsData[g.id].latency !== null ? statsData[g.id].latency + ' ms' : '—' }}</span>
-        <span class="qs-sub">{{ t('cust.proxies.statsAvg') }}</span>
-      </div>
-    </div>
+        <a-flex align="center" gap="small" wrap="wrap" class="group-meta">
+          <a-tag :color="g.type === 'IPv6' ? 'purple' : 'blue'" :bordered="false">{{ g.type }}</a-tag>
+          <a-typography-text type="secondary"><ClusterOutlined /> {{ g.total ?? g.proxies.length }} {{ t('cust.buy.proxyUnit') }}</a-typography-text>
+          <a-typography-text type="secondary" class="zone">
+            <CountryFlag v-if="g.country" :code="g.country" :size="14" />
+            {{ g.zone || '—' }}
+          </a-typography-text>
+          <span class="mono countdown" :class="{ pulse: fmtCountdown(g.expiresAt).tier === 'critical' }" :style="{ color: tierColor(fmtCountdown(g.expiresAt).tier) }">
+            <ClockCircleOutlined /> {{ fmtCountdown(g.expiresAt).text }}
+          </span>
+          <StatusTag :status="groupStatus(g)" :label="statusLabel(groupStatus(g))" :color="GROUP_STATUS_COLOR[groupStatus(g)]" />
+          <a-tooltip v-if="!isDetailMode && g.orderId" :title="t('cust.proxies.viewDetail')">
+            <a-button size="small" type="link" @click="router.push({ name: 'proxy-order', params: { orderId: g.orderId } })">
+              <template #icon><ExportOutlined /></template>
+              {{ t('cust.proxies.view') }}
+            </a-button>
+          </a-tooltip>
+        </a-flex>
+      </a-flex>
 
-    <!-- Check live results inline -->
-    <div v-if="checkResults[g.id]" class="check-result">
-      <ShieldCheck :size="13" />
-      {{ t('cust.proxies.checkDone', { ok: checkResults[g.id].ok, fail: checkResults[g.id].fail }) }}
-    </div>
+      <a-divider class="group-divider" />
 
-    <!-- IP whitelist inline editor -->
-    <div v-if="whitelistEditing === g.id" class="whitelist-panel">
-      <div class="whitelist-head">
-        <strong>{{ t('cust.proxies.ipAuthTitle') }}</strong>
-        <button class="close-btn" type="button" @click="closeWhitelist"><X :size="14" /></button>
-      </div>
-      <p class="whitelist-hint">{{ t('cust.proxies.ipAuthHint') }}</p>
-      <div class="whitelist-list">
-        <span v-for="ip in groupWhitelist(g)" :key="ip" class="ip-chip">
-          <span class="cell-mono">{{ ip }}</span>
-          <button class="ip-remove" type="button" @click="removeWhitelistIp(g, ip)"><X :size="11" /></button>
-        </span>
-        <span v-if="!groupWhitelist(g).length" class="whitelist-empty">{{ t('cust.proxies.ipAuthEmpty') }}</span>
-      </div>
-      <div class="whitelist-form">
-        <input v-model="whitelistInput" type="text" :placeholder="t('cust.proxies.ipAuthPh') + ' — CIDR OK'" @keydown.enter="addWhitelistIp(g)" />
-        <button class="action-pill primary" type="button" @click="addWhitelistIp(g)"><Plus :size="12" /> {{ t('cust.proxies.ipAuthAdd') }}</button>
-      </div>
-    </div>
-
-    <!-- Expanded body: TAB BAR (10%) + CONTENT (90%) for group-wide tools -->
-    <div v-if="isExpanded(g.id)" class="group-body">
-      <!-- ROW 1: tabs (apply to whole group) -->
-      <div class="gt-tabs">
-        <button
-          v-for="tab in GROUP_TABS"
-          :key="tab.id"
-          type="button"
-          :class="['gt-tab', { active: activeTab(g.id) === tab.id, danger: tab.danger }]"
-          @click="selectTab(g, tab.id)"
-        >
-          <component :is="tab.icon" :size="13" />
-          {{ t(tab.labelKey) }}
-        </button>
-      </div>
-
-      <!-- ROW 2: content (dynamic based on active tab) -->
-      <div class="gt-content">
-
-        <!-- ── LIST tab (default): proxy table ── -->
-        <template v-if="activeTab(g.id) === 'list'">
-          <template v-for="(p, idx) in pagedProxiesOf(g)" :key="p.id">
-            <div class="gt-row" :class="{ 'is-selected': isSelected(p.id), 'is-expanded': expandedProxies.has(p.id) }">
-              <button type="button" class="cbx" :class="{ checked: isSelected(p.id) }" @click="toggleProxySel(p.id)">
-                <Check :size="11" />
-              </button>
-              <span class="cell-mono pc-idx">#{{ proxyPageOf(g.id) * 10 + idx + 1 }}</span>
-              <span class="gt-row-label">
-                <template v-if="labelEditing === p.id">
-                  <input v-model="labelDraft" maxlength="64" :placeholder="t('cust.proxies.labelPh')" @keydown.enter="saveLabel(p)" @keydown.esc="cancelLabelEdit" />
-                  <button class="icon-btn small" type="button" @click="saveLabel(p)"><Check :size="11" /></button>
-                  <button class="icon-btn small" type="button" @click="cancelLabelEdit"><X :size="11" /></button>
-                </template>
-                <template v-else>
-                  <span v-if="p.label" class="label-text">{{ p.label }}</span>
-                  <button class="label-add" type="button" @click="openLabelEdit(p)">
-                    <Pencil :size="10" /> {{ p.label ? '' : t('cust.proxies.labelEmpty') }}
-                  </button>
-                </template>
-              </span>
-              <span class="cell-mono tap-copy" @click="copyText((p.ip || p.bindIp) + ':' + portOf(p), 'Endpoint', $event)">
-                <span class="ip-line">{{ p.ip || p.bindIp }}:{{ portOf(p) }}</span>
-                <small v-if="p.type === 'IPv6' && p.bindIp && p.bindIp !== p.ip" class="egress-line" :title="p.bindIp">↳ {{ p.bindIp }}</small>
-              </span>
-              <span class="cell-mono creds tap-copy" @click="copyText(p.username + ':' + p.password, 'user:pass', $event)">{{ p.username }}:{{ p.password }}</span>
-              <span class="gt-row-status">
-                <span :class="['status-pill', p.status === 'active' ? 'active' : p.status === 'expired' ? 'expired' : 'pending']">{{ p.status }}</span>
-              </span>
-              <svg v-if="sparkData[p.id]?.down?.length" class="spark" viewBox="0 0 80 18" preserveAspectRatio="none">
-                <path :d="sparkPath(sparkData[p.id].down)" fill="none" stroke="var(--blue)" stroke-width="1" />
-                <path :d="sparkPath(sparkData[p.id].up)"   fill="none" stroke="var(--green)" stroke-width="1" />
-              </svg>
-              <span v-else class="spark spark-empty"></span>
-              <span class="gt-row-actions">
-                <button class="row-act-btn connect-btn" type="button" :title="t('cust.proxies.tipConnect')" @click="toggleProxyExpand(p)">
-                  <Link :size="12" />
-                  <span>{{ t('cust.proxies.connectLabel') }}</span>
-                  <ChevronDown v-if="!expandedProxies.has(p.id)" :size="11" />
-                  <ChevronUp v-else :size="11" />
-                </button>
-                <button v-if="p.type === 'IPv6'" class="row-act-btn rotate-btn" type="button" :title="t('cust.proxies.tipRotate')" :disabled="rotating === p.id" @click="rotateProxy(p)">
-                  <RotateCw :size="12" :class="{ spin: rotating === p.id }" />
-                  <span>{{ rotating === p.id ? t('cust.proxies.rotating') : t('cust.proxies.rotateIp') }}</span>
-                </button>
-                <button v-if="p.type === 'IPv6' && p.rotateUrl" class="row-act-btn" type="button" :title="t('cust.proxies.tipCopyRotate') + '\n' + p.rotateUrl" @click="copyRotateUrl(p, $event)">
-                  <Link :size="12" />
-                  <span>{{ t('cust.proxies.copyRotateUrl') }}</span>
-                </button>
-                <button class="row-act-btn" type="button" :title="t('cust.proxies.tipCheck')" :disabled="checking === p.id" @click="checkProxy(p)">
-                  <RefreshCw :size="12" :class="{ spin: checking === p.id }" />
-                  <span>{{ checking === p.id ? 'Checking…' : 'Check' }}</span>
-                </button>
-              </span>
-            </div>
-            <div v-if="expandedProxies.has(p.id)" class="gt-row-connect">
-              <div class="session-block">
-                <div class="session-head" :class="{ full: (p.session?.active||0) >= (p.session?.max||100) }">
-                  <ShieldCheck :size="13" />
-                  <span>
-                    <strong class="cell-mono">{{ p.session?.active ?? 0 }}/{{ p.session?.max ?? 100 }}</strong>
-                    {{ t('cust.proxies.activeConns') }}
-                    <small>· max <strong>{{ p.session?.max ?? 100 }}/proxy</strong> · <strong>{{ p.session?.maxPerIp ?? 60 }}/IP</strong> · burst <strong>{{ p.session?.rateLimit ?? 30 }}/s/IP</strong>. {{ t('cust.proxies.overCapNote') }}</small>
-                  </span>
-                  <button class="row-act-btn" type="button" @click="disconnectAllSessions(p)" :title="t('cust.proxies.tipDisconnect')">
-                    <RefreshCw :size="12" /> {{ t('cust.proxies.disconnectAll') }}
-                  </button>
-                </div>
-                <div v-if="(p.session?.byIp || []).length" class="session-byip">
-                  <div class="byip-title">{{ t('cust.proxies.byIpTitle') }}</div>
-                  <div class="byip-list">
-                    <div v-for="row in (p.session?.byIp || [])" :key="row.ip" class="byip-row" :class="{ near: row.count >= (p.session?.maxPerIp || 60) * 0.8 }">
-                      <code>{{ row.ip }}</code>
-                      <span class="byip-count"><strong>{{ row.count }}</strong>/{{ p.session?.maxPerIp ?? 60 }}</span>
-                      <div class="byip-bar"><span :style="{ width: ((row.count / (p.session?.maxPerIp || 60)) * 100) + '%' }"></span></div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="trojan-feature">
-                <div class="trojan-qr-wrap">
-                  <div class="trojan-qr" v-html="qrSvg(p.connectUrls?.trojan, 200)"></div>
-                  <button class="row-act-btn" type="button" @click="downloadQr(p.connectUrls?.trojan, 'trojan-'+p.id)">
-                    <Download :size="12" /> Download QR
-                  </button>
-                </div>
-                <div class="trojan-info">
-                  <div class="trojan-title">
-                    <strong>Trojan</strong>
-                    <span class="cell-mono trojan-port">:{{ p.tlsPort }}</span>
-                  </div>
-                  <p class="trojan-apps">v2rayN (Win) • v2rayNG (Android) • Shadowrocket (iOS) • Clash Verge (Mac) • Hiddify</p>
-                  <p class="trojan-note">{{ t('cust.proxies.trojanNote') }}</p>
-                  <div class="trojan-url">
-                    <code>{{ p.connectUrls?.trojan }}</code>
-                    <button class="row-act-btn" @click="copyText(p.connectUrls?.trojan, 'Trojan')"><Copy :size="12" /> Copy URL</button>
-                  </div>
-                </div>
-              </div>
-              <div class="proto-list">
-                <div class="proto-row">
-                  <span class="proto-tag">HTTP</span>
-                  <code class="proto-url">{{ p.connectUrls?.http }}</code>
-                  <button class="row-act-btn" @click="copyText(p.connectUrls?.http, 'HTTP')"><Copy :size="12" /> Copy</button>
-                  <button class="row-act-btn proto-qr-btn" :title="'Show QR for HTTP'" @click="openQrModal(p.connectUrls?.http, 'HTTP-'+p.id)"><QrCode :size="12" /></button>
-                </div>
-                <div class="proto-row">
-                  <span class="proto-tag">SOCKS5</span>
-                  <code class="proto-url">{{ p.connectUrls?.socks5h }}</code>
-                  <button class="row-act-btn" @click="copyText(p.connectUrls?.socks5h, 'SOCKS5')"><Copy :size="12" /> Copy</button>
-                  <button class="row-act-btn proto-qr-btn" :title="'Show QR for SOCKS5'" @click="openQrModal(p.connectUrls?.socks5h, 'SOCKS5-'+p.id)"><QrCode :size="12" /></button>
-                </div>
-                <div class="proto-row">
-                  <span class="proto-tag">HTTPS proxy</span>
-                  <code class="proto-url">{{ p.connectUrls?.httpsProxy }}</code>
-                  <button class="row-act-btn" @click="copyText(p.connectUrls?.httpsProxy, 'HTTPS proxy')"><Copy :size="12" /> Copy</button>
-                  <button class="row-act-btn proto-qr-btn" :title="'Show QR for HTTPS proxy'" @click="openQrModal(p.connectUrls?.httpsProxy, 'HTTPSproxy-'+p.id)"><QrCode :size="12" /></button>
-                </div>
-              </div>
-            </div>
+      <!-- Quick action row, always visible -->
+      <a-flex wrap="wrap" gap="small" align="center">
+        <a-button size="small" :disabled="!!busy[g.id]" @click="copyGroup(g, 'colon')">
+          <template #icon><CopyOutlined /></template>
+          {{ t('cust.proxies.copy') }}
+        </a-button>
+        <a-dropdown :trigger="['click']">
+          <a-button size="small">
+            <template #icon><DownloadOutlined /></template>
+            {{ t('cust.proxies.export') }} <DownOutlined />
+          </a-button>
+          <template #overlay>
+            <a-menu @click="({ key }) => onExportMenu(g, key)">
+              <a-menu-item key="copy:colon"><template #icon><CopyOutlined /></template><span class="mono">{{ t('cust.proxies.fmtColon') }}</span></a-menu-item>
+              <a-menu-item key="copy:url-http"><template #icon><CopyOutlined /></template><span class="mono">{{ t('cust.proxies.fmtUrlHttp') }}</span></a-menu-item>
+              <a-menu-item key="copy:url-socks5"><template #icon><CopyOutlined /></template><span class="mono">{{ t('cust.proxies.fmtUrlSocks5') }}</span></a-menu-item>
+              <a-menu-item key="copy:curl"><template #icon><CodeOutlined /></template>{{ t('cust.proxies.fmtCurl') }}</a-menu-item>
+              <a-menu-item-group :title="t('cust.proxies.download')">
+                <a-menu-item key="dl:colon"><template #icon><DownloadOutlined /></template>TXT</a-menu-item>
+                <a-menu-item key="dl:env"><template #icon><DownloadOutlined /></template>.env</a-menu-item>
+                <a-menu-item key="dl:json"><template #icon><DownloadOutlined /></template>JSON</a-menu-item>
+                <a-menu-item key="dl:switchyomega"><template #icon><DownloadOutlined /></template>SwitchyOmega .pac</a-menu-item>
+                <a-menu-item key="dl:foxyproxy"><template #icon><DownloadOutlined /></template>FoxyProxy .xml</a-menu-item>
+              </a-menu-item-group>
+            </a-menu>
           </template>
-          <div v-if="proxyPageCount(g) > 1" class="px-pager">
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, 0)">«</button>
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, proxyPageOf(g.id) - 1)">‹</button>
-            <span class="px-pager-info">{{ proxyPageOf(g.id) + 1 }} / {{ proxyPageCount(g) }}</span>
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageOf(g.id) + 1)">›</button>
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageCount(g) - 1)">»</button>
-          </div>
+        </a-dropdown>
+        <a-button size="small" :loading="busy[g.id] === 'check'" :disabled="!!busy[g.id] && busy[g.id] !== 'check'" @click="checkGroup(g)">
+          <template #icon><SafetyCertificateOutlined /></template>
+          {{ t('cust.proxies.checkLive') }}
+        </a-button>
+        <a-badge :count="groupWhitelist(g).length" size="small" :number-style="{ backgroundColor: token.colorSuccess }">
+          <a-button size="small" @click="openWhitelist(g.id)">
+            <template #icon><ThunderboltOutlined /></template>
+            {{ t('cust.proxies.ipAuth') }}
+          </a-button>
+        </a-badge>
+        <a-tooltip :title="t('cust.proxies.expiresAtTitle') + fmtTs(g.expiresAt)">
+          <a-tag :color="TIER_TAG[fmtCountdown(g.expiresAt).tier]" class="countdown-tag">
+            <ClockCircleOutlined />
+            {{ t('cust.proxies.remaining') }}
+            <strong class="mono" :class="{ pulse: fmtCountdown(g.expiresAt).tier === 'critical' }">{{ fmtCountdown(g.expiresAt).text }}</strong>
+          </a-tag>
+        </a-tooltip>
+        <a-space-compact size="small">
+          <a-input-number v-model:value="extendHours[g.id]" :min="1" :max="8760" placeholder="24h" class="extend-hours" />
+          <a-button type="primary" :ghost="!hasExpired(g)" :loading="busy[g.id] === 'extend'" :disabled="!!busy[g.id] && busy[g.id] !== 'extend'" @click="extendGroup(g)">
+            <template #icon><FieldTimeOutlined /></template>
+            {{ hasExpired(g) ? t('cust.proxies.renewNow') : t('cust.proxies.extend') }}
+          </a-button>
+        </a-space-compact>
+        <template v-if="g.type === 'IPv6'">
+          <a-tooltip :title="t('cust.proxies.rotateSchedHint')">
+            <a-select size="small" :value="g.proxies[0]?.rotateEverySec || 0" :options="ROTATE_OPTIONS" class="rotate-select" @change="(v) => setRotateInterval(g, v)">
+              <template #suffixIcon><FieldTimeOutlined /></template>
+            </a-select>
+          </a-tooltip>
+          <!-- IPv6 only: bulk copy + download of the magic rotate URLs for this
+               group (v4 proxies don't expose a rotate URL — egress IP is fixed). -->
+          <a-tooltip :title="t('cust.proxies.copyRotateUrlsHint')">
+            <a-button size="small" @click="copyGroupRotateUrls(g)">
+              <template #icon><LinkOutlined /></template>
+              {{ t('cust.proxies.copyRotateUrls') }}
+            </a-button>
+          </a-tooltip>
+          <a-tooltip :title="t('cust.proxies.downloadRotateUrlsHint')">
+            <a-button size="small" @click="downloadGroupRotateUrls(g)">
+              <template #icon><DownloadOutlined /></template>
+              {{ t('cust.proxies.downloadRotateUrls') }}
+            </a-button>
+          </a-tooltip>
         </template>
+        <a-button size="small" :type="allAutoRenew(g) ? 'primary' : 'default'" :ghost="allAutoRenew(g)" @click="toggleAutoRenew(g)">
+          <template #icon><SyncOutlined /></template>
+          {{ allAutoRenew(g) ? t('cust.proxies.autoRenewOn2') : t('cust.proxies.autoRenewToggle') }}
+        </a-button>
+        <a-button size="small" @click="openTimeline(g)">
+          <template #icon><HistoryOutlined /></template>
+          {{ t('cust.proxies.timeline') }}
+        </a-button>
+        <a-button size="small" danger :loading="busy[g.id] === 'delete'" :disabled="!!busy[g.id] && busy[g.id] !== 'delete'" @click="deleteGroup(g)">
+          <template #icon><DeleteOutlined /></template>
+          {{ t('cust.proxies.deleteGroup') }}
+        </a-button>
+      </a-flex>
 
-        <!-- ── APPS tab: subscription URLs for Clash / Shadowrocket / Surge / v2rayN ── -->
-        <template v-else-if="activeTab(g.id) === 'apps'">
-          <p class="gt-hint">{{ t('cust.proxies.tabAppsHint') }}</p>
-          <p v-if="!subscription" class="empty-text" style="padding:14px 0">{{ t('cust.proxies.subLoading') }}</p>
-          <div v-else class="sub-list">
-            <article v-for="fmt in SUB_FORMATS" :key="fmt.id" class="sub-card">
-              <div class="sub-card-head">
-                <strong>{{ fmt.label }}</strong>
-                <small>{{ fmt.hint }}</small>
-              </div>
-              <div class="sub-card-url">
-                <code>{{ subUrlFor(fmt.id, g.id) }}</code>
-              </div>
-              <div class="sub-card-actions">
-                <button class="row-act-btn" type="button" @click="copyText(subUrlFor(fmt.id, g.id), fmt.label + ' subscription')"><Copy :size="12" /> {{ t('cust.proxies.copyUrl') }}</button>
-                <button class="row-act-btn" type="button" @click="openQrModal(subUrlFor(fmt.id, g.id), fmt.label + ' sub')"><QrCode :size="12" /> QR</button>
-                <a class="row-act-btn" :href="subUrlFor(fmt.id, g.id)" target="_blank" rel="noopener"><ExternalLink :size="12" /> {{ t('cust.proxies.openUrl') }}</a>
-              </div>
-            </article>
-          </div>
-          <div v-if="subscription" class="sub-rotate">
-            <small>{{ t('cust.proxies.subRotateNote') }}</small>
-            <button class="ghost-button" type="button" @click="rotateSubscriptionToken"><RotateCw :size="12" /> {{ t('cust.proxies.subRotate') }}</button>
-          </div>
-        </template>
+      <!-- Quick stats (loaded lazily when group is expanded) -->
+      <a-row v-if="isExpanded(g.id) && statsData[g.id]" :gutter="[12, 12]" class="quick-stats">
+        <a-col :xs="8">
+          <a-statistic :title="t('cust.proxies.statsBandwidth')" :value="fmtBytes(statsData[g.id].bandwidth)" :value-style="{ fontSize: '18px' }" />
+          <a-typography-text type="secondary" class="small-text">{{ t('cust.proxies.stats30d') }}</a-typography-text>
+        </a-col>
+        <a-col :xs="8">
+          <a-statistic :title="t('cust.proxies.statsUptime')" :value="statsData[g.id].uptime !== null ? statsData[g.id].uptime.toFixed(1) + '%' : '—'" :value-style="{ fontSize: '18px' }" />
+          <a-typography-text type="secondary" class="small-text">{{ t('cust.proxies.stats7d') }}</a-typography-text>
+        </a-col>
+        <a-col :xs="8">
+          <a-statistic :title="t('cust.proxies.statsLatency')" :value="statsData[g.id].latency !== null ? statsData[g.id].latency + ' ms' : '—'" :value-style="{ fontSize: '18px' }" />
+          <a-typography-text type="secondary" class="small-text">{{ t('cust.proxies.statsAvg') }}</a-typography-text>
+        </a-col>
+      </a-row>
 
-        <!-- ── COPY tab ── -->
-        <template v-else-if="activeTab(g.id) === 'copy'">
-          <p class="gt-hint">{{ t('cust.proxies.tabCopyHint', { n: g.proxies.length }) }}</p>
-          <div class="gt-grid">
-            <button class="pc-btn" type="button" @click="copyFormat(g, 'colon')"><Copy :size="12" /> host:port:user:pass</button>
-            <button class="pc-btn" type="button" @click="copyFormat(g, 'url-http')"><Copy :size="12" /> http://user:pass@host:port</button>
-            <button class="pc-btn" type="button" @click="copyFormat(g, 'url-socks5')"><Copy :size="12" /> socks5://user:pass@host:port</button>
-            <button class="pc-btn" type="button" @click="copyFormat(g, 'curl')"><Terminal :size="12" /> cURL command</button>
-            <button class="pc-btn" type="button" @click="exportFormat(g, 'colon')"><Download :size="12" /> Download TXT</button>
-            <button class="pc-btn" type="button" @click="exportFormat(g, 'env')"><Download :size="12" /> Download .env</button>
-            <button class="pc-btn" type="button" @click="exportFormat(g, 'json')"><Download :size="12" /> Download JSON</button>
-            <button class="pc-btn" type="button" @click="exportFormat(g, 'switchyomega')"><Download :size="12" /> Download SwitchyOmega .pac</button>
-            <button class="pc-btn" type="button" @click="exportFormat(g, 'foxyproxy')"><Download :size="12" /> Download FoxyProxy .xml</button>
-          </div>
-        </template>
+      <!-- Check live results inline -->
+      <a-alert
+        v-if="checkResults[g.id]"
+        type="success"
+        show-icon
+        closable
+        class="check-result"
+        :message="t('cust.proxies.checkDone', { ok: checkResults[g.id].ok, fail: checkResults[g.id].fail })"
+        @close="clearCheckResult(g)"
+      />
 
-        <!-- ── IP INFO tab: pick one IP, show full key-value table ── -->
-        <template v-else-if="activeTab(g.id) === 'ip-info'">
-          <p class="gt-hint">{{ t('cust.proxies.ipInfoHint') }}</p>
-          <!-- Proxy picker: dropdown (one order can hold 500 proxies) -->
-          <div class="tool-proxy-pick">
-            <select class="filter-select" :value="ipInfoSelected[g.id] || ''" @change="onPickIpInfo(g, $event.target.value)">
-              <option value="" disabled>{{ t('cust.proxies.singlePickHint') }}</option>
-              <option v-for="p in g.proxies" :key="p.id" :value="p.id">{{ p.label ? p.label + ' · ' : '' }}{{ p.ip || p.bindIp }}:{{ portOf(p) }}</option>
-            </select>
-          </div>
+      <!-- Expanded body: tabs with group-wide tools -->
+      <template v-if="isExpanded(g.id)">
+        <a-divider class="group-divider" />
+        <a-flex v-if="!g.loaded" justify="center" class="group-spin"><a-spin /></a-flex>
+        <a-tabs v-else :active-key="activeTab(g.id)" size="small" destroy-inactive-tab-pane @change="(k) => selectTab(g, k)">
+          <a-tab-pane v-for="tab in GROUP_TABS" :key="tab.id">
+            <template #tab>
+              <a-typography-text v-if="tab.danger" type="danger"><component :is="tab.icon" /> {{ t(tab.labelKey) }}</a-typography-text>
+              <span v-else><component :is="tab.icon" /> {{ t(tab.labelKey) }}</span>
+            </template>
 
-          <!-- Result table for the picked proxy -->
-          <template v-if="ipInfoSelected[g.id]">
-            <div v-if="ipInfoBusy[ipInfoSelected[g.id]]" class="batch-empty">
-              <RefreshCw :size="18" class="spin" style="color:var(--green)" />
-              <p style="margin-top:8px">{{ t('cust.proxies.toolRunning') }}</p>
-            </div>
-            <div v-else-if="ipInfoData[ipInfoSelected[g.id]]?.error" class="error-text" style="padding:20px; text-align:center">
-              {{ ipInfoData[ipInfoSelected[g.id]].error }}
-            </div>
-            <div v-else-if="ipInfoData[ipInfoSelected[g.id]]" class="ipinfo-table">
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoIp') }}</span>
-                <span class="cell-mono ipinfo-val">{{ ipInfoData[ipInfoSelected[g.id]].ip }}</span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoFamily') }}</span>
-                <span class="cell-mono ipinfo-val">{{ (ipInfoData[ipInfoSelected[g.id]].family || '—').toUpperCase() }}</span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoAsn') }}</span>
-                <span class="cell-mono ipinfo-val">{{ ipInfoData[ipInfoSelected[g.id]].asn || '—' }}</span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoCidr') }}</span>
-                <span class="cell-mono ipinfo-val">{{ ipInfoData[ipInfoSelected[g.id]].cidr || '—' }}</span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoCountry') }}</span>
-                <span class="ipinfo-val">
-                  <CountryFlag v-if="ipInfoData[ipInfoSelected[g.id]].country && ipInfoData[ipInfoSelected[g.id]].country.length === 2" :code="ipInfoData[ipInfoSelected[g.id]].country" :size="14" />
-                  <span class="cell-mono">{{ ipInfoData[ipInfoSelected[g.id]].country || '—' }}</span>
-                </span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoRegistry') }}</span>
-                <span class="cell-mono ipinfo-val">{{ (ipInfoData[ipInfoSelected[g.id]].registry || '—').toUpperCase() }}</span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoAllocDate') }}</span>
-                <span class="cell-mono ipinfo-val">{{ ipInfoData[ipInfoSelected[g.id]].allocDate || '—' }}</span>
-              </div>
-              <div class="ipinfo-row">
-                <span class="ipinfo-key">{{ t('cust.proxies.ipInfoOrg') }}</span>
-                <span class="cell-mono ipinfo-val ipinfo-val-wrap">{{ ipInfoData[ipInfoSelected[g.id]].org || '—' }}</span>
-              </div>
-              <div class="ipinfo-actions">
-                <button class="ghost-button" type="button" @click="refreshIpInfo(g)"><RefreshCw :size="13" /> {{ t('cust.refresh') }}</button>
-              </div>
-            </div>
-          </template>
-        </template>
-
-        <!-- ── SPEED TEST tab: chip picker + country/ISP + animated gauge ── -->
-        <template v-else-if="activeTab(g.id) === 'speed-test'">
-          <div class="st-controls">
-            <!-- Proxy picker -->
-            <div class="st-row">
-              <label class="st-lbl">{{ t('cust.proxies.stProxy') }}</label>
-              <select class="filter-select" :value="speedTestProxy[g.id] || ''" @change="speedTestProxy[g.id] = $event.target.value">
-                <option value="" disabled>{{ t('cust.proxies.singlePickHint') }}</option>
-                <option v-for="p in g.proxies" :key="p.id" :value="p.id">{{ p.label ? p.label + ' · ' : '' }}{{ p.ip || p.bindIp }}:{{ portOf(p) }}</option>
-              </select>
-            </div>
-            <!-- Country + ISP -->
-            <div class="st-row">
-              <label class="st-lbl">{{ t('cust.proxies.stCountry') }}</label>
-              <select class="filter-select" :value="speedTestCountry[g.id] || 'VN'" @change="setSpeedTestCountry(g.id, $event.target.value)">
-                <option v-for="c in SPEEDTEST_COUNTRIES" :key="c.code" :value="c.code">{{ c.name }} ({{ c.code }})</option>
-              </select>
-              <label class="st-lbl" style="margin-left:12px">{{ t('cust.proxies.stIsp') }}</label>
-              <select class="filter-select" :value="speedTestIsp[g.id] || 'auto'" @change="speedTestIsp[g.id] = $event.target.value">
-                <option value="auto">{{ t('cust.proxies.stIspAuto') }}</option>
-                <option
-                  v-for="isp in (speedTestIspsCache[speedTestCountry[g.id] || 'VN'] || [])"
-                  :key="isp.sponsor"
-                  :value="isp.sponsor.toLowerCase()"
-                >
-                  {{ isp.sponsor }} ({{ isp.serverCount }} server{{ isp.serverCount > 1 ? 's' : '' }})
-                </option>
-              </select>
-              <span v-if="speedTestIspsBusy[speedTestCountry[g.id] || 'VN']" style="color:var(--muted); font-size:11px">
-                <RefreshCw :size="11" class="spin" /> {{ t('cust.proxies.stLoadingIsps') }}
-              </span>
-            </div>
-            <!-- Run -->
-            <div class="st-row">
-              <button class="primary-action small" type="button" :disabled="speedTestRunning[g.id] || !speedTestProxy[g.id]" @click="runSpeedTest(g)">
-                <RefreshCw v-if="speedTestRunning[g.id]" :size="14" class="spin" />
-                <Play v-else :size="14" />
-                {{ speedTestRunning[g.id]
-                    ? (speedTestPhase[g.id] === 'upload' ? t('cust.proxies.stRunningUp') : t('cust.proxies.stRunningDown'))
-                    : (speedTestResult[g.id] ? t('cust.proxies.stRerun') : t('cust.proxies.stStart')) }}
-              </button>
-              <button v-if="speedTestResult[g.id] && !speedTestRunning[g.id]" class="ghost-button" type="button" @click="resetSpeedTest(g)">
-                <X :size="13" /> {{ t('cust.proxies.batchReset') }}
-              </button>
-            </div>
-          </div>
-
-          <!-- Modern speedometer gauge (visible while running or after result) -->
-          <div v-if="speedTestRunning[g.id] || speedTestResult[g.id]" class="st-gauge-wrap">
-            <SpeedGauge
-              :value="speedTestGauge[g.id] || 0"
-              :max="null"
-              :status="speedTestRunning[g.id] ? 'running' : (speedTestResult[g.id]?.error ? 'error' : speedTestResult[g.id] ? 'done' : 'idle')"
-              :label="speedTestRunning[g.id]
-                ? (speedTestPhase[g.id] === 'upload' ? t('cust.proxies.stPhaseUpload') : t('cust.proxies.stPhaseDownload'))
-                : (speedTestResult[g.id]?.error || (speedTestResult[g.id] ? t('cust.proxies.stDone') : ''))"
-              :size="260"
-            />
-          </div>
-
-          <!-- Result cards (ping, download, upload, server) -->
-          <div v-if="speedTestResult[g.id] && !speedTestResult[g.id].error" class="st-result">
-            <div class="st-metric">
-              <span class="st-mlbl">{{ t('cust.proxies.stPing') }}</span>
-              <span class="st-mval">{{ speedTestResult[g.id].pingMs }}<small>ms</small></span>
-            </div>
-            <div class="st-metric down">
-              <span class="st-mlbl">{{ t('cust.proxies.stDownload') }}</span>
-              <span class="st-mval">{{ (speedTestResult[g.id].downloadMbps || 0).toFixed(2) }}<small>Mbps</small></span>
-            </div>
-            <div class="st-metric up">
-              <span class="st-mlbl">{{ t('cust.proxies.stUpload') }}</span>
-              <span class="st-mval">{{ (speedTestResult[g.id].uploadMbps || 0).toFixed(2) }}<small>Mbps</small></span>
-            </div>
-            <div class="st-metric" style="grid-column:1/-1">
-              <span class="st-mlbl">{{ t('cust.proxies.stServer') }}</span>
-              <span class="cell-mono" style="font-size:12px">
-                {{ speedTestResult[g.id].server?.sponsor }} · {{ speedTestResult[g.id].server?.name }} · {{ speedTestResult[g.id].server?.country }}
-              </span>
-            </div>
-          </div>
-        </template>
-
-        <!-- ── Single-IP tool tabs (test / blacklist / ping) ── -->
-        <template v-else-if="['test','blacklist','ping'].includes(activeTab(g.id))">
-          <p class="gt-hint">{{ t('cust.proxies.singlePickHint') }}</p>
-          <!-- Proxy picker: dropdown (one order can hold 500 proxies) -->
-          <div class="tool-proxy-pick">
-            <select class="filter-select" :value="pickedProxy(g, activeTab(g.id)) || ''" @change="setPickedProxy(g, activeTab(g.id), $event.target.value)">
-              <option value="" disabled>{{ t('cust.proxies.singlePickHint') }}</option>
-              <option v-for="p in g.proxies" :key="p.id" :value="p.id">{{ p.label ? p.label + ' · ' : '' }}{{ p.ip || p.bindIp }}:{{ portOf(p) }}</option>
-            </select>
-          </div>
-
-          <!-- Run button -->
-          <div class="batch-controls" style="margin-bottom:14px">
-            <button
-              class="primary-action small"
-              type="button"
-              :disabled="singleBusy(g, activeTab(g.id)) || !pickedProxy(g, activeTab(g.id))"
-              @click="runSingleTool(g, activeTab(g.id))"
+            <!-- ── LIST tab (default): proxy table ── -->
+            <a-table
+              v-if="tab.id === 'list'"
+              :columns="proxyColumns"
+              :data-source="g.proxies"
+              :pagination="proxyPagination(g)"
+              :row-selection="rowSelectionOf(g)"
+              row-key="id"
+              size="small"
+              :scroll="{ x: 1200 }"
+              @change="(pag) => onProxyTableChange(g, pag)"
             >
-              <RefreshCw v-if="singleBusy(g, activeTab(g.id))" :size="13" class="spin" />
-              <Play v-else :size="13" />
-              {{ singleBusy(g, activeTab(g.id))
-                  ? t('cust.proxies.batchRowRunning')
-                  : singleResult(g, activeTab(g.id))
-                    ? t('cust.proxies.batchRerun')
-                    : t('cust.proxies.singleRun') }}
-            </button>
-          </div>
+              <template #bodyCell="{ column, record: p, index }">
+                <template v-if="column.key === 'idx'">
+                  <a-typography-text type="secondary" class="mono">#{{ proxyPageOf(g.id) * PROXY_PAGE_SIZE + index + 1 }}</a-typography-text>
+                </template>
+                <template v-else-if="column.key === 'label'">
+                  <a-space-compact v-if="labelEditing === p.id" size="small">
+                    <a-input v-model:value="labelDraft" :maxlength="64" :placeholder="t('cust.proxies.labelPh')" @press-enter="saveLabel(p)" @keydown.esc="cancelLabelEdit" />
+                    <a-button type="primary" @click="saveLabel(p)"><template #icon><CheckOutlined /></template></a-button>
+                    <a-button @click="cancelLabelEdit"><template #icon><CloseOutlined /></template></a-button>
+                  </a-space-compact>
+                  <a-space v-else :size="2">
+                    <a-typography-text v-if="p.label" strong>{{ p.label }}</a-typography-text>
+                    <a-button type="link" size="small" class="label-add" @click="openLabelEdit(p)">
+                      <template #icon><EditOutlined /></template>
+                      {{ p.label ? '' : t('cust.proxies.labelEmpty') }}
+                    </a-button>
+                  </a-space>
+                  <!-- Per-proxy tags (row menu → "Thêm/bớt tag" opens the input) -->
+                  <a-flex v-if="(p.tags && p.tags.length) || tagEditing === p.id" wrap="wrap" gap="4" align="center" class="row-tags">
+                    <a-tag v-for="tg in (p.tags || [])" :key="tg" closable :bordered="false" color="blue" @close.prevent="removeTag(p, tg)">#{{ tg }}</a-tag>
+                    <a-space-compact v-if="tagEditing === p.id" size="small">
+                      <a-input v-model:value="tagDraft" placeholder="tag-name" class="tag-input" @press-enter="addTag(p)" @keydown.esc="cancelTagEdit" />
+                      <a-button @click="addTag(p)"><template #icon><PlusOutlined /></template></a-button>
+                      <a-button @click="cancelTagEdit"><template #icon><CloseOutlined /></template></a-button>
+                    </a-space-compact>
+                  </a-flex>
+                </template>
+                <template v-else-if="column.key === 'endpoint'">
+                  <a-typography-text class="mono" :copyable="{ text: endpointOf(p) }">{{ endpointOf(p) }}</a-typography-text>
+                  <div v-if="p.type === 'IPv6' && p.bindIp && p.bindIp !== p.ip">
+                    <a-tooltip :title="p.bindIp">
+                      <a-typography-text type="secondary" class="mono small-text egress">↳ {{ p.bindIp }}</a-typography-text>
+                    </a-tooltip>
+                  </div>
+                </template>
+                <template v-else-if="column.key === 'creds'">
+                  <a-typography-text class="mono" :copyable="{ text: `${p.username}:${p.password}` }">{{ p.username }}:{{ p.password }}</a-typography-text>
+                </template>
+                <template v-else-if="column.key === 'status'">
+                  <StatusTag :status="p.status" />
+                </template>
+                <template v-else-if="column.key === 'spark'">
+                  <a-tooltip v-if="sparkData[p.id]?.down?.length" :title="t('cust.proxies.spark24h')">
+                    <svg class="spark" viewBox="0 0 80 18" preserveAspectRatio="none">
+                      <path :d="sparkPath(sparkData[p.id].down)" fill="none" :stroke="token.colorInfo" stroke-width="1" />
+                      <path :d="sparkPath(sparkData[p.id].up)" fill="none" :stroke="token.colorSuccess" stroke-width="1" />
+                    </svg>
+                  </a-tooltip>
+                  <a-typography-text v-else type="secondary">—</a-typography-text>
+                </template>
+                <template v-else-if="column.key === 'actions'">
+                  <a-space :size="4" wrap>
+                    <a-tooltip :title="t('cust.proxies.tipConnect')">
+                      <a-button size="small" type="primary" ghost @click="openProxyDrawer(p)">
+                        <template #icon><LinkOutlined /></template>
+                        {{ t('cust.proxies.connectLabel') }}
+                      </a-button>
+                    </a-tooltip>
+                    <a-tooltip v-if="p.type === 'IPv6'" :title="t('cust.proxies.tipRotate')">
+                      <a-button size="small" :disabled="!!rotating && rotating !== p.id" @click="rotateProxy(p)">
+                        <template #icon><SyncOutlined :spin="rotating === p.id" /></template>
+                        {{ rotating === p.id ? t('cust.proxies.rotating') : t('cust.proxies.rotateIp') }}
+                      </a-button>
+                    </a-tooltip>
+                    <a-tooltip v-if="p.type === 'IPv6' && p.rotateUrl">
+                      <template #title>{{ t('cust.proxies.tipCopyRotate') }}<br /><span class="mono">{{ p.rotateUrl }}</span></template>
+                      <a-button size="small" @click="copyRotateUrl(p)">
+                        <template #icon><LinkOutlined /></template>
+                        {{ t('cust.proxies.copyRotateUrl') }}
+                      </a-button>
+                    </a-tooltip>
+                    <a-tooltip :title="t('cust.proxies.tipCheck')">
+                      <a-button size="small" :disabled="!!checking && checking !== p.id" @click="checkProxy(p)">
+                        <template #icon><ReloadOutlined :spin="checking === p.id" /></template>
+                        {{ checking === p.id ? 'Checking…' : 'Check' }}
+                      </a-button>
+                    </a-tooltip>
+                    <a-dropdown :trigger="['click']" placement="bottomRight">
+                      <a-button size="small"><template #icon><EllipsisOutlined /></template></a-button>
+                      <template #overlay>
+                        <a-menu @click="({ key }) => onRowMenu(g, p, key)">
+                          <a-menu-item key="test"><template #icon><EyeOutlined /></template>{{ t('cust.proxies.testBrowser') }}</a-menu-item>
+                          <a-menu-item-group :title="t('cust.proxies.tools')">
+                            <a-menu-item key="speed-test"><template #icon><DashboardOutlined /></template>{{ t('cust.proxies.toolSpeed') }}</a-menu-item>
+                            <a-menu-item key="blacklist"><template #icon><SecurityScanOutlined /></template>{{ t('cust.proxies.toolBlacklist') }}</a-menu-item>
+                            <a-menu-item key="ip-info"><template #icon><GlobalOutlined /></template>{{ t('cust.proxies.toolIpInfo') }}</a-menu-item>
+                            <a-menu-item key="ping"><template #icon><WifiOutlined /></template>{{ t('cust.proxies.toolPing') }}</a-menu-item>
+                          </a-menu-item-group>
+                          <a-menu-divider />
+                          <a-menu-item key="creds"><template #icon><KeyOutlined /></template>{{ t('cust.proxies.editCreds') }}</a-menu-item>
+                          <a-menu-item key="tags"><template #icon><TagsOutlined /></template>{{ t('cust.proxies.tagsEdit') }}</a-menu-item>
+                          <a-menu-divider />
+                          <a-menu-item key="delete" danger><template #icon><DeleteOutlined /></template>{{ t('cust.proxies.deleteOne') }}</a-menu-item>
+                        </a-menu>
+                      </template>
+                    </a-dropdown>
+                  </a-space>
+                </template>
+              </template>
+            </a-table>
 
-          <!-- Result (only the picked proxy) -->
-          <div v-if="singleBusy(g, activeTab(g.id))" class="batch-empty">
-            <RefreshCw :size="18" class="spin" style="color:var(--green)" />
-            <p style="margin-top:8px">{{ t('cust.proxies.toolRunning') }}</p>
-          </div>
-          <div v-else-if="singleResult(g, activeTab(g.id))?.error" class="error-text" style="padding:20px; text-align:center">
-            {{ singleResult(g, activeTab(g.id)).error }}
-          </div>
+            <!-- ── APPS tab: subscription URLs for Clash / Shadowrocket / Surge / v2rayN ── -->
+            <template v-else-if="tab.id === 'apps'">
+              <a-typography-paragraph type="secondary">{{ t('cust.proxies.tabAppsHint') }}</a-typography-paragraph>
+              <a-flex v-if="!subscription" align="center" gap="small">
+                <a-spin size="small" />
+                <a-typography-text type="secondary">{{ t('cust.proxies.subLoading') }}</a-typography-text>
+              </a-flex>
+              <template v-else>
+                <a-list size="small" bordered :data-source="SUB_FORMATS" row-key="id">
+                  <template #renderItem="{ item: fmt }">
+                    <a-list-item>
+                      <a-flex vertical gap="4" class="sub-item">
+                        <a-space wrap :size="6">
+                          <a-typography-text strong>{{ fmt.label }}</a-typography-text>
+                          <a-typography-text type="secondary" class="small-text">{{ fmt.hint }}</a-typography-text>
+                        </a-space>
+                        <a-typography-text class="mono small-text" :copyable="{ text: subUrlFor(fmt.id, g.id) }">{{ subUrlFor(fmt.id, g.id) }}</a-typography-text>
+                        <a-space wrap :size="6">
+                          <a-button size="small" @click="copyText(subUrlFor(fmt.id, g.id), fmt.label + ' subscription')">
+                            <template #icon><CopyOutlined /></template>{{ t('cust.proxies.copyUrl') }}
+                          </a-button>
+                          <a-button size="small" @click="openQrModal(subUrlFor(fmt.id, g.id), fmt.label + ' sub')">
+                            <template #icon><QrcodeOutlined /></template>QR
+                          </a-button>
+                          <a-button size="small" :href="subUrlFor(fmt.id, g.id)" target="_blank" rel="noopener">
+                            <template #icon><ExportOutlined /></template>{{ t('cust.proxies.openUrl') }}
+                          </a-button>
+                        </a-space>
+                      </a-flex>
+                    </a-list-item>
+                  </template>
+                </a-list>
+                <a-alert type="warning" show-icon class="sub-rotate" :message="t('cust.proxies.subRotateNote')">
+                  <template #action>
+                    <a-button size="small" @click="rotateSubscriptionToken">
+                      <template #icon><SyncOutlined /></template>{{ t('cust.proxies.subRotate') }}
+                    </a-button>
+                  </template>
+                </a-alert>
+              </template>
+            </template>
 
-          <!-- TEST result (full info) -->
-          <div v-else-if="activeTab(g.id) === 'test' && singleResult(g, 'test')" class="ipinfo-table">
-            <div class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.testStatus') }}</span>
-              <span class="ipinfo-val">
-                <span :class="['status-pill', singleResult(g, 'test').ok ? 'active' : 'expired']">{{ singleResult(g, 'test').ok ? 'OK' : 'FAIL' }}</span>
-              </span>
-            </div>
-            <div class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.testExitIp') }}</span>
-              <span class="ipinfo-val cell-mono">{{ singleResult(g, 'test').exitIp || '—' }}</span>
-            </div>
-            <div class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.testLatency') }}</span>
-              <span class="ipinfo-val cell-mono">{{ singleResult(g, 'test').latencyMs }} ms</span>
-            </div>
-          </div>
+            <!-- ── COPY tab ── -->
+            <template v-else-if="tab.id === 'copy'">
+              <a-typography-paragraph type="secondary">{{ t('cust.proxies.tabCopyHint', { n: g.proxies.length }) }}</a-typography-paragraph>
+              <a-row :gutter="[8, 8]">
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="copyFormat(g, 'colon')"><template #icon><CopyOutlined /></template><span class="mono">host:port:user:pass</span></a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="copyFormat(g, 'url-http')"><template #icon><CopyOutlined /></template><span class="mono">http://user:pass@host:port</span></a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="copyFormat(g, 'url-socks5')"><template #icon><CopyOutlined /></template><span class="mono">socks5://user:pass@host:port</span></a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="copyFormat(g, 'curl')"><template #icon><CodeOutlined /></template>cURL command</a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="exportFormat(g, 'colon')"><template #icon><DownloadOutlined /></template>Download TXT</a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="exportFormat(g, 'env')"><template #icon><DownloadOutlined /></template>Download .env</a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="exportFormat(g, 'json')"><template #icon><DownloadOutlined /></template>Download JSON</a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="exportFormat(g, 'switchyomega')"><template #icon><DownloadOutlined /></template>Download SwitchyOmega .pac</a-button></a-col>
+                <a-col :xs="24" :sm="12" :lg="8"><a-button block class="copy-btn" @click="exportFormat(g, 'foxyproxy')"><template #icon><DownloadOutlined /></template>Download FoxyProxy .xml</a-button></a-col>
+              </a-row>
+            </template>
 
-          <!-- BLACKLIST result (summary card + DNSBL list) -->
-          <div v-else-if="activeTab(g.id) === 'blacklist' && singleResult(g, 'blacklist')" class="tool-result" style="padding:0">
-            <div :class="['blsum', singleResult(g, 'blacklist').listed > 0 ? 'bad' : 'good']">
-              <strong>{{ singleResult(g, 'blacklist').listed }}</strong> / {{ singleResult(g, 'blacklist').total }} {{ t('cust.proxies.toolBlListed') }}
-              · <span style="font-size:13px">{{ singleResult(g, 'blacklist').clean }} clean · {{ singleResult(g, 'blacklist').errors }} errors</span>
-            </div>
-            <div class="bl-list">
-              <div v-for="r in singleResult(g, 'blacklist').results" :key="r.host" :class="['bl-item', r.listed === true ? 'listed' : r.listed === false ? 'clean' : 'error']">
-                <span>{{ r.name }}</span>
-                <span class="cell-mono">{{ r.host }}</span>
-                <span class="bl-tag">{{ r.listed === true ? t('cust.proxies.toolBlBad') : r.listed === false ? t('cust.proxies.toolBlClean') : 'ERR' }}</span>
+            <!-- ── IP INFO tab: pick one IP, show full key-value table ── -->
+            <template v-else-if="tab.id === 'ip-info'">
+              <a-typography-paragraph type="secondary">{{ t('cust.proxies.ipInfoHint') }}</a-typography-paragraph>
+              <a-select
+                :value="ipInfoSelected[g.id]"
+                :options="proxyOptions(g)"
+                :placeholder="t('cust.proxies.singlePickHint')"
+                show-search
+                option-filter-prop="label"
+                class="proxy-picker"
+                @change="(v) => onPickIpInfo(g, v)"
+              />
+              <template v-if="ipInfoSelected[g.id]">
+                <a-flex v-if="ipInfoBusy[ipInfoSelected[g.id]]" vertical align="center" gap="small" class="tool-wait">
+                  <a-spin />
+                  <a-typography-text type="secondary">{{ t('cust.proxies.toolRunning') }}</a-typography-text>
+                </a-flex>
+                <a-alert v-else-if="ipInfoData[ipInfoSelected[g.id]]?.error" type="error" show-icon :message="ipInfoData[ipInfoSelected[g.id]].error" />
+                <template v-else-if="ipInfoData[ipInfoSelected[g.id]]">
+                  <a-descriptions bordered size="small" :column="1" class="tool-desc">
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoIp')"><a-typography-text class="mono" copyable>{{ ipInfoData[ipInfoSelected[g.id]].ip }}</a-typography-text></a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoFamily')"><span class="mono">{{ (ipInfoData[ipInfoSelected[g.id]].family || '—').toUpperCase() }}</span></a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoAsn')"><span class="mono">{{ ipInfoData[ipInfoSelected[g.id]].asn || '—' }}</span></a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoCidr')"><span class="mono">{{ ipInfoData[ipInfoSelected[g.id]].cidr || '—' }}</span></a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoCountry')">
+                      <a-space :size="6">
+                        <CountryFlag v-if="ipInfoData[ipInfoSelected[g.id]].country && ipInfoData[ipInfoSelected[g.id]].country.length === 2" :code="ipInfoData[ipInfoSelected[g.id]].country" :size="14" />
+                        <span class="mono">{{ ipInfoData[ipInfoSelected[g.id]].country || '—' }}</span>
+                      </a-space>
+                    </a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoRegistry')"><span class="mono">{{ (ipInfoData[ipInfoSelected[g.id]].registry || '—').toUpperCase() }}</span></a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoAllocDate')"><span class="mono">{{ ipInfoData[ipInfoSelected[g.id]].allocDate || '—' }}</span></a-descriptions-item>
+                    <a-descriptions-item :label="t('cust.proxies.ipInfoOrg')"><span class="mono">{{ ipInfoData[ipInfoSelected[g.id]].org || '—' }}</span></a-descriptions-item>
+                  </a-descriptions>
+                  <a-button size="small" class="tool-refresh" @click="refreshIpInfo(g)">
+                    <template #icon><ReloadOutlined /></template>{{ t('cust.refresh') }}
+                  </a-button>
+                </template>
+              </template>
+            </template>
+
+            <!-- ── SPEED TEST tab: picker + country/ISP + animated gauge ── -->
+            <template v-else-if="tab.id === 'speed-test'">
+              <a-form layout="vertical">
+                <a-row :gutter="12">
+                  <a-col :xs="24" :md="10">
+                    <a-form-item :label="t('cust.proxies.stProxy')">
+                      <a-select
+                        :value="speedTestProxy[g.id]"
+                        :options="proxyOptions(g)"
+                        :placeholder="t('cust.proxies.singlePickHint')"
+                        show-search
+                        option-filter-prop="label"
+                        @change="(v) => (speedTestProxy[g.id] = v)"
+                      />
+                    </a-form-item>
+                  </a-col>
+                  <a-col :xs="24" :sm="12" :md="7">
+                    <a-form-item :label="t('cust.proxies.stCountry')">
+                      <a-select :value="speedTestCountry[g.id] || 'VN'" :options="countryOptions" show-search option-filter-prop="label" @change="(v) => setSpeedTestCountry(g.id, v)" />
+                    </a-form-item>
+                  </a-col>
+                  <a-col :xs="24" :sm="12" :md="7">
+                    <a-form-item :label="t('cust.proxies.stIsp')" :extra="speedTestIspsBusy[speedTestCountry[g.id] || 'VN'] ? t('cust.proxies.stLoadingIsps') : undefined">
+                      <a-select :value="speedTestIsp[g.id] || 'auto'" :options="ispOptions(g)" :loading="!!speedTestIspsBusy[speedTestCountry[g.id] || 'VN']" @change="(v) => (speedTestIsp[g.id] = v)" />
+                    </a-form-item>
+                  </a-col>
+                </a-row>
+                <a-space wrap>
+                  <a-button type="primary" :loading="!!speedTestRunning[g.id]" :disabled="!speedTestProxy[g.id]" @click="runSpeedTest(g)">
+                    <template v-if="!speedTestRunning[g.id]" #icon><PlayCircleOutlined /></template>
+                    {{ speedButtonLabel(g) }}
+                  </a-button>
+                  <a-button v-if="speedTestResult[g.id] && !speedTestRunning[g.id]" @click="resetSpeedTest(g)">
+                    <template #icon><CloseOutlined /></template>{{ t('cust.proxies.batchReset') }}
+                  </a-button>
+                </a-space>
+              </a-form>
+
+              <!-- Speedometer gauge (visible while running or after result) -->
+              <a-flex v-if="speedTestRunning[g.id] || speedTestResult[g.id]" justify="center" class="st-gauge">
+                <SpeedGauge
+                  :value="speedTestGauge[g.id] || 0"
+                  :max="null"
+                  :status="speedGaugeStatus(g)"
+                  :label="speedGaugeLabel(g)"
+                  :size="260"
+                />
+              </a-flex>
+
+              <!-- Result metrics (ping, download, upload, server) -->
+              <template v-if="speedTestResult[g.id] && !speedTestResult[g.id].error">
+                <a-row :gutter="[12, 12]">
+                  <a-col :xs="8">
+                    <a-card size="small"><a-statistic :title="t('cust.proxies.stPing')" :value="speedTestResult[g.id].pingMs" suffix="ms" /></a-card>
+                  </a-col>
+                  <a-col :xs="8">
+                    <a-card size="small"><a-statistic :title="t('cust.proxies.stDownload')" :value="speedTestResult[g.id].downloadMbps || 0" :precision="2" suffix="Mbps" :value-style="{ color: token.colorInfo }" /></a-card>
+                  </a-col>
+                  <a-col :xs="8">
+                    <a-card size="small"><a-statistic :title="t('cust.proxies.stUpload')" :value="speedTestResult[g.id].uploadMbps || 0" :precision="2" suffix="Mbps" :value-style="{ color: token.colorSuccess }" /></a-card>
+                  </a-col>
+                </a-row>
+                <a-descriptions bordered size="small" :column="1" class="tool-desc">
+                  <a-descriptions-item :label="t('cust.proxies.stServer')">
+                    <span class="mono">{{ speedTestResult[g.id].server?.sponsor }} · {{ speedTestResult[g.id].server?.name }} · {{ speedTestResult[g.id].server?.country }}</span>
+                  </a-descriptions-item>
+                </a-descriptions>
+              </template>
+            </template>
+
+            <!-- ── Single-IP tool tabs (test / blacklist / ping) ── -->
+            <template v-else-if="SINGLE_TOOLS.includes(tab.id)">
+              <a-typography-paragraph type="secondary">{{ t('cust.proxies.singlePickHint') }}</a-typography-paragraph>
+              <a-flex wrap="wrap" gap="small" align="center">
+                <a-select
+                  :value="pickedProxy(g, tab.id)"
+                  :options="proxyOptions(g)"
+                  :placeholder="t('cust.proxies.singlePickHint')"
+                  show-search
+                  option-filter-prop="label"
+                  class="proxy-picker"
+                  @change="(v) => setPickedProxy(g, tab.id, v)"
+                />
+                <a-button type="primary" :loading="singleBusy(g, tab.id)" :disabled="!pickedProxy(g, tab.id)" @click="runSingleTool(g, tab.id)">
+                  <template v-if="!singleBusy(g, tab.id)" #icon><PlayCircleOutlined /></template>
+                  {{ singleBusy(g, tab.id)
+                    ? t('cust.proxies.batchRowRunning')
+                    : singleResult(g, tab.id)
+                      ? t('cust.proxies.batchRerun')
+                      : t('cust.proxies.singleRun') }}
+                </a-button>
+              </a-flex>
+
+              <a-flex v-if="singleBusy(g, tab.id)" vertical align="center" gap="small" class="tool-wait">
+                <a-spin />
+                <a-typography-text type="secondary">{{ t('cust.proxies.toolRunning') }}</a-typography-text>
+              </a-flex>
+              <a-alert v-else-if="singleResult(g, tab.id)?.error" type="error" show-icon class="tool-desc" :message="singleResult(g, tab.id).error" />
+
+              <!-- TEST result -->
+              <a-descriptions v-else-if="tab.id === 'test' && singleResult(g, 'test')" bordered size="small" :column="1" class="tool-desc">
+                <a-descriptions-item :label="t('cust.proxies.testStatus')">
+                  <StatusTag :status="singleResult(g, 'test').ok ? 'ok' : 'failed'" :label="singleResult(g, 'test').ok ? 'OK' : 'FAIL'" />
+                </a-descriptions-item>
+                <a-descriptions-item :label="t('cust.proxies.testExitIp')"><span class="mono">{{ singleResult(g, 'test').exitIp || '—' }}</span></a-descriptions-item>
+                <a-descriptions-item :label="t('cust.proxies.testLatency')"><span class="mono">{{ singleResult(g, 'test').latencyMs }} ms</span></a-descriptions-item>
+              </a-descriptions>
+
+              <!-- BLACKLIST result (summary + DNSBL list) -->
+              <div v-else-if="tab.id === 'blacklist' && singleResult(g, 'blacklist')" class="tool-desc">
+                <a-alert :type="singleResult(g, 'blacklist').listed > 0 ? 'error' : 'success'" show-icon>
+                  <template #message>
+                    <strong>{{ singleResult(g, 'blacklist').listed }}</strong> / {{ singleResult(g, 'blacklist').total }} {{ t('cust.proxies.toolBlListed') }}
+                    · {{ singleResult(g, 'blacklist').clean }} clean · {{ singleResult(g, 'blacklist').errors }} errors
+                  </template>
+                </a-alert>
+                <a-list size="small" bordered class="bl-list" :data-source="singleResult(g, 'blacklist').results || []">
+                  <template #renderItem="{ item: r }">
+                    <a-list-item>
+                      <a-flex justify="space-between" align="center" gap="small" wrap="wrap" class="bl-row">
+                        <span>{{ r.name }}</span>
+                        <a-typography-text type="secondary" class="mono small-text">{{ r.host }}</a-typography-text>
+                        <a-tag :color="blTag(r).color" :bordered="false">{{ blTag(r).text }}</a-tag>
+                      </a-flex>
+                    </a-list-item>
+                  </template>
+                </a-list>
               </div>
-            </div>
-          </div>
 
-          <!-- PING result (full stats + each packet) -->
-          <div v-else-if="activeTab(g.id) === 'ping' && singleResult(g, 'ping')" class="ipinfo-table">
-            <div class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.pingLoss') }}</span>
-              <span class="ipinfo-val">
-                <strong :style="{ color: singleResult(g, 'ping').loss === 0 ? 'var(--green)' : singleResult(g, 'ping').loss < 100 ? 'var(--yellow)' : 'var(--red)' }">
-                  {{ singleResult(g, 'ping').loss }}%
-                </strong>
-                <span class="cell-mono" style="margin-left:8px">{{ singleResult(g, 'ping').received }}/{{ singleResult(g, 'ping').transmitted }} packets</span>
-              </span>
-            </div>
-            <div v-if="singleResult(g, 'ping').rtt" class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.pingRttMin') }}</span>
-              <span class="ipinfo-val cell-mono">{{ singleResult(g, 'ping').rtt.min.toFixed(2) }} ms</span>
-            </div>
-            <div v-if="singleResult(g, 'ping').rtt" class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.pingRttAvg') }}</span>
-              <span class="ipinfo-val cell-mono"><strong>{{ singleResult(g, 'ping').rtt.avg.toFixed(2) }} ms</strong></span>
-            </div>
-            <div v-if="singleResult(g, 'ping').rtt" class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.pingRttMax') }}</span>
-              <span class="ipinfo-val cell-mono">{{ singleResult(g, 'ping').rtt.max.toFixed(2) }} ms</span>
-            </div>
-            <div v-if="singleResult(g, 'ping').samples?.length" class="ipinfo-row">
-              <span class="ipinfo-key">{{ t('cust.proxies.pingSamples') }}</span>
-              <span class="ipinfo-val cell-mono">
-                <span v-for="s in singleResult(g, 'ping').samples" :key="s.seq" style="margin-right:8px">
-                  #{{ s.seq }}: {{ s.time.toFixed(1) }}ms
-                </span>
-              </span>
-            </div>
-          </div>
-        </template>
+              <!-- PING result (stats + each packet) -->
+              <a-descriptions v-else-if="tab.id === 'ping' && singleResult(g, 'ping')" bordered size="small" :column="1" class="tool-desc">
+                <a-descriptions-item :label="t('cust.proxies.pingLoss')">
+                  <a-typography-text strong :type="pingLossType(singleResult(g, 'ping').loss)">{{ singleResult(g, 'ping').loss }}%</a-typography-text>
+                  <span class="mono ping-packets">{{ singleResult(g, 'ping').received }}/{{ singleResult(g, 'ping').transmitted }} packets</span>
+                </a-descriptions-item>
+                <template v-if="singleResult(g, 'ping').rtt">
+                  <a-descriptions-item :label="t('cust.proxies.pingRttMin')"><span class="mono">{{ singleResult(g, 'ping').rtt.min.toFixed(2) }} ms</span></a-descriptions-item>
+                  <a-descriptions-item :label="t('cust.proxies.pingRttAvg')"><strong class="mono">{{ singleResult(g, 'ping').rtt.avg.toFixed(2) }} ms</strong></a-descriptions-item>
+                  <a-descriptions-item :label="t('cust.proxies.pingRttMax')"><span class="mono">{{ singleResult(g, 'ping').rtt.max.toFixed(2) }} ms</span></a-descriptions-item>
+                </template>
+                <a-descriptions-item v-if="singleResult(g, 'ping').samples?.length" :label="t('cust.proxies.pingSamples')">
+                  <a-space wrap :size="[8, 2]">
+                    <span v-for="s in singleResult(g, 'ping').samples" :key="s.seq" class="mono">#{{ s.seq }}: {{ s.time.toFixed(1) }}ms</span>
+                  </a-space>
+                </a-descriptions-item>
+              </a-descriptions>
+            </template>
 
-        <!-- ── EDIT CREDENTIALS tab ── -->
-        <template v-else-if="activeTab(g.id) === 'creds'">
-          <p class="gt-hint">{{ t('cust.proxies.tabCredsHint') }}</p>
-          <div v-for="p in pagedProxiesOf(g)" :key="p.id" class="gt-cred-row">
-            <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-            <span class="cell-mono creds">{{ p.username }}:{{ p.password }}</span>
-            <button class="pc-btn" type="button" @click="openCredsEdit(p)"><KeyRound :size="12" /> {{ t('cust.proxies.editCreds') }}</button>
-          </div>
-          <div v-if="proxyPageCount(g) > 1" class="px-pager">
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, 0)">«</button>
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) === 0" @click="setProxyPage(g.id, proxyPageOf(g.id) - 1)">‹</button>
-            <span class="px-pager-info">{{ proxyPageOf(g.id) + 1 }} / {{ proxyPageCount(g) }}</span>
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageOf(g.id) + 1)">›</button>
-            <button class="ghost-button" type="button" :disabled="proxyPageOf(g.id) + 1 >= proxyPageCount(g)" @click="setProxyPage(g.id, proxyPageCount(g) - 1)">»</button>
-          </div>
-        </template>
+            <!-- ── EDIT CREDENTIALS tab ── -->
+            <template v-else-if="tab.id === 'creds'">
+              <a-typography-paragraph type="secondary">{{ t('cust.proxies.tabCredsHint') }}</a-typography-paragraph>
+              <a-table
+                :columns="credsColumns"
+                :data-source="g.proxies"
+                :pagination="proxyPagination(g)"
+                row-key="id"
+                size="small"
+                :scroll="{ x: 640 }"
+                @change="(pag) => onProxyTableChange(g, pag)"
+              >
+                <template #bodyCell="{ column, record: p }">
+                  <span v-if="column.key === 'endpoint'" class="mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
+                  <span v-else-if="column.key === 'creds'" class="mono">{{ p.username }}:{{ p.password }}</span>
+                  <a-button v-else-if="column.key === 'actions'" size="small" @click="openCredsEdit(p)">
+                    <template #icon><KeyOutlined /></template>{{ t('cust.proxies.editCreds') }}
+                  </a-button>
+                </template>
+              </a-table>
+            </template>
 
-        <!-- ── TAGS tab ── -->
-        <template v-else-if="activeTab(g.id) === 'tags'">
-          <p class="gt-hint">{{ t('cust.proxies.tabTagsHint') }}</p>
-          <div class="gt-tags-current">
-            <span class="gt-hint" style="margin-right:6px">{{ t('cust.proxies.tabTagsCommon') }}:</span>
-            <span v-for="tg in commonTags(g)" :key="tg" class="tag-mini">
-              #{{ tg }}
-              <button type="button" @click="removeBulkTag(g, tg)"><X :size="9" /></button>
-            </span>
-            <span v-if="!commonTags(g).length" class="label-empty">{{ t('cust.proxies.tabTagsEmpty') }}</span>
-          </div>
-          <div class="gt-tag-input">
-            <input v-model="bulkTagDraft[g.id]" type="text" placeholder="tag-name (a-z 0-9 _ -)" @keydown.enter="addBulkTag(g)" />
-            <button class="pc-btn" type="button" @click="addBulkTag(g)"><Plus :size="12" /> {{ t('cust.proxies.tabTagsAdd') }}</button>
-          </div>
-        </template>
+            <!-- ── TAGS tab ── -->
+            <template v-else-if="tab.id === 'tags'">
+              <a-typography-paragraph type="secondary">{{ t('cust.proxies.tabTagsHint') }}</a-typography-paragraph>
+              <a-flex wrap="wrap" gap="small" align="center">
+                <a-typography-text type="secondary">{{ t('cust.proxies.tabTagsCommon') }}:</a-typography-text>
+                <a-tag v-for="tg in commonTags(g)" :key="tg" closable color="blue" :bordered="false" @close.prevent="removeBulkTag(g, tg)">#{{ tg }}</a-tag>
+                <a-typography-text v-if="!commonTags(g).length" type="secondary" italic>{{ t('cust.proxies.tabTagsEmpty') }}</a-typography-text>
+              </a-flex>
+              <a-space-compact class="bulk-tag-input">
+                <a-input v-model:value="bulkTagDraft[g.id]" placeholder="tag-name (a-z 0-9 _ -)" @press-enter="addBulkTag(g)" />
+                <a-button type="primary" @click="addBulkTag(g)"><template #icon><PlusOutlined /></template>{{ t('cust.proxies.tabTagsAdd') }}</a-button>
+              </a-space-compact>
+            </template>
 
-        <!-- ── DELETE tab ── -->
-        <template v-else-if="activeTab(g.id) === 'delete'">
-          <div class="gt-danger-zone">
-            <h3><Trash2 :size="16" style="vertical-align:-3px" /> {{ t('cust.proxies.tabDeleteTitle') }}</h3>
-            <p>{{ t('cust.proxies.tabDeleteHint', { n: g.proxies.length }) }}</p>
-            <button class="primary-action small" style="background:var(--red); border-color:var(--red); color:#fff" type="button" :disabled="busy[g.id] === 'delete'" @click="deleteGroup(g)">
-              <Trash2 :size="13" /> {{ busy[g.id] === 'delete' ? '...' : t('cust.proxies.tabDeleteConfirm', { n: g.proxies.length }) }}
-            </button>
-          </div>
-        </template>
-
-      </div>
-      <!-- Tag chips for all proxies that have tags or are being edited -->
-      <template v-for="p in g.proxies" :key="p.id + '-tags'">
-        <div v-if="(p.tags && p.tags.length) || tagEditing === p.id" class="tag-row">
-          <span class="tag-row-lbl">{{ p.label || p.id }}:</span>
-          <span v-for="tg in (p.tags || [])" :key="tg" class="tag-mini">
-            #{{ tg }}
-            <button type="button" @click="removeTag(p, tg)"><X :size="9" /></button>
-          </span>
-          <template v-if="tagEditing === p.id">
-            <input v-model="tagDraft" type="text" class="tag-input" placeholder="tag-name" @keydown.enter="addTag(p)" @keydown.esc="cancelTagEdit" />
-            <button class="icon-btn small" type="button" @click="addTag(p)"><Plus :size="11" /></button>
-            <button class="icon-btn small" type="button" @click="cancelTagEdit"><X :size="11" /></button>
-          </template>
-        </div>
+            <!-- ── DELETE tab ── -->
+            <a-alert
+              v-else-if="tab.id === 'delete'"
+              type="error"
+              show-icon
+              :message="t('cust.proxies.tabDeleteTitle')"
+              :description="t('cust.proxies.tabDeleteHint', { n: g.proxies.length })"
+            >
+              <template #icon><DeleteOutlined /></template>
+              <template #action>
+                <a-button danger type="primary" :loading="busy[g.id] === 'delete'" @click="deleteGroup(g)">
+                  {{ t('cust.proxies.tabDeleteConfirm', { n: g.proxies.length }) }}
+                </a-button>
+              </template>
+            </a-alert>
+          </a-tab-pane>
+        </a-tabs>
       </template>
+    </a-card>
+
+    <!-- ── Floating bulk action toolbar (when N proxies selected) ── -->
+    <div v-if="selected.size" class="bulk-bar">
+      <a-card size="small" :body-style="{ padding: '8px 12px' }" :style="{ boxShadow: token.boxShadowSecondary }">
+        <a-flex wrap="wrap" gap="small" align="center">
+          <a-typography-text strong>{{ t('cust.proxies.bulkSelected', { n: selected.size }) }}</a-typography-text>
+          <a-button size="small" @click="bulkCopy('colon')"><template #icon><CopyOutlined /></template>{{ t('cust.proxies.copy') }}</a-button>
+          <a-button size="small" @click="bulkExport"><template #icon><DownloadOutlined /></template>{{ t('cust.proxies.exportTxt') }}</a-button>
+          <a-button size="small" @click="bulkCheck"><template #icon><SafetyCertificateOutlined /></template>{{ t('cust.proxies.checkLive') }}</a-button>
+          <a-button size="small" type="primary" @click="bulkExtend"><template #icon><FieldTimeOutlined /></template>{{ t('cust.proxies.extend') }}</a-button>
+          <a-button size="small" danger @click="bulkDelete"><template #icon><DeleteOutlined /></template>{{ t('cust.proxies.deleteGroup') }}</a-button>
+          <a-tooltip :title="t('cust.proxies.clearSelection')">
+            <a-button size="small" type="text" @click="clearSelection"><template #icon><CloseOutlined /></template></a-button>
+          </a-tooltip>
+        </a-flex>
+      </a-card>
     </div>
-  </section>
 
-  <!-- ── Floating bulk action toolbar (when N proxies selected) ── -->
-  <div v-if="selected.size" class="bulk-toolbar">
-    <span class="bulk-count">{{ t('cust.proxies.bulkSelected', { n: selected.size }) }}</span>
-    <button class="action-pill" type="button" @click="bulkCopy('colon')"><Copy :size="12" /> {{ t('cust.proxies.copy') }}</button>
-    <button class="action-pill" type="button" @click="bulkExport"><Download :size="12" /> {{ t('cust.proxies.exportTxt') }}</button>
-    <button class="action-pill" type="button" @click="bulkCheck"><ShieldCheck :size="12" /> {{ t('cust.proxies.checkLive') }}</button>
-    <button class="action-pill primary" type="button" @click="bulkExtend"><RotateCw :size="12" /> {{ t('cust.proxies.extend') }}</button>
-    <button class="action-pill danger" type="button" @click="bulkDelete"><Trash2 :size="12" /> {{ t('cust.proxies.deleteGroup') }}</button>
-    <button class="bulk-close" type="button" @click="clearSelection" :title="t('cust.proxies.clearSelection')"><X :size="13" /></button>
-  </div>
+    <!-- ── Per-proxy connect drawer: details, sessions, Trojan QR, protocol URLs ── -->
+    <a-drawer :open="!!drawerProxy" :width="screens.md ? 620 : '100%'" @close="closeProxyDrawer">
+      <template #title>
+        <a-space :size="8" wrap>
+          <LinkOutlined />
+          <span>{{ t('cust.proxies.connectLabel') }}</span>
+          <a-typography-text v-if="drawerProxy" type="secondary" class="mono">{{ endpointOf(drawerProxy) }}</a-typography-text>
+        </a-space>
+      </template>
+      <a-flex v-if="drawerProxy" vertical gap="middle">
+        <a-descriptions bordered size="small" :column="1">
+          <a-descriptions-item :label="t('cust.proxies.host')">
+            <a-typography-text class="mono" :copyable="{ text: endpointOf(drawerProxy) }">{{ endpointOf(drawerProxy) }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item v-if="drawerProxy.type === 'IPv6' && drawerProxy.bindIp" :label="t('cust.proxies.egressIp')">
+            <a-typography-text class="mono" copyable>{{ drawerProxy.bindIp }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item :label="t('cust.proxies.creds')">
+            <a-typography-text class="mono" :copyable="{ text: `${drawerProxy.username}:${drawerProxy.password}` }">{{ drawerProxy.username }}:{{ drawerProxy.password }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item :label="t('cust.proxies.status')">
+            <a-space :size="6" wrap>
+              <StatusTag :status="drawerProxy.status" />
+              <a-tag :color="drawerProxy.type === 'IPv6' ? 'purple' : 'blue'" :bordered="false">{{ drawerProxy.type }}</a-tag>
+              <a-tooltip v-if="drawerProxy.expiresAt" :title="t('cust.proxies.expiresAtTitle') + fmtTs(drawerProxy.expiresAt)">
+                <span class="mono" :style="{ color: tierColor(fmtCountdown(drawerProxy.expiresAt).tier) }">
+                  <ClockCircleOutlined /> {{ fmtCountdown(drawerProxy.expiresAt).text }}
+                </span>
+              </a-tooltip>
+            </a-space>
+          </a-descriptions-item>
+          <a-descriptions-item :label="t('cust.proxies.label')">
+            <a-typography-text v-if="drawerProxy.label" strong>{{ drawerProxy.label }}</a-typography-text>
+            <a-typography-text v-else type="secondary" italic>{{ t('cust.proxies.labelEmpty') }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item v-if="drawerProxy.tags?.length" :label="t('cust.proxies.tabTags')">
+            <a-tag v-for="tg in drawerProxy.tags" :key="tg" color="blue" :bordered="false">#{{ tg }}</a-tag>
+          </a-descriptions-item>
+        </a-descriptions>
 
-  <!-- ── Credentials editor modal ── -->
-  <div v-if="credsEditing" class="creds-backdrop" @click.self="closeCredsEdit">
-    <div class="creds-modal">
-      <header>
-        <strong>{{ t('cust.proxies.credsTitle') }}</strong>
-        <button class="close-btn" type="button" @click="closeCredsEdit"><X :size="14" /></button>
-      </header>
-      <p class="creds-hint">{{ t('cust.proxies.credsHint') }}</p>
-      <label class="creds-field">
-        <span>{{ t('cust.proxies.credsUsername') }}</span>
-        <input v-model="credsDraft.username" type="text" maxlength="40" autofocus />
-      </label>
-      <label class="creds-field">
-        <span>{{ t('cust.proxies.credsPassword') }}</span>
-        <input v-model="credsDraft.password" type="text" maxlength="64" />
-      </label>
-      <p v-if="credsErr" class="error-text" style="margin:6px 0 0">{{ credsErr }}</p>
-      <div class="creds-actions">
-        <button class="ghost-button" type="button" @click="closeCredsEdit">{{ t('common.cancel') }}</button>
-        <button class="primary-action small" type="button" @click="saveCreds(list.find((p) => p.id === credsEditing))">{{ t('common.save') }}</button>
-      </div>
-    </div>
-  </div>
+        <!-- Sessions / connection caps -->
+        <a-card size="small">
+          <template #title>
+            <a-space :size="6" wrap>
+              <SafetyCertificateOutlined />
+              <a-typography-text strong class="mono" :type="(drawerProxy.session?.active || 0) >= (drawerProxy.session?.max || 100) ? 'danger' : undefined">
+                {{ drawerProxy.session?.active ?? 0 }}/{{ drawerProxy.session?.max ?? 100 }}
+              </a-typography-text>
+              <span>{{ t('cust.proxies.activeConns') }}</span>
+            </a-space>
+          </template>
+          <template #extra>
+            <a-tooltip :title="t('cust.proxies.tipDisconnect')">
+              <a-button size="small" danger @click="disconnectAllSessions(drawerProxy)">
+                <template #icon><DisconnectOutlined /></template>{{ t('cust.proxies.disconnectAll') }}
+              </a-button>
+            </a-tooltip>
+          </template>
+          <a-typography-text type="secondary" class="small-text">
+            max <strong>{{ drawerProxy.session?.max ?? 100 }}/proxy</strong> · <strong>{{ drawerProxy.session?.maxPerIp ?? 60 }}/IP</strong> · burst <strong>{{ drawerProxy.session?.rateLimit ?? 30 }}/s/IP</strong>. {{ t('cust.proxies.overCapNote') }}
+          </a-typography-text>
+          <template v-if="(drawerProxy.session?.byIp || []).length">
+            <a-divider class="group-divider" />
+            <a-typography-text type="secondary" class="small-text">{{ t('cust.proxies.byIpTitle') }}</a-typography-text>
+            <div v-for="row in (drawerProxy.session?.byIp || [])" :key="row.ip" class="byip-row">
+              <a-flex justify="space-between" gap="small">
+                <span class="mono">{{ row.ip }}</span>
+                <span class="mono"><strong>{{ row.count }}</strong>/{{ drawerProxy.session?.maxPerIp ?? 60 }}</span>
+              </a-flex>
+              <a-progress
+                :percent="Math.min(100, Math.round((row.count / (drawerProxy.session?.maxPerIp || 60)) * 100))"
+                :status="row.count >= (drawerProxy.session?.maxPerIp || 60) * 0.8 ? 'exception' : 'normal'"
+                :show-info="false"
+                size="small"
+              />
+            </div>
+          </template>
+        </a-card>
 
-  <!-- ── Quick-test (test in browser) modal ── -->
-  <div v-if="testModal" class="creds-backdrop" @click.self="closeTest">
-    <div class="creds-modal" style="width:480px">
-      <header>
-        <strong><Eye :size="14" style="vertical-align:-2px" /> {{ t('cust.proxies.testTitle') }}</strong>
-        <button class="close-btn" type="button" @click="closeTest"><X :size="14" /></button>
-      </header>
-      <p class="creds-hint">
-        <span class="cell-mono">{{ testModal.ip || testModal.bindIp }}:{{ testModal.port }}</span> · {{ testModal.username }}
-      </p>
-      <div v-if="testBusy" style="text-align:center; padding:24px">
-        <RefreshCw :size="24" class="spin" style="color:var(--green)" />
-        <p style="color:var(--muted); font-size:12px; margin-top:8px">{{ t('cust.proxies.testRunning') }}</p>
-      </div>
-      <div v-else-if="testResult" class="test-result">
-        <div class="test-row">
-          <span class="lbl">{{ t('cust.proxies.testStatus') }}</span>
-          <span :class="['status-pill', testResult.ok ? 'active' : 'expired']">{{ testResult.ok ? t('cust.proxies.testOk') : t('cust.proxies.testFail') }}</span>
-        </div>
-        <div v-if="testResult.exitIp" class="test-row">
-          <span class="lbl">{{ t('cust.proxies.testExitIp') }}</span>
-          <span class="cell-mono">{{ testResult.exitIp }}</span>
-        </div>
-        <div class="test-row">
-          <span class="lbl">{{ t('cust.proxies.testLatency') }}</span>
-          <span class="cell-mono">{{ testResult.latencyMs }} ms</span>
-        </div>
-        <div v-if="testResult.error" class="test-row">
-          <span class="lbl">{{ t('cust.proxies.testError') }}</span>
-          <span class="cell-mono" style="color:var(--red)">{{ testResult.error }}</span>
-        </div>
-      </div>
-      <div class="creds-actions">
-        <button class="ghost-button" type="button" @click="closeTest">{{ t('common.close') }}</button>
-        <button v-if="!testBusy" class="primary-action small" type="button" @click="runQuickTest(testModal)">{{ t('cust.proxies.testRetry') }}</button>
-      </div>
-    </div>
-  </div>
+        <!-- Trojan (TLS) -->
+        <a-card v-if="drawerProxy.connectUrls?.trojan" size="small">
+          <template #title>
+            <a-space :size="6">
+              <span>Trojan</span>
+              <a-typography-text type="secondary" class="mono">:{{ drawerProxy.tlsPort }}</a-typography-text>
+            </a-space>
+          </template>
+          <a-row :gutter="[16, 12]">
+            <a-col :xs="24" :sm="10">
+              <a-flex vertical align="center" gap="small">
+                <a-qrcode :value="drawerProxy.connectUrls.trojan" :size="180" :color="token.colorText" :bg-color="token.colorBgContainer" />
+                <a-button size="small" @click="downloadQr(drawerProxy.connectUrls.trojan, 'trojan-' + drawerProxy.id)">
+                  <template #icon><DownloadOutlined /></template>Download QR
+                </a-button>
+              </a-flex>
+            </a-col>
+            <a-col :xs="24" :sm="14">
+              <a-typography-paragraph type="secondary" class="small-text">v2rayN (Win) • v2rayNG (Android) • Shadowrocket (iOS) • Clash Verge (Mac) • Hiddify</a-typography-paragraph>
+              <a-typography-paragraph class="small-text">{{ t('cust.proxies.trojanNote') }}</a-typography-paragraph>
+              <a-typography-paragraph class="mono small-text" :copyable="{ text: drawerProxy.connectUrls.trojan }">{{ drawerProxy.connectUrls.trojan }}</a-typography-paragraph>
+              <a-button size="small" @click="copyText(drawerProxy.connectUrls.trojan, 'Trojan')">
+                <template #icon><CopyOutlined /></template>Copy URL
+              </a-button>
+            </a-col>
+          </a-row>
+        </a-card>
 
-  <!-- ── Embedded Tools result modal ── -->
-  <div v-if="toolsModal" class="creds-backdrop" @click.self="closeToolsModal">
-    <div class="creds-modal" style="width:560px; max-height:80vh">
-      <header>
-        <strong>
-          <Wrench :size="14" style="vertical-align:-2px" />
-          <template v-if="toolsModal.tool === 'speed-test'">{{ t('cust.proxies.toolSpeed') }}</template>
-          <template v-else-if="toolsModal.tool === 'blacklist'">{{ t('cust.proxies.toolBlacklist') }}</template>
-          <template v-else-if="toolsModal.tool === 'ip-info'">{{ t('cust.proxies.toolIpInfo') }}</template>
-          <template v-else-if="toolsModal.tool === 'ping'">{{ t('cust.proxies.toolPing') }}</template>
-        </strong>
-        <button class="close-btn" type="button" @click="closeToolsModal"><X :size="14" /></button>
-      </header>
-      <p class="creds-hint">
-        <span class="cell-mono">{{ (toolsModal.proxy.ip || toolsModal.proxy.bindIp) }}:{{ toolsModal.proxy.port }}</span>
-      </p>
+        <!-- Protocol URLs -->
+        <a-list size="small" bordered :data-source="PROTO_ROWS" row-key="key">
+          <template #renderItem="{ item: proto }">
+            <a-list-item>
+              <a-flex vertical gap="4" class="proto-item">
+                <a-flex justify="space-between" align="center" gap="small" wrap="wrap">
+                  <a-tag color="green" :bordered="false">{{ proto.tag }}</a-tag>
+                  <a-space :size="4">
+                    <a-button size="small" @click="copyText(drawerProxy.connectUrls?.[proto.key], proto.tag)">
+                      <template #icon><CopyOutlined /></template>Copy
+                    </a-button>
+                    <a-tooltip :title="'Show QR for ' + proto.tag">
+                      <a-button size="small" @click="openQrModal(drawerProxy.connectUrls?.[proto.key], proto.qr + '-' + drawerProxy.id)">
+                        <template #icon><QrcodeOutlined /></template>
+                      </a-button>
+                    </a-tooltip>
+                  </a-space>
+                </a-flex>
+                <a-typography-text class="mono small-text">{{ drawerProxy.connectUrls?.[proto.key] || '—' }}</a-typography-text>
+              </a-flex>
+            </a-list-item>
+          </template>
+        </a-list>
+      </a-flex>
+    </a-drawer>
 
-      <div v-if="toolsModal.busy" style="text-align:center; padding:24px">
-        <RefreshCw :size="24" class="spin" style="color:var(--green)" />
-        <p style="color:var(--muted); font-size:12px; margin-top:8px">
-          <template v-if="toolsModal.tool === 'speed-test'">{{ t('cust.proxies.toolSpeedRunning') }}</template>
-          <template v-else>{{ t('cust.proxies.toolRunning') }}</template>
-        </p>
-      </div>
+    <!-- ── IP whitelist modal ── -->
+    <a-modal :open="!!editingGroup" :title="t('cust.proxies.ipAuthTitle')" :footer="null" @cancel="closeWhitelist">
+      <template v-if="editingGroup">
+        <a-typography-paragraph type="secondary">{{ t('cust.proxies.ipAuthHint') }}</a-typography-paragraph>
+        <a-flex wrap="wrap" gap="small" class="wl-list">
+          <a-tag v-for="ip in groupWhitelist(editingGroup)" :key="ip" closable class="mono" @close.prevent="removeWhitelistIp(editingGroup, ip)">{{ ip }}</a-tag>
+          <a-typography-text v-if="!groupWhitelist(editingGroup).length" type="secondary" italic>{{ t('cust.proxies.ipAuthEmpty') }}</a-typography-text>
+        </a-flex>
+        <a-space-compact block>
+          <a-input v-model:value="whitelistInput" class="mono" :placeholder="t('cust.proxies.ipAuthPh') + ' — CIDR OK'" @press-enter="addWhitelistIp(editingGroup)" />
+          <a-button type="primary" @click="addWhitelistIp(editingGroup)"><template #icon><PlusOutlined /></template>{{ t('cust.proxies.ipAuthAdd') }}</a-button>
+        </a-space-compact>
+      </template>
+    </a-modal>
 
-      <div v-else-if="toolsModal.error" class="error-text" style="margin:12px 0">{{ toolsModal.error }}</div>
+    <!-- ── Credentials editor modal ── -->
+    <a-modal
+      :open="!!credsEditing"
+      :title="t('cust.proxies.credsTitle')"
+      :ok-text="t('common.save')"
+      :cancel-text="t('common.cancel')"
+      :confirm-loading="credsSaving"
+      @ok="saveCreds(credsProxy)"
+      @cancel="closeCredsEdit"
+    >
+      <a-typography-paragraph type="secondary">{{ t('cust.proxies.credsHint') }}</a-typography-paragraph>
+      <a-form layout="vertical" :model="credsDraft">
+        <a-form-item :label="t('cust.proxies.credsUsername')" name="username">
+          <a-input v-model:value="credsDraft.username" :maxlength="40" class="mono" autofocus />
+        </a-form-item>
+        <a-form-item :label="t('cust.proxies.credsPassword')" name="password">
+          <a-input v-model:value="credsDraft.password" :maxlength="64" class="mono" @press-enter="saveCreds(credsProxy)" />
+        </a-form-item>
+      </a-form>
+      <a-alert v-if="credsErr" type="error" show-icon :message="credsErr" />
+    </a-modal>
 
-      <!-- Speed test result -->
-      <div v-else-if="toolsModal.tool === 'speed-test' && toolsModal.result" class="tool-result">
-        <div class="tool-hero">
-          <span class="tool-hero-val" :style="{ color: toolsModal.result.mbps >= 50 ? 'var(--green)' : toolsModal.result.mbps >= 10 ? 'var(--yellow)' : 'var(--red)' }">
-            {{ toolsModal.result.mbps.toFixed(2) }}
-          </span>
-          <span class="tool-hero-unit">Mbps</span>
-        </div>
-        <div class="test-row"><span class="lbl">{{ t('cust.proxies.toolSpeedServer') }}</span><span>{{ toolsModal.result.server?.sponsor }} · {{ toolsModal.result.server?.name }}</span></div>
-        <div class="test-row"><span class="lbl">{{ t('cust.proxies.toolSpeedBytes') }}</span><span class="cell-mono">{{ fmtBytes(toolsModal.result.totalBytes) }}</span></div>
-        <div class="test-row"><span class="lbl">{{ t('cust.proxies.toolSpeedDuration') }}</span><span class="cell-mono">{{ (toolsModal.result.durationMs / 1000).toFixed(2) }} s</span></div>
-        <div class="test-row"><span class="lbl">{{ t('cust.proxies.toolSpeedTtfb') }}</span><span class="cell-mono">{{ toolsModal.result.ttfbMs }} ms</span></div>
-      </div>
+    <!-- ── Quick-test (test in browser) modal ── -->
+    <a-modal :open="!!testModal" @cancel="closeTest">
+      <template #title><EyeOutlined /> {{ t('cust.proxies.testTitle') }}</template>
+      <template v-if="testModal">
+        <a-typography-paragraph type="secondary">
+          <span class="mono">{{ testModal.ip || testModal.bindIp }}:{{ testModal.port }}</span> · {{ testModal.username }}
+        </a-typography-paragraph>
+        <a-flex v-if="testBusy" vertical align="center" gap="small" class="tool-wait">
+          <a-spin />
+          <a-typography-text type="secondary">{{ t('cust.proxies.testRunning') }}</a-typography-text>
+        </a-flex>
+        <a-descriptions v-else-if="testResult" bordered size="small" :column="1">
+          <a-descriptions-item :label="t('cust.proxies.testStatus')">
+            <StatusTag :status="testResult.ok ? 'ok' : 'failed'" :label="testResult.ok ? t('cust.proxies.testOk') : t('cust.proxies.testFail')" />
+          </a-descriptions-item>
+          <a-descriptions-item v-if="testResult.exitIp" :label="t('cust.proxies.testExitIp')"><span class="mono">{{ testResult.exitIp }}</span></a-descriptions-item>
+          <a-descriptions-item :label="t('cust.proxies.testLatency')"><span class="mono">{{ testResult.latencyMs }} ms</span></a-descriptions-item>
+          <a-descriptions-item v-if="testResult.error" :label="t('cust.proxies.testError')"><a-typography-text type="danger" class="mono">{{ testResult.error }}</a-typography-text></a-descriptions-item>
+        </a-descriptions>
+      </template>
+      <template #footer>
+        <a-button @click="closeTest">{{ t('common.close') }}</a-button>
+        <a-button v-if="!testBusy && testModal" type="primary" @click="runQuickTest(testModal)">{{ t('cust.proxies.testRetry') }}</a-button>
+      </template>
+    </a-modal>
 
-      <!-- Blacklist result -->
-      <div v-else-if="toolsModal.tool === 'blacklist' && toolsModal.result" class="tool-result">
-        <div :class="['blsum', toolsModal.result.listed > 0 ? 'bad' : 'good']">
-          <strong>{{ toolsModal.result.listed }}</strong> / {{ toolsModal.result.total }} {{ t('cust.proxies.toolBlListed') }}
-        </div>
-        <div class="bl-list">
-          <div v-for="r in toolsModal.result.results" :key="r.host" :class="['bl-item', r.listed === true ? 'listed' : r.listed === false ? 'clean' : 'error']">
-            <span>{{ r.name }}</span>
-            <span class="cell-mono">{{ r.host }}</span>
-            <span class="bl-tag">{{ r.listed === true ? t('cust.proxies.toolBlBad') : r.listed === false ? t('cust.proxies.toolBlClean') : 'ERR' }}</span>
-          </div>
-        </div>
-      </div>
+    <!-- ── Embedded Tools result modal ── -->
+    <a-modal :open="!!toolsModal" :width="560" @cancel="closeToolsModal">
+      <template #title><ToolOutlined /> {{ toolsModal ? t(TOOL_TITLE_KEYS[toolsModal.tool]) : '' }}</template>
+      <template v-if="toolsModal">
+        <a-typography-paragraph type="secondary"><span class="mono">{{ (toolsModal.proxy.ip || toolsModal.proxy.bindIp) }}:{{ toolsModal.proxy.port }}</span></a-typography-paragraph>
 
-      <!-- IP info result -->
-      <div v-else-if="toolsModal.tool === 'ip-info' && toolsModal.result" class="tool-result">
-        <div class="test-row"><span class="lbl">IP</span><span class="cell-mono">{{ toolsModal.result.ip }}</span></div>
-        <div class="test-row"><span class="lbl">ASN</span><span class="cell-mono">{{ toolsModal.result.asn || '—' }}</span></div>
-        <div class="test-row"><span class="lbl">CIDR</span><span class="cell-mono">{{ toolsModal.result.cidr || '—' }}</span></div>
-        <div class="test-row"><span class="lbl">{{ t('cust.tools.ipInfo.country') }}</span><span class="cell-mono">{{ toolsModal.result.country || '—' }}</span></div>
-        <div class="test-row"><span class="lbl">{{ t('cust.tools.ipInfo.registry') }}</span><span class="cell-mono">{{ (toolsModal.result.registry || '—').toUpperCase() }}</span></div>
-        <div class="test-row"><span class="lbl">{{ t('cust.tools.ipInfo.org') }}</span><span class="cell-mono" style="font-size:11.5px">{{ toolsModal.result.org || '—' }}</span></div>
-      </div>
+        <a-flex v-if="toolsModal.busy" vertical align="center" gap="small" class="tool-wait">
+          <a-spin />
+          <a-typography-text type="secondary">{{ toolsModal.tool === 'speed-test' ? t('cust.proxies.toolSpeedRunning') : t('cust.proxies.toolRunning') }}</a-typography-text>
+        </a-flex>
 
-      <!-- Ping result -->
-      <div v-else-if="toolsModal.tool === 'ping' && toolsModal.result" class="tool-result">
-        <div :class="['blsum', toolsModal.result.ok ? 'good' : 'bad']">
-          <strong>{{ toolsModal.result.received }}</strong> / {{ toolsModal.result.transmitted }} {{ t('cust.proxies.toolPingReceived') }}
-          · {{ toolsModal.result.loss }}% loss
-        </div>
-        <div v-if="toolsModal.result.rtt" class="test-row"><span class="lbl">RTT avg</span><span class="cell-mono">{{ toolsModal.result.rtt.avg.toFixed(1) }} ms</span></div>
-        <div v-if="toolsModal.result.rtt" class="test-row"><span class="lbl">RTT min</span><span class="cell-mono">{{ toolsModal.result.rtt.min.toFixed(1) }} ms</span></div>
-        <div v-if="toolsModal.result.rtt" class="test-row"><span class="lbl">RTT max</span><span class="cell-mono">{{ toolsModal.result.rtt.max.toFixed(1) }} ms</span></div>
-      </div>
+        <a-alert v-else-if="toolsModal.error" type="error" show-icon :message="toolsModal.error" />
 
-      <div class="creds-actions">
-        <button class="ghost-button" type="button" @click="closeToolsModal">{{ t('common.close') }}</button>
-        <button v-if="!toolsModal.busy" class="primary-action small" type="button" @click="runTool(toolsModal.proxy, toolsModal.tool)">{{ t('cust.proxies.toolRetry') }}</button>
-      </div>
-    </div>
-  </div>
+        <!-- Speed test result -->
+        <template v-else-if="toolsModal.tool === 'speed-test' && toolsModal.result">
+          <a-flex justify="center" class="tool-hero">
+            <a-statistic :value="toolsModal.result.mbps || 0" :precision="2" suffix="Mbps" :value-style="{ color: speedColor(toolsModal.result.mbps || 0), fontSize: '36px' }" />
+          </a-flex>
+          <a-descriptions bordered size="small" :column="1">
+            <a-descriptions-item :label="t('cust.proxies.toolSpeedServer')">{{ toolsModal.result.server?.sponsor }} · {{ toolsModal.result.server?.name }}</a-descriptions-item>
+            <a-descriptions-item :label="t('cust.proxies.toolSpeedBytes')"><span class="mono">{{ fmtBytes(toolsModal.result.totalBytes) }}</span></a-descriptions-item>
+            <a-descriptions-item :label="t('cust.proxies.toolSpeedDuration')"><span class="mono">{{ ((toolsModal.result.durationMs || 0) / 1000).toFixed(2) }} s</span></a-descriptions-item>
+            <a-descriptions-item :label="t('cust.proxies.toolSpeedTtfb')"><span class="mono">{{ toolsModal.result.ttfbMs }} ms</span></a-descriptions-item>
+          </a-descriptions>
+        </template>
 
-  <!-- ── Activity timeline modal ── -->
-  <div v-if="timelineModal" class="creds-backdrop" @click.self="closeTimeline">
-    <div class="creds-modal" style="width:560px; max-height:80vh">
-      <header>
-        <strong><Activity :size="14" style="vertical-align:-2px" /> {{ t('cust.proxies.timelineTitle') }}</strong>
-        <button class="close-btn" type="button" @click="closeTimeline"><X :size="14" /></button>
-      </header>
-      <p class="creds-hint">{{ t('cust.proxies.timelineHint') }}</p>
-      <div class="timeline-list">
-        <div v-if="!timelineEvents.length" class="empty-text" style="text-align:left">{{ t('cust.proxies.timelineEmpty') }}</div>
-        <div v-for="(ev, i) in timelineEvents" :key="i" class="timeline-row">
-          <span class="cell-mono ts">{{ String(ev.ts || '').slice(0, 16).replace('T', ' ') }}</span>
-          <span class="method">{{ ev.method }}</span>
-          <span class="note">{{ ev.note || ev.path }}</span>
-        </div>
-      </div>
-    </div>
-  </div>
+        <!-- Blacklist result -->
+        <template v-else-if="toolsModal.tool === 'blacklist' && toolsModal.result">
+          <a-alert :type="toolsModal.result.listed > 0 ? 'error' : 'success'" show-icon>
+            <template #message><strong>{{ toolsModal.result.listed }}</strong> / {{ toolsModal.result.total }} {{ t('cust.proxies.toolBlListed') }}</template>
+          </a-alert>
+          <a-list size="small" bordered class="bl-list" :data-source="toolsModal.result.results || []">
+            <template #renderItem="{ item: r }">
+              <a-list-item>
+                <a-flex justify="space-between" align="center" gap="small" wrap="wrap" class="bl-row">
+                  <span>{{ r.name }}</span>
+                  <a-typography-text type="secondary" class="mono small-text">{{ r.host }}</a-typography-text>
+                  <a-tag :color="blTag(r).color" :bordered="false">{{ blTag(r).text }}</a-tag>
+                </a-flex>
+              </a-list-item>
+            </template>
+          </a-list>
+        </template>
 
-  <!-- ── QR modal: expand small icon click into full-size QR + download ── -->
-  <div v-if="qrModal" class="creds-backdrop" @click.self="closeQrModal">
-    <div class="creds-modal qr-modal">
-      <header>
-        <strong><QrCode :size="14" style="vertical-align:-2px" /> {{ qrModal.label }}</strong>
-        <button class="close-btn" type="button" @click="closeQrModal"><X :size="14" /></button>
-      </header>
-      <div class="qr-modal-body">
-        <div class="qr-modal-svg" v-html="qrSvg(qrModal.url, 360)"></div>
-        <code class="qr-modal-url">{{ qrModal.url }}</code>
-        <div class="qr-modal-actions">
-          <button class="row-act-btn" @click="copyText(qrModal.url, qrModal.label)"><Copy :size="12" /> Copy URL</button>
-          <button class="row-act-btn" @click="downloadQr(qrModal.url, qrModal.label)"><Download :size="12" /> Download SVG</button>
-        </div>
-      </div>
-    </div>
+        <!-- IP info result -->
+        <a-descriptions v-else-if="toolsModal.tool === 'ip-info' && toolsModal.result" bordered size="small" :column="1">
+          <a-descriptions-item label="IP"><span class="mono">{{ toolsModal.result.ip }}</span></a-descriptions-item>
+          <a-descriptions-item label="ASN"><span class="mono">{{ toolsModal.result.asn || '—' }}</span></a-descriptions-item>
+          <a-descriptions-item label="CIDR"><span class="mono">{{ toolsModal.result.cidr || '—' }}</span></a-descriptions-item>
+          <a-descriptions-item :label="t('cust.tools.ipInfo.country')"><span class="mono">{{ toolsModal.result.country || '—' }}</span></a-descriptions-item>
+          <a-descriptions-item :label="t('cust.tools.ipInfo.registry')"><span class="mono">{{ (toolsModal.result.registry || '—').toUpperCase() }}</span></a-descriptions-item>
+          <a-descriptions-item :label="t('cust.tools.ipInfo.org')"><span class="mono">{{ toolsModal.result.org || '—' }}</span></a-descriptions-item>
+        </a-descriptions>
+
+        <!-- Ping result -->
+        <template v-else-if="toolsModal.tool === 'ping' && toolsModal.result">
+          <a-alert :type="toolsModal.result.ok ? 'success' : 'error'" show-icon>
+            <template #message>
+              <strong>{{ toolsModal.result.received }}</strong> / {{ toolsModal.result.transmitted }} {{ t('cust.proxies.toolPingReceived') }} · {{ toolsModal.result.loss }}% loss
+            </template>
+          </a-alert>
+          <a-descriptions v-if="toolsModal.result.rtt" bordered size="small" :column="1" class="tool-desc">
+            <a-descriptions-item label="RTT avg"><span class="mono">{{ toolsModal.result.rtt.avg.toFixed(1) }} ms</span></a-descriptions-item>
+            <a-descriptions-item label="RTT min"><span class="mono">{{ toolsModal.result.rtt.min.toFixed(1) }} ms</span></a-descriptions-item>
+            <a-descriptions-item label="RTT max"><span class="mono">{{ toolsModal.result.rtt.max.toFixed(1) }} ms</span></a-descriptions-item>
+          </a-descriptions>
+        </template>
+      </template>
+      <template #footer>
+        <a-button @click="closeToolsModal">{{ t('common.close') }}</a-button>
+        <a-button v-if="toolsModal && !toolsModal.busy" type="primary" @click="runTool(toolsModal.proxy, toolsModal.tool)">{{ t('cust.proxies.toolRetry') }}</a-button>
+      </template>
+    </a-modal>
+
+    <!-- ── Activity timeline modal ── -->
+    <a-modal :open="!!timelineModal" :width="560" :footer="null" :body-style="{ maxHeight: '65vh', overflowY: 'auto' }" @cancel="closeTimeline">
+      <template #title><HistoryOutlined /> {{ t('cust.proxies.timelineTitle') }}</template>
+      <a-typography-paragraph type="secondary">{{ t('cust.proxies.timelineHint') }}</a-typography-paragraph>
+      <a-flex v-if="timelineLoading" justify="center" class="tool-wait"><a-spin /></a-flex>
+      <a-empty v-else-if="!timelineEvents.length" :description="t('cust.proxies.timelineEmpty')" />
+      <a-timeline v-else class="timeline">
+        <a-timeline-item v-for="(ev, i) in timelineEvents" :key="i">
+          <a-space :size="6" wrap>
+            <a-typography-text type="secondary" class="mono small-text">{{ String(ev.ts || '').slice(0, 16).replace('T', ' ') }}</a-typography-text>
+            <a-tag :bordered="false" class="mono">{{ ev.method }}</a-tag>
+            <span>{{ ev.note || ev.path }}</span>
+          </a-space>
+        </a-timeline-item>
+      </a-timeline>
+    </a-modal>
+
+    <!-- ── QR modal: full-size QR + download ── -->
+    <a-modal :open="!!qrModal" :footer="null" :width="420" @cancel="closeQrModal">
+      <template #title><QrcodeOutlined /> {{ qrModal?.label }}</template>
+      <a-flex v-if="qrModal" vertical align="center" gap="middle">
+        <a-qrcode :value="qrModal.url" :size="280" :color="token.colorText" :bg-color="token.colorBgContainer" />
+        <a-typography-paragraph class="mono small-text qr-url" :copyable="{ text: qrModal.url }">{{ qrModal.url }}</a-typography-paragraph>
+        <a-space wrap>
+          <a-button @click="copyText(qrModal.url, qrModal.label)"><template #icon><CopyOutlined /></template>Copy URL</a-button>
+          <a-button @click="downloadQr(qrModal.url, qrModal.label)"><template #icon><DownloadOutlined /></template>Download SVG</a-button>
+        </a-space>
+      </a-flex>
+    </a-modal>
   </div>
 </template>
 
 <style scoped>
-.px-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 8px 4px; }
-.px-pager-info { font-size: 12.5px; color: var(--muted); min-width: 58px; text-align: center; font-family: var(--mono); }
-.tool-proxy-pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-.tool-proxy-pick select { flex: 1; min-width: 220px; max-width: 420px; }
-.sub { color: var(--muted); margin: 2px 0 14px; }
-.success-text { color: var(--green); font-size: 13px; margin: 4px 0 10px; }
+.has-bulk { padding-bottom: 72px; }
+.filter-search { width: 320px; max-width: 100%; }
+.filter-select { width: 180px; }
+.tag-filter { margin-top: 12px; }
 
-.filter-bar {
-  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  margin: 14px 0;
-}
-.search-wrap {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 36px; padding: 0 12px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  color: var(--muted);
-  min-width: 240px;
-}
-.search-wrap input {
-  flex: 1; background: none; border: none; outline: none;
-  color: var(--text); font-family: var(--mono); font-size: 13px;
-}
-.filter-select {
-  height: 36px; padding: 0 10px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  color: var(--text); font-size: 13px; outline: none;
-}
+.group-id { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+.group-meta { margin-left: auto; }
+.group-divider { margin: 12px 0; }
+.group-spin { padding: 16px 0; }
+.small-text { font-size: 12px; }
+.zone { display: inline-flex; align-items: center; gap: 6px; }
+.zone :deep(.country-flag) { vertical-align: 0; }
+.countdown { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.countdown-tag { margin-inline-end: 0; }
+.countdown-tag strong { font-variant-numeric: tabular-nums; }
+.pulse { animation: pb-pulse 1s ease-in-out infinite; }
+@keyframes pb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
-.group-card { padding: 14px 16px; margin-bottom: 12px; }
-.group-head {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  font-size: 12.5px;
-}
-.group-toggle {
-  width: 24px; height: 24px; background: transparent; border: none; border-radius: 6px;
-  color: var(--muted); cursor: pointer; display: grid; place-items: center;
-}
-.group-toggle:hover { background: var(--bg); color: var(--text); }
-.group-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.group-id strong { font-size: 13px; color: var(--text); }
-.group-id .group-sub { font-size: 11px; color: var(--muted); }
-.group-count, .group-zone, .group-exp {
-  display: inline-flex; align-items: center; gap: 6px; color: var(--muted);
-  line-height: 1;
-}
-.group-count svg, .group-zone svg, .group-exp svg { color: var(--muted); }
-/* Reset the inline vertical-align that CountryFlag applies for inline-baseline
-   contexts — inside our flex row, align-items: center already does the job. */
-.group-zone :deep(.country-flag) { vertical-align: 0; }
+.extend-hours { width: 84px; }
+.rotate-select { width: 150px; }
+.label-input { width: 200px; }
+.label-add { padding-inline: 0; }
+.row-tags { margin-top: 4px; }
+.row-tags :deep(.ant-tag) { margin-inline-end: 0; }
+.tag-input { width: 110px; }
+.egress { display: inline-block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.spark { width: 80px; height: 18px; display: block; }
 
-.group-actions {
-  display: flex; gap: 8px; flex-wrap: wrap;
-  margin-top: 12px; padding-top: 12px;
-  border-top: 1px solid var(--border-soft);
-}
-.action-pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 12px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
-  color: var(--text); font-size: 12px; font-weight: 500;
-  cursor: pointer; transition: background 120ms, border-color 120ms, color 120ms;
-}
-.action-pill:hover:not(:disabled) {
-  background: rgba(63,185,80,0.10); border-color: var(--green); color: var(--green);
-}
-.action-pill.primary {
-  background: rgba(63,185,80,0.14); border-color: var(--green); color: var(--green);
-}
-.action-pill.primary:hover:not(:disabled) {
-  background: var(--green); color: #ffffff;
-}
-/* Expired groups: make the renew action a solid, unmistakable CTA. */
-.action-pill.renew-cta {
-  background: var(--green); border-color: var(--green); color: #ffffff; font-weight: 600;
-}
-.action-pill.renew-cta:hover:not(:disabled) { filter: brightness(1.08); }
-.action-pill.danger:hover:not(:disabled) {
-  background: rgba(248,81,73,0.12); border-color: var(--red); color: var(--red);
-}
-.action-pill:disabled { opacity: 0.55; cursor: not-allowed; }
-.pill-count {
-  background: var(--green); color: #ffffff;
-  padding: 1px 6px; border-radius: 8px;
-  font-size: 10px; font-weight: 600; margin-left: 4px;
-}
+.quick-stats { margin-top: 12px; }
+.check-result { margin-top: 12px; }
 
-.extend-inline {
-  display: inline-flex; align-items: center; gap: 4px;
-  border: 1px solid var(--border); border-radius: 7px;
-  background: var(--bg); padding-left: 6px;
-}
-.extend-inline input {
-  width: 60px; height: 28px; padding: 0 6px;
-  background: transparent; border: none; outline: none;
-  color: var(--text); font-family: var(--mono); font-size: 12px;
-  text-align: right;
-}
-.extend-inline .action-pill { border: none; border-radius: 6px; height: 28px; }
+.proxy-picker { width: 100%; max-width: 420px; }
+.tool-wait { padding: 24px 0; }
+.tool-desc { margin-top: 12px; }
+.tool-refresh { margin-top: 12px; }
+.tool-hero { margin: 4px 0 12px; }
+.bl-list { margin-top: 8px; max-height: 320px; overflow-y: auto; }
+.bl-row { width: 100%; }
+.ping-packets { margin-left: 8px; }
+.st-gauge { margin: 16px 0; }
 
-.check-result {
-  display: inline-flex; align-items: center; gap: 6px;
-  margin-top: 10px;
-  padding: 6px 10px; font-size: 12px;
-  background: var(--green-soft); border: 1px solid var(--green); border-radius: 7px;
-  color: var(--green);
-}
+.sub-item { width: 100%; min-width: 0; }
+.sub-rotate { margin-top: 12px; }
+.copy-btn { text-align: left; overflow: hidden; text-overflow: ellipsis; }
+.bulk-tag-input { margin-top: 12px; max-width: 420px; }
 
-.whitelist-panel {
-  margin-top: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-}
-.whitelist-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.whitelist-head strong { font-size: 12.5px; color: var(--text); }
-.whitelist-hint { font-size: 11.5px; color: var(--muted); margin: 0 0 8px; line-height: 1.4; }
-.whitelist-list { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; min-height: 24px; }
-.whitelist-empty { font-size: 12px; color: var(--muted); font-style: italic; }
-.ip-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  background: var(--border-soft); border: 1px solid var(--border); border-radius: 6px;
-  padding: 3px 4px 3px 8px; font-size: 12px;
-}
-.ip-remove {
-  width: 18px; height: 18px; background: transparent; border: none; border-radius: 4px;
-  color: var(--muted); cursor: pointer; display: grid; place-items: center;
-}
-.ip-remove:hover { background: rgba(248,81,73,0.12); color: var(--red); }
-.whitelist-form { display: flex; gap: 8px; }
-.whitelist-form input {
-  flex: 1; height: 32px; padding: 0 10px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
-  color: var(--text); font-family: var(--mono); font-size: 12.5px; outline: none;
-}
-.whitelist-form input:focus { border-color: var(--green); }
+.proto-item { width: 100%; min-width: 0; }
+.byip-row { margin-top: 8px; }
+.wl-list { margin-bottom: 12px; min-height: 24px; }
+.qr-url { max-width: 100%; text-align: center; margin-bottom: 0; }
+.timeline { margin-top: 8px; }
 
-.group-body {
-  margin-top: 12px; padding-top: 12px;
-  border-top: 1px solid var(--border-soft);
-}
-/* ── Group tabs (left vertical) + content (right) ──────────────────── */
-.group-body {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-soft);
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 14px;
-  min-height: 320px;
-}
-.gt-tabs {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--bg);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 6px;
-  align-self: start;
-}
-.gt-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  text-align: left;
-  transition: background 120ms, color 120ms, border-color 120ms;
-}
-.gt-tab:hover {
-  background: rgba(63,185,80,0.06);
-  color: var(--text);
-}
-.gt-tab.active {
-  background: rgba(63,185,80,0.12);
-  border-color: var(--green);
-  color: var(--green);
-  font-weight: 600;
-}
-.gt-tab.danger:hover { background: rgba(248,81,73,0.10); color: var(--red); }
-.gt-tab.danger.active { background: rgba(248,81,73,0.14); border-color: var(--red); color: var(--red); }
-.gt-tab svg { flex: none; }
-
-.gt-content {
-  background: var(--bg);
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  padding: 14px;
-  min-width: 0;
-}
-.gt-hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; line-height: 1.5; }
-.gt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
-.gt-result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
-
-.gt-row {
-  display: grid;
-  grid-template-columns:
-    24px                /* checkbox */
-    36px                /* #idx */
-    minmax(110px, 160px) /* label */
-    minmax(170px, 200px) /* ip:port */
-    minmax(220px, 240px) /* user:pass */
-    72px                /* status pill */
-    72px                /* spark */
-    auto;               /* actions (sized to content) */
-  gap: 0;
-  align-items: stretch;
-  padding: 0;
-  border-radius: 6px;
-  border: 1px solid var(--border-soft);
-  margin-bottom: 4px;
-  font-size: 12.5px;
-  min-height: 34px;
-}
-.gt-row > .pc-idx,
-.gt-row > .gt-row-label,
-.gt-row > .cell-mono,
-.gt-row > .gt-row-status,
-.gt-row > .spark,
-.gt-row > .gt-row-actions {
-  padding: 0 10px;
-  min-width: 0;
-  display: flex; align-items: center;
-}
-.gt-row > .cbx { margin-left: 8px; align-self: center; }
-.gt-row > .gt-row-status { justify-content: center; padding: 0 6px; }
-.gt-row > .spark { padding: 0 6px; }
-.gt-row > .cell-mono {
-  overflow: hidden;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 1px;
-  line-height: 1.25;
-}
-.gt-row > .cell-mono > .ip-line,
-.gt-row > .cell-mono > .egress-line {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--mono);
-}
-.gt-row > .cell-mono > .egress-line {
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.gt-row.is-selected { border-color: var(--green); background: rgba(63,185,80,0.04); }
-.gt-row .creds { color: var(--muted); }
-.gt-row-label { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.gt-row-label input {
-  height: 24px; padding: 0 6px;
-  background: var(--surface); border: 1px solid var(--green); border-radius: 5px;
-  color: var(--text); font-size: 12px; outline: none; width: 140px;
-}
-/* Each action button looks like its own cell separated by vertical lines */
-.gt-row-actions {
-  display: flex; gap: 0;
-  justify-content: flex-end; flex-wrap: nowrap;
-  padding: 0 !important;
-}
-.gt-row-actions .row-act-btn {
-  border: none !important; background: transparent !important;
-  border-radius: 0 !important;
-  padding: 0 12px !important;
-  height: 100%;
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-.gt-row-actions .row-act-btn + .row-act-btn {
-  border-left: none !important;
-}
-.gt-row-actions .row-act-btn:hover:not(:disabled) { background: rgba(255,255,255,0.05) !important; }
-.gt-row-actions .row-act-btn.connect-btn { color: var(--green); }
-.gt-row-actions .row-act-btn.rotate-btn:not(:disabled):hover { color: var(--green); }
-
-.gt-result-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 12px;
-  display: flex; flex-direction: column; gap: 6px;
-}
-.gt-rc-head { font-size: 12.5px; color: var(--text); border-bottom: 1px solid var(--border-soft); padding-bottom: 6px; }
-.gt-rc-busy { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; }
-.gt-rc-body { display: flex; flex-direction: column; gap: 6px; }
-.gt-big-num { font-size: 22px; font-weight: 700; font-family: var(--mono); }
-.gt-big-num small { font-size: 12px; font-weight: 500; color: var(--muted); }
-.gt-big-num.bad  { color: var(--red); }
-.gt-big-num.good { color: var(--green); }
-
-.gt-cred-row {
-  display: grid;
-  grid-template-columns: 1.2fr 1.6fr auto;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-soft);
-  font-size: 12.5px;
-}
-.gt-cred-row .creds { color: var(--muted); }
-
-.gt-tags-current { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); }
-.gt-tag-input { display: flex; gap: 8px; }
-.gt-tag-input input {
-  flex: 1; height: 34px; padding: 0 12px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
-  color: var(--text); font-family: var(--mono); font-size: 13px; outline: none;
-}
-.gt-tag-input input:focus { border-color: var(--green); }
-
-.gt-danger-zone {
-  padding: 18px;
-  background: var(--red-soft);
-  border: 1px solid var(--red);
-  border-radius: 10px;
-}
-.gt-danger-zone h3 { margin: 0 0 8px; font-size: 14px; color: var(--red); }
-.gt-danger-zone p { font-size: 13px; color: var(--text); margin: 0 0 12px; line-height: 1.5; }
-
-/* Batch tool list (sequential rows) */
-.batch-controls {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 14px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.batch-note { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
-.batch-empty {
-  padding: 30px 20px; text-align: center;
-  background: var(--surface); border: 1px dashed var(--border); border-radius: 8px;
-  color: var(--muted); font-size: 13px;
-}
-.batch-list { display: flex; flex-direction: column; gap: 6px; }
-.batch-row {
-  display: grid;
-  grid-template-columns: 28px 1.4fr 130px 1fr;
-  gap: 12px;
-  align-items: center;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  font-size: 12.5px;
-  transition: border-color 120ms, background 120ms;
-}
-.batch-row.running {
-  border-color: var(--green);
-  background: rgba(63,185,80,0.05);
-}
-.batch-row.done { border-color: var(--border); }
-.batch-num {
-  width: 26px; height: 26px;
-  display: inline-grid; place-items: center;
-  background: var(--bg); border: 1px solid var(--border-soft); border-radius: 50%;
-  font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--muted);
-}
-.batch-row.done .batch-num { background: var(--green-soft); color: var(--green); border-color: var(--green); }
-.batch-row.running .batch-num { background: var(--green); color: #fff; border-color: var(--green); }
-
-.batch-target { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.batch-target .label-text { display: inline-block; align-self: flex-start; }
-
-.batch-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
-.batch-detail { display: flex; flex-direction: column; gap: 2px; min-width: 0; align-items: flex-end; text-align: right; }
-
-/* IP info tab — chip picker + key/value table */
-.ipinfo-picker {
-  display: flex; gap: 6px; flex-wrap: wrap;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.ipinfo-chip {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 12px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
-  color: var(--text); font-size: 12.5px; cursor: pointer;
-  transition: background 120ms, border-color 120ms, color 120ms;
-}
-.ipinfo-chip:hover { border-color: var(--muted); }
-.ipinfo-chip.active {
-  background: var(--green-soft); border-color: var(--green); color: var(--green);
-  font-weight: 600;
-}
-
-.ipinfo-table {
-  display: flex; flex-direction: column; gap: 0;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-}
-.ipinfo-row {
-  display: grid;
-  grid-template-columns: 200px 1fr;
-  gap: 16px;
-  align-items: center;
-  padding: 12px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border-soft);
-}
-.ipinfo-row:last-of-type { border-bottom: none; }
-.ipinfo-row:nth-child(even) { background: var(--bg); }
-.ipinfo-key {
-  font-size: 11px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-}
-.ipinfo-val { font-size: 13px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
-.ipinfo-val-wrap { word-break: break-word; }
-.ipinfo-actions {
-  display: flex; justify-content: flex-end;
-  padding: 10px 16px;
-  background: var(--bg);
-}
-
-/* ── Speed test tab — controls + gauge + result cards ── */
-.st-controls {
-  display: flex; flex-direction: column; gap: 12px;
-  margin-bottom: 18px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.st-row {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-}
-.st-lbl {
-  font-size: 11px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-  min-width: 70px;
-}
-
-.st-gauge-wrap {
-  display: flex; flex-direction: column; align-items: center;
-  margin: 18px 0;
-}
-.st-gauge {
-  width: 100%; max-width: 320px; height: auto;
-}
-.st-phase {
-  display: inline-flex; align-items: center; gap: 8px;
-  margin-top: 8px;
-  font-size: 13px; color: var(--text);
-}
-
-.st-result {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
-  margin-top: 14px;
-}
-.st-metric {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-  padding: 14px; display: flex; flex-direction: column; gap: 6px;
-}
-.st-metric.down { border-color: var(--green); }
-.st-metric.up { border-color: var(--blue); }
-.st-mlbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
-.st-mval { font-size: 26px; font-weight: 700; font-family: var(--mono); color: var(--text); }
-.st-mval small { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 4px; }
-.st-metric.down .st-mval { color: var(--green); }
-.st-metric.up .st-mval { color: var(--blue); }
-
-/* ── Mobile (≤ 720px) ────────────────────────────────────────────── */
-@media (max-width: 900px) {
-  .group-body { grid-template-columns: 1fr; gap: 10px; }
-  /* Tabs become a horizontal scrollable pill row */
-  .gt-tabs {
-    flex-direction: row;
-    overflow-x: auto;
-    padding: 6px;
-    gap: 6px;
-    scrollbar-width: none;
-  }
-  .gt-tabs::-webkit-scrollbar { display: none; }
-  .gt-tab {
-    flex: 0 0 auto;
-    padding: 8px 12px;
-    font-size: 12px;
-    white-space: nowrap;
-  }
-  .gt-content { padding: 12px; }
-  .gt-row {
-    grid-template-columns: 1fr;
-    gap: 4px;
-    padding: 10px;
-  }
-  .gt-row > span { font-size: 12px; }
-  .gt-result-grid { grid-template-columns: 1fr; }
-  .batch-row {
-    grid-template-columns: 24px 1fr;
-    gap: 8px;
-    padding: 10px;
-  }
-  .batch-row .batch-status,
-  .batch-row .batch-detail {
-    grid-column: 1 / -1;
-    text-align: left;
-    align-items: flex-start;
-    padding-left: 32px;
-  }
-  .ipinfo-row { grid-template-columns: 1fr; gap: 2px; padding: 10px 12px; }
-  .st-result { grid-template-columns: 1fr; }
-  .st-row { flex-direction: column; align-items: stretch; }
-  .st-lbl { min-width: 0; }
-  .filter-bar { flex-direction: column; align-items: stretch; gap: 8px; }
-  .search-wrap { min-width: 0; width: 100%; }
-  .kpi-row { grid-template-columns: repeat(2, 1fr); }
-  .quick-stats { grid-template-columns: repeat(2, 1fr); }
-  .group-head { gap: 8px; font-size: 11.5px; }
-  .group-actions { gap: 6px; }
-  .group-actions > * { font-size: 11.5px; padding: 0 10px; }
-  .group-view-btn { padding: 4px 10px; }
-}
-
-@media (max-width: 480px) {
-  .kpi-row { grid-template-columns: 1fr 1fr; }
-  .quick-stats { grid-template-columns: 1fr; }
-  .group-head > * { font-size: 11px; }
-  .gt-tab { padding: 7px 10px; font-size: 11.5px; }
-  .gt-content { padding: 10px; }
-  .gt-cred-row { grid-template-columns: 1fr; gap: 6px; }
-  .pc-btn { font-size: 11px; padding: 0 8px; height: 28px; }
-  h1 { font-size: 20px !important; }
-  .bulk-toolbar {
-    left: 8px; right: 8px; bottom: 8px; transform: none;
-    flex-wrap: wrap; padding: 8px;
-  }
-}
-
-/* Legacy per-proxy CARD (no longer rendered, kept to avoid leftover ref errors) */
-.proxy-card {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  margin-bottom: 8px;
-  overflow: hidden;
-  transition: border-color 120ms, background 120ms;
-}
-.proxy-card.is-selected { border-color: var(--green); background: rgba(63,185,80,0.05); }
-.pc-info {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 14px;
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--border-soft);
-}
-.pc-idx { color: var(--muted); font-size: 12px; font-weight: 600; }
-.pc-label {
-  display: inline-flex; align-items: center; gap: 6px;
-  min-width: 0;
-}
-.pc-label input {
-  height: 26px; padding: 0 8px;
-  background: var(--surface); border: 1px solid var(--green); border-radius: 5px;
-  color: var(--text); font-size: 12px; outline: none; width: 180px;
-}
-.label-add {
-  background: transparent; border: 1px dashed var(--border);
-  color: var(--muted); font-size: 11px; padding: 2px 8px; border-radius: 5px;
-  cursor: pointer;
-  display: inline-flex; align-items: center; gap: 4px;
-}
-.label-add:hover { border-color: var(--green); color: var(--green); border-style: solid; }
-
-.pc-field {
-  display: flex; flex-direction: column; gap: 2px;
-  min-width: 0;
-}
-.pc-field-lbl {
-  font-size: 9.5px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-}
-.pc-field .cell-mono { font-size: 12.5px; color: var(--text); }
-.pc-field .creds { color: var(--muted); }
-
-.pc-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 14px;
-  background: rgba(0,0,0,0.15);
-}
-.pc-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 12px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-size: 12px; font-weight: 500;
-  cursor: pointer;
-  transition: background 120ms, border-color 120ms, color 120ms;
-}
-.pc-btn:hover {
-  background: rgba(63,185,80,0.10);
-  border-color: var(--green);
-  color: var(--green);
-}
-.pc-btn.danger:hover {
-  background: rgba(248,81,73,0.12);
-  border-color: var(--red);
-  color: var(--red);
-}
-
-/* Custom checkbox — uniform look across themes (native renderer was leaking) */
-.cbx {
-  width: 18px; height: 18px;
-  background: var(--bg);
-  border: 1.5px solid var(--border);
-  border-radius: 5px;
-  display: inline-grid; place-items: center;
-  cursor: pointer;
-  padding: 0;
-  transition: background 120ms, border-color 120ms;
-  flex-shrink: 0;
-}
-.cbx:hover { border-color: var(--green); }
-.cbx svg { opacity: 0; color: #ffffff; transition: opacity 120ms; }
-.cbx.checked { background: var(--green); border-color: var(--green); }
-.cbx.checked svg { opacity: 1; }
-
-/* View detail button per group */
-.group-view-btn {
-  margin-left: auto;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 12px;
-  background: var(--bg); border: 1px solid var(--green);
-  border-radius: 7px; color: var(--green);
-  font-size: 12px; font-weight: 600;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background 120ms;
-}
-.group-view-btn:hover { background: var(--green); color: #ffffff; }
-
-/* Embedded Tools dropdown */
-.tools-wrap { position: relative; display: inline-block; }
-.tools-menu {
-  position: absolute; top: 100%; right: 0; margin-top: 4px; z-index: 40;
-  min-width: 160px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  display: flex; flex-direction: column; gap: 1px;
-}
-.tools-menu button {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 10px; background: transparent; border: none; border-radius: 5px;
-  color: var(--text); font-size: 12px; text-align: left; cursor: pointer;
-}
-.tools-menu button:hover { background: var(--bg); color: var(--green); }
-
-/* Tool result panels (unified modal) */
-.tool-result { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; }
-.tool-hero { text-align: center; padding: 16px 0; }
-.tool-hero-val { font-size: 48px; font-weight: 700; font-family: var(--mono); letter-spacing: -0.03em; }
-.tool-hero-unit { font-size: 16px; color: var(--muted); margin-left: 8px; }
-
-.blsum {
-  text-align: center; padding: 14px;
-  border-radius: 8px; border: 1px solid var(--border);
-  font-size: 14px; color: var(--text); margin-bottom: 10px;
-}
-.blsum strong { font-size: 26px; font-weight: 700; font-family: var(--mono); }
-.blsum.good { background: var(--green-soft); border-color: var(--green); color: var(--green); }
-.blsum.bad  { background: var(--red-soft); border-color: var(--red); color: var(--red); }
-
-.bl-list { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow-y: auto; }
-.bl-item {
-  display: grid; grid-template-columns: 1fr 1fr 70px; gap: 8px;
-  padding: 6px 10px; font-size: 11.5px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-}
-.bl-item.listed { border-color: var(--red); }
-.bl-item.clean  { border-color: var(--green); }
-.bl-item .bl-tag { font-family: var(--mono); font-weight: 700; font-size: 10.5px; text-align: center; padding: 2px 6px; border-radius: 4px; }
-.bl-item.listed .bl-tag { background: var(--red); color: #ffffff; }
-.bl-item.clean .bl-tag  { background: var(--green-soft); color: var(--green); }
-.bl-item.error .bl-tag  { background: var(--yellow-soft); color: var(--yellow); }
-@media (max-width: 900px) {
-  .group-head { gap: 8px; font-size: 11.5px; }
-  .group-actions { gap: 6px; }
-  .action-pill { padding: 0 10px; font-size: 11.5px; }
-  .pc-info { gap: 8px; padding: 10px; }
-  .pc-actions { padding: 8px 10px; }
-  .pc-btn { padding: 0 8px; font-size: 11.5px; }
-}
-
-/* ── Label badge / inline edit (group + per-proxy) ── */
-.group-label, .proxy-label {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; color: var(--muted);
-  min-width: 0;
-}
-.group-label .label-text, .proxy-label .label-text {
-  color: var(--text); font-weight: 600; font-size: 12px;
-  background: var(--green-soft); border: 1px solid var(--green);
-  padding: 1px 8px; border-radius: 5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
-}
-.label-empty { color: var(--muted); font-style: italic; font-size: 11.5px; }
-.group-label input, .proxy-label input {
-  height: 24px; padding: 0 6px;
-  background: var(--bg); border: 1px solid var(--green); border-radius: 5px;
-  color: var(--text); font-size: 12px; outline: none; width: 160px;
-}
-.icon-btn.small { width: 22px; height: 22px; border-radius: 5px; }
-.icon-btn.small svg { width: 11px; height: 11px; }
-
-/* ── Bulk action toolbar (floating bottom) ── */
-.bulk-toolbar {
-  position: fixed;
-  left: 50%;
-  bottom: 24px;
-  transform: translateX(-50%);
-  z-index: 60;
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 10px 8px 14px;
-  background: var(--pxl-card, var(--surface));
-  border: 1px solid var(--green);
-  border-radius: 14px;
-  box-shadow: 0 12px 36px rgba(0,0,0,0.4), 0 0 0 1px rgba(63,185,80,0.2);
-  font-size: 12.5px;
-}
-.bulk-count { color: var(--green); font-weight: 700; padding-right: 6px; border-right: 1px solid var(--border); }
-.bulk-close {
-  width: 26px; height: 26px; background: transparent; border: none; border-radius: 6px;
-  color: var(--muted); cursor: pointer; display: grid; place-items: center;
-  margin-left: 4px;
-}
-.bulk-close:hover { background: rgba(239,68,68,0.12); color: var(--red); }
-
-/* ── Credentials modal ── */
-.creds-backdrop {
-  position: fixed; inset: 0; z-index: 80;
-  background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
-  display: grid; place-items: center;
-  animation: fadein 120ms ease;
-}
-@keyframes fadein { from { opacity: 0 } to { opacity: 1 } }
-.creds-modal {
-  width: 420px; max-width: calc(100vw - 32px);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 18px;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.creds-modal header { display: flex; justify-content: space-between; align-items: center; }
-.creds-modal header strong { font-size: 14px; color: var(--text); }
-.creds-hint { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.45; }
-.creds-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); }
-.creds-field input {
-  height: 36px; padding: 0 10px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  color: var(--text); font-family: var(--mono); font-size: 13px; outline: none;
-}
-.creds-field input:focus { border-color: var(--green); }
-.creds-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
-
-/* Tag filter bar */
-.tag-bar {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  margin: 8px 0 14px; padding: 8px 12px;
-  background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px;
-  font-size: 12px; color: var(--muted);
-}
-.tag-bar-label { color: var(--muted); margin-right: 4px; }
-.tag-chip {
-  padding: 3px 10px; border-radius: 5px; border: 1px solid var(--border);
-  background: transparent; color: var(--muted); font-size: 11.5px; cursor: pointer;
-  font-family: var(--mono);
-}
-.tag-chip:hover { color: var(--text); border-color: var(--muted); }
-.tag-chip.active { background: var(--green-soft); border-color: var(--green); color: var(--green); }
-
-/* Multi-format export dropdown */
-.export-wrap { position: relative; display: inline-block; }
-.export-menu {
-  position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 30;
-  min-width: 220px;
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  display: flex; flex-direction: column; gap: 1px;
-}
-.export-menu button {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 10px; background: transparent; border: none; border-radius: 5px;
-  color: var(--text); font-size: 12px; text-align: left; cursor: pointer;
-  width: 100%;
-}
-.export-menu button:hover { background: var(--bg); color: var(--green); }
-.export-sep {
-  font-size: 9.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 8px 10px 4px; border-top: 1px solid var(--border-soft); margin-top: 4px;
-}
-
-/* Inline auto-rotate select inside an action-pill */
-.inline-select {
-  background: transparent; border: none; color: inherit;
-  font: inherit; cursor: pointer; outline: none;
-  padding: 0; margin-left: 4px;
-}
-.inline-select option { background: var(--surface); color: var(--text); }
-
-/* Quick stats panel */
-.quick-stats {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
-  margin-top: 12px;
-}
-.qs-cell {
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 12px;
-}
-.qs-lbl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.qs-val { display: block; font-size: 18px; font-weight: 700; font-family: var(--mono); color: var(--text); margin-top: 4px; }
-.qs-sub { font-size: 10.5px; color: var(--muted); }
-
-/* Inline sparkline */
-.status-cell { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.spark { width: 60px; height: 14px; opacity: 0.85; }
-
-/* Tag chips inline below row */
-.tag-row {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 4px 0 6px 78px; font-size: 11.5px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.tag-row-lbl { color: var(--muted); font-size: 10.5px; }
-.tag-mini {
-  display: inline-flex; align-items: center; gap: 2px;
-  background: rgba(59,130,246,0.14); border: 1px solid rgba(59,130,246,0.3);
-  color: var(--blue); padding: 1px 4px 1px 6px; border-radius: 4px;
-  font-family: var(--mono); font-size: 11px;
-}
-.tag-mini button {
-  background: transparent; border: none; color: var(--muted); cursor: pointer;
-  display: inline-grid; place-items: center; padding: 0; margin-left: 2px;
-}
-.tag-mini button:hover { color: var(--red); }
-.tag-input {
-  width: 100px; height: 22px; padding: 0 6px;
-  background: var(--bg); border: 1px solid var(--blue); border-radius: 4px;
-  color: var(--text); font-family: var(--mono); font-size: 11px; outline: none;
-}
-
-/* Test modal */
-.test-result { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; }
-.test-row { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; }
-.test-row .lbl { color: var(--muted); }
-.spin { animation: cp-spin 0.9s linear infinite; }
-@keyframes cp-spin { to { transform: rotate(360deg); } }
-
-/* Timeline modal */
-.timeline-list { max-height: 50vh; overflow-y: auto; margin: 8px 0; }
-.timeline-row {
-  display: grid; grid-template-columns: 130px 60px 1fr; gap: 8px;
-  padding: 6px 0; border-bottom: 1px solid var(--border-soft);
-  font-size: 11.5px;
-}
-.timeline-row .ts { color: var(--muted); }
-.timeline-row .method { color: var(--blue); font-weight: 600; font-family: var(--mono); font-size: 10.5px; }
-.timeline-row .note { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* v6 egress IP shown under v4 host in proxy row */
-.egress-line {
-  display: block;
-  font-size: 10.5px;
-  color: var(--muted);
-  margin-top: 1px;
-  letter-spacing: 0;
-}
-.rotate-btn:not(:disabled):hover { color: var(--green); background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.4); }
-.gt-row-actions .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.gt-row-actions .icon-btn { transition: background 0.1s, color 0.1s; }
-.gt-row-actions { display: flex; gap: 4px; flex-wrap: nowrap; justify-content: flex-end; }
-.row-act-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 10px; font-size: 11.5px; font-weight: 500;
-  background: rgba(255,255,255,0.04); border: 1px solid var(--border);
-  border-radius: 6px; color: var(--text); cursor: pointer;
-  transition: background 0.1s, color 0.1s, border-color 0.1s;
-  white-space: nowrap;
-}
-.row-act-btn:hover:not(:disabled) { background: rgba(255,255,255,0.07); border-color: var(--border-soft); }
-.row-act-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.row-act-btn :deep(svg) { flex-shrink: 0; }
-.flash-toast {
-  position: fixed; top: 76px; right: 20px; z-index: 100;
-  padding: 10px 18px; border-radius: var(--radius);
-  background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.4);
-  color: var(--green); font-size: 12.5px; font-weight: 500;
-  box-shadow: 0 8px 20px rgba(0,0,0,0.35);
-  font-family: var(--mono);
-}
-.flash-enter-active, .flash-leave-active { transition: opacity 0.2s, transform 0.2s; }
-.flash-enter-from, .flash-leave-to { opacity: 0; transform: translateY(-8px); }
-
-/* Live countdown — tier colors */
-.countdown-live { font-family: var(--mono); font-weight: 600; font-feature-settings: 'tnum'; letter-spacing: 0.02em; }
-.countdown-live.active   { color: var(--green); }
-.countdown-live.soon     { color: #93c5fd; }
-.countdown-live.expiring { color: #fbbf24; }
-.countdown-live.critical { color: #fca5a5; animation: pulseCountdown 1s ease-in-out infinite; }
-.countdown-live.expired  { color: #ef4444; }
-.countdown-live.muted    { color: var(--muted); }
-@keyframes pulseCountdown { 0%,100% { opacity:1 } 50% { opacity:0.55 } }
-
-/* Big countdown chip next to extend button */
-.countdown-big {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 12px; border-radius: 8px;
-  background: rgba(34,197,94,0.06); border: 1px solid rgba(34,197,94,0.2);
-  font-family: var(--mono);
-}
-.countdown-big small { font-size: 10.5px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
-.countdown-big strong { font-size: 14px; font-feature-settings: 'tnum'; letter-spacing: 0.02em; }
-.countdown-big.soon     { background: rgba(59,130,246,0.06); border-color: rgba(59,130,246,0.25); }
-.countdown-big.soon     strong { color: #93c5fd; }
-.countdown-big.expiring { background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.35); }
-.countdown-big.expiring strong { color: #fbbf24; }
-.countdown-big.critical { background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.4); }
-.countdown-big.critical strong { color: #fca5a5; animation: pulseCountdown 1s ease-in-out infinite; }
-.countdown-big.expired  { background: rgba(115,115,115,0.08); border-color: rgba(115,115,115,0.3); }
-.countdown-big.expired  strong { color: #a3a3a3; }
-.countdown-big.active   strong { color: var(--green); }
-
-/* Inline "Kết nối" expanded panel under each proxy row */
-.gt-row.is-expanded {
-  border-bottom: none;
-  background: rgba(34, 197, 94, 0.025);
-}
-.gt-row-connect {
-  padding: 12px 14px 14px 14px;
-  margin-bottom: 8px;
-  background: rgba(0,0,0,0.18);
-  border: 1px solid var(--border);
-  border-top: none;
-  border-radius: 0 0 8px 8px;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.connect-btn { background: rgba(34, 197, 94, 0.08); border-color: rgba(34, 197, 94, 0.35) !important; }
-.connect-btn:hover { background: rgba(34, 197, 94, 0.15); }
-
-.session-block {
-  display: flex; flex-direction: column; gap: 8px;
-  background: rgba(34, 197, 94, 0.04);
-  border: 1px solid rgba(34, 197, 94, 0.22);
-  border-radius: 6px;
-  padding: 8px 10px;
-}
-.session-head {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 11.5px; color: var(--text);
-  flex-wrap: wrap;
-}
-.session-head.full { color: #f97316; }
-.session-head strong { color: var(--green); font-size: 13px; font-family: var(--mono); }
-.session-head.full strong { color: #f97316; }
-.session-head > span { flex: 1; min-width: 220px; line-height: 1.4; }
-.session-head small { display: block; color: var(--muted); font-size: 10.5px; margin-top: 2px; }
-.session-head small strong { color: var(--text); font-size: 10.5px; font-family: var(--mono); font-weight: 600; }
-.session-head > .row-act-btn { flex-shrink: 0; }
-
-.session-byip { padding-top: 8px; border-top: 1px dashed rgba(34, 197, 94, 0.2); }
-.byip-title { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
-.byip-list { display: flex; flex-direction: column; gap: 4px; }
-.byip-row {
-  display: grid; grid-template-columns: 160px 80px 1fr; gap: 10px;
-  align-items: center;
-  font-size: 11px;
-}
-.byip-row code { font-family: var(--mono); color: var(--text); padding: 1px 5px; background: rgba(0,0,0,0.3); border-radius: 3px; }
-.byip-count { font-family: var(--mono); color: var(--muted); }
-.byip-count strong { color: var(--green); font-weight: 600; }
-.byip-row.near .byip-count strong { color: #f97316; }
-.byip-bar { height: 5px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
-.byip-bar span { display: block; height: 100%; background: var(--green); transition: width 0.2s; }
-.byip-row.near .byip-bar span { background: #f97316; }
-
-/* Trojan featured block — only protocol that actually benefits from QR */
-.trojan-feature {
-  display: flex; gap: 16px; align-items: stretch;
-  background: rgba(34, 197, 94, 0.04);
-  border: 1px solid rgba(34, 197, 94, 0.25);
-  border-radius: 8px;
-  padding: 14px;
-  margin-bottom: 12px;
-}
-.trojan-qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; flex-shrink: 0; }
-.trojan-qr {
-  width: 160px; height: 160px; background: #0f1419;
-  border-radius: 6px; padding: 6px;
-  display: flex; align-items: center; justify-content: center;
-}
-.trojan-qr :deep(svg) { width: 100%; height: 100%; }
-.trojan-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.trojan-title { display: flex; align-items: baseline; gap: 8px; }
-.trojan-title strong { font-size: 14px; color: var(--green); }
-.trojan-port { font-size: 12px; color: var(--muted); }
-.trojan-apps { font-size: 12px; color: var(--text); margin: 0; line-height: 1.5; }
-.trojan-note { font-size: 11.5px; color: var(--muted); margin: 0; line-height: 1.5; }
-.trojan-url { display: flex; gap: 6px; align-items: center; }
-.trojan-url code {
-  flex: 1; min-width: 0; font-size: 11px; padding: 6px 8px;
-  background: rgba(0,0,0,0.35); border: 1px solid var(--border);
-  border-radius: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: #9bb8b1;
-}
-
-/* Compact list rows for HTTP / SOCKS5 / HTTPS-proxy */
-.proto-list { display: flex; flex-direction: column; gap: 6px; }
-.proto-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px;
-  background: rgba(0,0,0,0.18);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.proto-tag {
-  flex-shrink: 0; min-width: 90px;
-  font-size: 11px; font-weight: 600; color: var(--text);
-  text-transform: uppercase; letter-spacing: 0.04em;
-}
-.proto-url {
-  flex: 1; min-width: 0;
-  font-size: 11.5px; padding: 4px 8px;
-  background: rgba(0,0,0,0.35); border: 1px solid var(--border);
-  border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: #9bb8b1;
-}
-.proto-qr-btn { padding: 4px 6px; }
-
-/* QR popup */
-.qr-modal { width: 460px; max-width: 96vw; }
-.qr-modal-body { display: flex; flex-direction: column; gap: 12px; align-items: center; padding: 12px 14px; }
-.qr-modal-svg {
-  width: 360px; height: 360px; max-width: 100%;
-  background: #0f1419; border-radius: 8px; padding: 12px;
-  display: flex; align-items: center; justify-content: center;
-}
-.qr-modal-svg :deep(svg) { width: 100%; height: 100%; }
-.qr-modal-url {
-  width: 100%; font-size: 10.5px; padding: 6px 8px;
-  background: rgba(0,0,0,0.35); border: 1px solid var(--border); border-radius: 5px;
-  word-break: break-all; color: #9bb8b1; font-family: var(--mono);
-}
-.qr-modal-actions { display: flex; gap: 8px; }
-
-@media (max-width: 720px) {
-  .trojan-feature { flex-direction: column; align-items: stretch; }
-  .trojan-qr-wrap { align-items: flex-start; }
-  .proto-row { flex-wrap: wrap; }
-  .proto-tag { min-width: 60px; }
-}
-
-/* Subscription URL cards (Apps tab) */
-.sub-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px; margin: 8px 0 14px; }
-.sub-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
-.sub-card-head { display: flex; align-items: baseline; gap: 8px; }
-.sub-card-head strong { font-size: 13.5px; color: var(--text); }
-.sub-card-head small { font-size: 11.5px; color: var(--muted); }
-.sub-card-url code { display: block; padding: 8px 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--border); border-radius: 6px; font-family: var(--mono); font-size: 11px; color: #9bb8b1; word-break: break-all; }
-.sub-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.sub-card-actions .row-act-btn { flex: 1; min-width: 80px; justify-content: center; text-decoration: none; }
-.sub-rotate { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(255,255,255,0.02); border: 1px dashed var(--border-soft); border-radius: 8px; margin-top: 6px; }
-.sub-rotate small { flex: 1; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
-
-/* Tap the endpoint / credentials to copy (handy on mobile, harmless on desktop) */
-.tap-copy { cursor: pointer; }
-.tap-copy:active { opacity: 0.6; }
-
-/* ──────────────────────────────────────────────────────────────────────────
-   MOBILE — compact, app-like proxy cards.
-   Desktop packs 8 columns into one row; on a phone that collapsed into 8
-   full-width stacked lines per proxy (very cluttered). Here each proxy is a
-   tight card: endpoint is the hero, credentials beneath, a status pill in the
-   corner, and a single full-width action bar. #index + sparkline are dropped
-   as noise. Last in the file so it wins the cascade over the desktop grid.
-   ────────────────────────────────────────────────────────────────────────── */
-@media (max-width: 900px) {
-  .gt-row {
-    grid-template-columns: auto 1fr auto;
-    grid-template-areas:
-      "cbx label    status"
-      "cbx endpoint endpoint"
-      "cbx creds    creds"
-      "act act      act";
-    gap: 2px 10px;
-    padding: 10px 12px 8px;
-    align-items: center;
-    min-height: 0;
-    margin-bottom: 8px;
-  }
-  /* Drop noise on a small screen */
-  .gt-row > .pc-idx,
-  .gt-row > .spark { display: none !important; }
-
-  .gt-row > .cbx { grid-area: cbx; align-self: center; margin: 0; }
-  .gt-row > .gt-row-label { grid-area: label; padding: 0; min-width: 0; }
-  .gt-row > .gt-row-label input { width: 100%; }
-  .gt-row > .cell-mono:not(.creds) { grid-area: endpoint; padding: 0; }
-  .gt-row > .cell-mono:not(.creds) .ip-line { font-size: 14.5px; font-weight: 600; color: var(--text); }
-  .gt-row > .cell-mono.creds {
-    grid-area: creds; padding: 0; flex-direction: row;
-    font-size: 12px; color: var(--muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
-  }
-  .gt-row > .gt-row-status { grid-area: status; justify-content: flex-end; padding: 0; }
-  .gt-row > .gt-row-actions { grid-area: act; }
-
-  /* Full-width action bar: Connect on its own line, secondary actions split below */
-  .gt-row-actions {
-    margin-top: 4px;
-    padding: 8px 0 0 !important;
-    border-top: 1px solid var(--border-soft);
-    display: flex; gap: 6px; flex-wrap: wrap;
-    justify-content: stretch !important;
-  }
-  .gt-row-actions .row-act-btn {
-    flex: 1 1 0; min-width: 90px; justify-content: center;
-    height: 36px; padding: 0 10px !important;
-    background: rgba(255,255,255,0.04) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 8px !important;
-  }
-  .gt-row-actions .row-act-btn.connect-btn {
-    flex-basis: 100%; order: -1;
-    background: var(--green-soft) !important; border-color: var(--green) !important;
-  }
-
-  /* Connect / detail view — stack cleanly, full-tap copy buttons */
-  .gt-row-connect { padding: 12px; }
-  .trojan-feature { flex-direction: column; align-items: stretch; gap: 12px; padding: 12px; }
-  .trojan-qr-wrap { align-items: center; }
-  .trojan-url { flex-direction: column; align-items: stretch; gap: 6px; }
-  .trojan-url .row-act-btn { justify-content: center; height: 34px; }
-  .proto-row { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px; }
-  .proto-tag { min-width: 52px; }
-  .proto-url { flex-basis: 100%; order: 3; }
-  .proto-row .row-act-btn { flex: 1 1 auto; justify-content: center; height: 32px; }
-  .session-head > span { min-width: 0; }
-  .byip-row { grid-template-columns: 1fr auto; gap: 4px 10px; }
-  .byip-row .byip-bar { grid-column: 1 / -1; }
+.bulk-bar {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  z-index: 100; width: max-content; max-width: calc(100vw - 32px);
 }
 </style>

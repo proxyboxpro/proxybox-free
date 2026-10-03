@@ -47,7 +47,7 @@ const columns = computed(() => [
   { title: t('nodes.list.colEndpoint'), key: 'endpoint', width: 220 },
   { title: t('nodes.list.colFamilyZone'), key: 'family', width: 150 },
   { title: t('nodes.list.colStatus'), key: 'status', width: 150 },
-  { title: t('nodes.list.colActions'), key: 'actions', width: 380 }
+  { title: t('nodes.list.colActions'), key: 'actions', width: 440 }
 ])
 const expandedKeys = computed(() => Object.keys(installOut))
 
@@ -292,7 +292,7 @@ onMounted(async () => {
         row-key="id"
         size="middle"
         :pagination="false"
-        :scroll="{ x: 1160 }"
+        :scroll="{ x: 1220 }"
         :locale="{ emptyText }"
         :expanded-row-keys="expandedKeys"
         :show-expand-column="false"

@@ -437,7 +437,7 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
         <a-button type="link" size="small" @click="router.push({ name: 'proxies' })">{{ t('cust.viewAll') }} →</a-button>
       </template>
       <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="proxies-filter">
-        <a-segmented v-model:value="filterTab" :options="filterOptions" />
+        <div class="seg-scroll"><a-segmented v-model:value="filterTab" :options="filterOptions" /></div>
         <a-space wrap>
           <a-button :loading="loading" @click="refresh">
             <template #icon><ReloadOutlined /></template>
@@ -532,6 +532,7 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
 .byon-hint { margin: 12px 0 0 !important; font-size: 12px; }
 
 .proxies-filter { margin-bottom: 12px; }
+.seg-scroll { max-width: 100%; min-width: 0; overflow-x: auto; }
 
 @media (max-width: 575px) {
   .hero :deep(.ant-card-body) { padding: 18px; }

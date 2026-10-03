@@ -247,7 +247,7 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
                   <a-statistic :title="t('cust.nodeDetail.statBandwidth')" :value="formatBytes((n.uploadBytes || 0) + (n.downloadBytes || 0))" class="mini-stat" />
                 </a-col>
               </a-row>
-              <a-typography-text v-if="n.version" type="secondary" class="mono small">
+              <a-typography-text v-if="n.version" type="secondary" class="small">
                 agent v{{ n.version }} · last seen {{ n.lastSeenAt ? n.lastSeenAt.slice(0,19).replace('T',' ') : '—' }}
               </a-typography-text>
             </a-flex>

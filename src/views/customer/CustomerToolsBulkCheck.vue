@@ -71,10 +71,10 @@ const filterOptions = computed(() => [
 ])
 
 const columns = computed(() => [
-  { title: '#', key: 'idx', dataIndex: 'idx', width: 56 },
+  { title: '#', key: 'idx', dataIndex: 'idx', width: 48 },
   { title: t('cust.tools.bulk.colLine'), key: 'line', dataIndex: 'line', ellipsis: true },
-  { title: t('cust.tools.bulk.colStatus'), key: 'status', width: 110 },
-  { title: t('cust.tools.bulk.colLatency'), key: 'latency', dataIndex: 'latencyMs', width: 100, align: 'right' },
+  { title: t('cust.tools.bulk.colStatus'), key: 'status', width: 104 },
+  { title: t('cust.tools.bulk.colLatency'), key: 'latency', dataIndex: 'latencyMs', width: 88, align: 'right' },
   { title: t('cust.tools.bulk.colExit'), key: 'exit', dataIndex: 'exitIp', width: 150, responsive: ['lg'] },
   { title: t('cust.tools.bulk.colError'), key: 'error', dataIndex: 'error', ellipsis: true, responsive: ['lg'] }
 ])
@@ -131,7 +131,7 @@ function copyWorkingLines() {
           spellcheck="false"
         />
 
-        <a-flex wrap="wrap" gap="small" justify="space-between" class="below">
+        <a-flex wrap="wrap" gap="small" justify="space-between" align="center" class="below">
           <a-space wrap :size="8">
             <a-button @click="pasteFromClipboard">
               <template #icon><SnippetsOutlined /></template>
@@ -156,23 +156,6 @@ function copyWorkingLines() {
     </a-card>
 
     <a-card v-if="result" size="small" :title="t('cust.tools.bulk.resultHead')">
-      <template #extra>
-        <a-space wrap :size="6">
-          <a-button size="small" @click="copyWorkingLines">
-            <template #icon><CopyOutlined /></template>
-            {{ t('cust.tools.bulk.copyWorking') }}
-          </a-button>
-          <a-button size="small" @click="exportCsv(true)">
-            <template #icon><DownloadOutlined /></template>
-            {{ t('cust.tools.bulk.exportWorking') }}
-          </a-button>
-          <a-button size="small" @click="exportCsv(false)">
-            <template #icon><DownloadOutlined /></template>
-            {{ t('cust.tools.bulk.exportAll') }}
-          </a-button>
-        </a-space>
-      </template>
-
       <a-row :gutter="[12, 12]">
         <a-col :xs="12" :md="6">
           <a-card size="small"><a-statistic :title="t('cust.tools.bulk.kpiTotal')" :value="result.total" /></a-card>
@@ -193,6 +176,20 @@ function copyWorkingLines() {
         <a-input v-model:value="search" allow-clear class="search mono-field" :placeholder="t('cust.tools.bulk.searchPh')">
           <template #prefix><SearchOutlined /></template>
         </a-input>
+        <a-space wrap :size="6">
+          <a-button @click="copyWorkingLines">
+            <template #icon><CopyOutlined /></template>
+            {{ t('cust.tools.bulk.copyWorking') }}
+          </a-button>
+          <a-button @click="exportCsv(true)">
+            <template #icon><DownloadOutlined /></template>
+            {{ t('cust.tools.bulk.exportWorking') }}
+          </a-button>
+          <a-button @click="exportCsv(false)">
+            <template #icon><DownloadOutlined /></template>
+            {{ t('cust.tools.bulk.exportAll') }}
+          </a-button>
+        </a-space>
       </a-flex>
 
       <a-table
@@ -202,7 +199,6 @@ function copyWorkingLines() {
         row-key="idx"
         size="small"
         :pagination="false"
-        :scroll="{ x: 560 }"
         :locale="{ emptyText: t('cust.tools.bulk.noMatch') }"
       >
         <template #bodyCell="{ column, record: r }">
