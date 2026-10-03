@@ -382,7 +382,7 @@ onMounted(refresh)
 .small { font-size: 12px; }
 .win-card :deep(.ant-statistic-content) { font-size: 22px; }
 .fill { height: 100%; }
-.chart-empty { text-align: center; margin: -24px 0 0 !important; font-size: 12.5px; }
+.chart-empty { text-align: center; margin: 4px 0 0 !important; font-size: 12.5px; }
 .donut-wrap { padding: 8px 0 16px; }
 .donut-lbl { font-size: 12px; }
 .donut-val { font-size: 18px; }

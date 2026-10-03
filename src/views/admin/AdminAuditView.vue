@@ -175,17 +175,17 @@ onMounted(refresh)
         <a-row :gutter="[12, 0]">
           <a-col :xs="24" :sm="12" :lg="8">
             <a-form-item :label="t('admin.audit.actor')" name="actor">
-              <a-input v-model:value="filters.actor" allow-clear placeholder="email@... / apiKey-prefix" class="mono" @press-enter="refresh" />
+              <a-input v-model:value="filters.actor" allow-clear placeholder="email@... / apiKey-prefix" @press-enter="refresh" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12" :lg="8">
             <a-form-item :label="t('admin.audit.path')" name="path">
-              <a-input v-model:value="filters.path" allow-clear placeholder="/api/orders" class="mono" @press-enter="refresh" />
+              <a-input v-model:value="filters.path" allow-clear placeholder="/api/orders" @press-enter="refresh" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12" :lg="8">
             <a-form-item label="IP" name="ip">
-              <a-input v-model:value="filters.ip" allow-clear placeholder="103.x.x.x" class="mono" @press-enter="refresh" />
+              <a-input v-model:value="filters.ip" allow-clear placeholder="103.x.x.x" @press-enter="refresh" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12" :lg="8">
@@ -195,7 +195,7 @@ onMounted(refresh)
           </a-col>
           <a-col :xs="24" :sm="12" :lg="8">
             <a-form-item :label="t('admin.audit.since')" name="since">
-              <a-input v-model:value="filters.since" allow-clear placeholder="2026-05-13T00:00:00Z" class="mono" @press-enter="refresh" />
+              <a-input v-model:value="filters.since" allow-clear placeholder="2026-05-13T00:00:00Z" @press-enter="refresh" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12" :lg="8">

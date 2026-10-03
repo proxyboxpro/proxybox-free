@@ -2,58 +2,92 @@
 import { onMounted, ref } from 'vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 
 const { t } = useI18n()
 const oauth = ref(null)
-const err = ref(''); const flash = ref('')
+const err = ref('')
+const loading = ref(false)
+const saving = ref(false)
+
+const PROVIDERS = [
+  { id: 'google', label: 'Google', clientIdPh: 'xxx.apps.googleusercontent.com', callbackPh: 'https://your-domain/api/auth/oauth/google/callback' },
+  { id: 'github', label: 'GitHub', clientIdPh: 'Iv1.xxx', callbackPh: 'https://your-domain/api/auth/oauth/github/callback' }
+]
 
 async function refresh() {
   err.value = ''
+  loading.value = true
   try { oauth.value = await apiFetch('/api/admin/oauth') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 async function save() {
-  try { await apiFetch('/api/admin/oauth', { method: 'PATCH', body: oauth.value }); flash.value = t('admin.oauth.saved'); await refresh() }
-  catch (e) { err.value = e.message }
+  saving.value = true
+  try { await apiFetch('/api/admin/oauth', { method: 'PATCH', body: oauth.value }); message.success(t('admin.oauth.saved')); await refresh() }
+  catch (e) { message.error(e.message) }
+  finally { saving.value = false }
 }
 onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">{{ t('admin.oauth.eyebrow') }}</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh">{{ t('admin.common.refresh') }}</button>
-    </div>
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color:var(--green)">{{ flash }}</p>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.oauth.eyebrow') }}</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+        {{ t('admin.common.refresh') }}
+      </a-button>
+    </a-flex>
 
-    <section v-if="oauth" class="surface">
-      <div class="section-head"><h2>{{ t('admin.oauth.providersTitle') }}</h2></div>
-      <p style="font-size:13px; color:var(--muted); margin-bottom:10px">
-        <span v-html="t('admin.oauth.googleHelp')"></span><br>
-        <span v-html="t('admin.oauth.githubHelp')"></span>
-      </p>
-      <p style="font-size:12px; color:var(--yellow); margin-bottom:14px" v-html="t('admin.oauth.flagHint')"></p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-      <h3 style="font-size:13px; color:var(--text); margin:14px 0 8px; text-transform:uppercase; letter-spacing:0.06em">Google</h3>
-      <div class="form-grid">
-        <label class="input-field"><span>{{ t('admin.oauth.clientId') }}</span><input v-model="oauth.google.clientId" placeholder="xxx.apps.googleusercontent.com" /></label>
-        <label class="input-field"><span>{{ t('admin.oauth.clientSecret') }}</span><input v-model="oauth.google.clientSecret" type="password" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.oauth.callbackUrl') }}</span><input v-model="oauth.google.callbackUrl" placeholder="https://your-domain/api/auth/oauth/google/callback" /></label>
+    <a-card v-if="oauth" :title="t('admin.oauth.providersTitle')">
+      <!-- The help strings are trusted i18n HTML whose links use var(--blue);
+           .oauth-help maps that variable onto the theme's link colour. -->
+      <div class="oauth-help">
+        <!-- eslint-disable vue/no-v-html -->
+        <a-typography-paragraph type="secondary">
+          <span v-html="t('admin.oauth.googleHelp')"></span><br>
+          <span v-html="t('admin.oauth.githubHelp')"></span>
+        </a-typography-paragraph>
+        <a-alert type="warning" show-icon class="flag-hint">
+          <template #message><span v-html="t('admin.oauth.flagHint')"></span></template>
+        </a-alert>
+        <!-- eslint-enable vue/no-v-html -->
       </div>
 
-      <h3 style="font-size:13px; color:var(--text); margin:18px 0 8px; text-transform:uppercase; letter-spacing:0.06em">GitHub</h3>
-      <div class="form-grid">
-        <label class="input-field"><span>{{ t('admin.oauth.clientId') }}</span><input v-model="oauth.github.clientId" placeholder="Iv1.xxx" /></label>
-        <label class="input-field"><span>{{ t('admin.oauth.clientSecret') }}</span><input v-model="oauth.github.clientSecret" type="password" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>{{ t('admin.oauth.callbackUrl') }}</span><input v-model="oauth.github.callbackUrl" placeholder="https://your-domain/api/auth/oauth/github/callback" /></label>
-      </div>
+      <a-form :model="oauth" layout="vertical" @finish="save">
+        <a-row :gutter="[16, 16]">
+          <a-col v-for="p in PROVIDERS" :key="p.id" :xs="24" :lg="12">
+            <a-card size="small" type="inner" :title="p.label">
+              <a-form-item :label="t('admin.oauth.clientId')" :name="[p.id, 'clientId']">
+                <a-input v-model:value="oauth[p.id].clientId" :placeholder="p.clientIdPh" />
+              </a-form-item>
+              <a-form-item :label="t('admin.oauth.clientSecret')" :name="[p.id, 'clientSecret']">
+                <a-input-password v-model:value="oauth[p.id].clientSecret" autocomplete="new-password" />
+              </a-form-item>
+              <a-form-item :label="t('admin.oauth.callbackUrl')" :name="[p.id, 'callbackUrl']" class="last-item">
+                <a-input v-model:value="oauth[p.id].callbackUrl" :placeholder="p.callbackPh" />
+              </a-form-item>
+            </a-card>
+          </a-col>
+        </a-row>
 
-      <div class="action-row" style="margin-top:14px">
-        <button class="primary-action" type="button" @click="save">{{ t('admin.oauth.save') }}</button>
-      </div>
-    </section>
-  </section>
+        <a-button type="primary" html-type="submit" :loading="saving" class="save-btn">
+          <template #icon><SaveOutlined /></template>
+          {{ t('admin.oauth.save') }}
+        </a-button>
+      </a-form>
+    </a-card>
+    <a-card v-else-if="loading" loading />
+  </div>
 </template>
+
+<style scoped>
+.oauth-help { --blue: var(--pb-info); }
+.flag-hint { margin-bottom: 16px; }
+.last-item { margin-bottom: 0; }
+.save-btn { margin-top: 16px; }
+</style>

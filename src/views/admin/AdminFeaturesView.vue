@@ -244,15 +244,14 @@ onMounted(refresh)
                       v-model:value="groups[tab.id][key]"
                       :min="0"
                       :step="kind === 'float' ? 0.01 : 1"
-                      class="mono full-width"
+                      class="full-width"
                     />
                     <a-select
                       v-else-if="kind.startsWith('select:')"
                       v-model:value="groups[tab.id][key]"
                       :options="selectOptions(kind)"
-                      class="mono"
                     />
-                    <a-input v-else v-model:value="groups[tab.id][key]" class="mono" />
+                    <a-input v-else v-model:value="groups[tab.id][key]" />
                   </a-form-item>
                 </a-col>
               </a-row>

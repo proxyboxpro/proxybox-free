@@ -2,16 +2,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import VueApexCharts from 'vue3-apexcharts'
-import {
-  ArrowDownRight, ArrowUpRight, Crown, DollarSign, Download, Minus,
-  RefreshCw, RotateCcw, TrendingUp, Users
-} from 'lucide-vue-next'
+import { Empty } from 'ant-design-vue'
+import { ArrowUpOutlined, DollarOutlined, RiseOutlined, RollbackOutlined, TeamOutlined } from '@ant-design/icons-vue'
 import { apiFetch, adminAnalyticsHeatmap, adminAnalyticsChurn, adminRevenueBreakdown } from '../../api'
 import { useI18n } from '../../i18n'
+import { isDark } from '../../theme'
 
 // Local registration — keeps apexcharts out of the initial bundle. Loaded only
 // when this admin route is opened (lazy-imported via router code-splitting).
 const apexchart = VueApexCharts.component || VueApexCharts
+const emptyImage = Empty.PRESENTED_IMAGE_SIMPLE
 
 const { t } = useI18n()
 const router = useRouter()
@@ -41,6 +41,7 @@ async function refresh() {
   } catch (e) { err.value = e.message }
   finally { loading.value = false }
 }
+function setPeriod(v) { period.value = v; refresh() }
 
 const currencyCode = 'VND'
 const totals = computed(() => data.value?.totals || { gross: 0, topups: 0, refunded: 0, payers: 0 })
@@ -60,6 +61,12 @@ function pctDelta(now, prev) {
   return ((now - prev) / prev) * 100
 }
 function viewUser(id) { router.push({ name: 'admin-user-detail', params: { userId: id } }) }
+
+const periodOptions = computed(() => [
+  { label: t('admin.rev.daily'), value: 'day' },
+  { label: t('admin.rev.weekly'), value: 'week' },
+  { label: t('admin.rev.monthly'), value: 'month' }
+])
 
 // ── Top spenders ────────────────────────────────────────────────────────────
 const topSpenders = computed(() => {
@@ -82,16 +89,29 @@ const maxSpend = computed(() => Math.max(1, ...topSpenders.value.map((s) => s.to
 const arpu = computed(() => totals.value.payers > 0 ? Math.round(totals.value.gross / totals.value.payers) : 0)
 const arpuPrev = computed(() => prev.value.payers > 0 ? Math.round(prev.value.gross / prev.value.payers) : 0)
 
-// ── ApexCharts shared theme ────────────────────────────────────────────────
-const baseChart = {
+// ── KPI cards ───────────────────────────────────────────────────────────────
+// Delta pill: `good` = green. Refunds are inverted (less refund = good).
+function delta(now, before, { invert = false } = {}) {
+  const d = pctDelta(now, before)
+  const good = invert ? d <= 0 : d >= 0
+  return { color: good ? 'success' : 'error', up: invert ? d > 0 : d >= 0, text: Math.abs(d).toFixed(1) }
+}
+
+// ── ApexCharts shared theme (follows dark / light) ─────────────────────────
+const palette = computed(() => (isDark.value
+  ? { mode: 'dark', text: 'rgba(255, 255, 255, 0.65)', muted: 'rgba(255, 255, 255, 0.45)', strong: 'rgba(255, 255, 255, 0.88)', grid: 'rgba(148, 163, 184, 0.10)', surface: '#11161d', zero: 'rgba(148, 163, 184, 0.08)' }
+  : { mode: 'light', text: 'rgba(0, 0, 0, 0.65)', muted: 'rgba(0, 0, 0, 0.45)', strong: 'rgba(0, 0, 0, 0.88)', grid: 'rgba(0, 0, 0, 0.06)', surface: '#ffffff', zero: 'rgba(0, 0, 0, 0.05)' }))
+const baseChart = computed(() => ({
   background: 'transparent',
-  foreColor: '#9ca3af',
+  foreColor: palette.value.text,
   fontFamily: 'Inter, system-ui, sans-serif',
   toolbar: { show: false },
   zoom: { enabled: false },
   animations: { enabled: true, speed: 400 }
-}
-const baseGrid = { borderColor: 'rgba(148, 163, 184, 0.08)', strokeDashArray: 4, xaxis: { lines: { show: false } } }
+}))
+const baseTheme = computed(() => ({ mode: palette.value.mode }))
+const baseGrid = computed(() => ({ borderColor: palette.value.grid, strokeDashArray: 4, xaxis: { lines: { show: false } } }))
+const axisLabels = (size) => ({ style: { colors: palette.value.muted, fontSize: size } })
 
 // ── Hero chart: revenue trend ──────────────────────────────────────────────
 const mainSeries = computed(() => [
@@ -99,7 +119,8 @@ const mainSeries = computed(() => [
   { name: t('admin.rev.legendTopups'), data: series.value.map((r) => Math.round(r.topups || 0)) }
 ])
 const mainOptions = computed(() => ({
-  chart: { ...baseChart, type: 'area', toolbar: { show: true, tools: { download: true, selection: false, zoom: false, zoomin: false, zoomout: false, pan: false, reset: false } }, sparkline: { enabled: false } },
+  chart: { ...baseChart.value, type: 'area', toolbar: { show: true, tools: { download: true, selection: false, zoom: false, zoomin: false, zoomout: false, pan: false, reset: false } }, sparkline: { enabled: false } },
+  theme: baseTheme.value,
   colors: ['#22c55e', '#3b82f6'],
   stroke: { curve: 'smooth', width: 2.5 },
   fill: {
@@ -108,33 +129,62 @@ const mainOptions = computed(() => ({
   },
   dataLabels: { enabled: false },
   legend: { position: 'top', horizontalAlign: 'right', fontSize: '12px', markers: { width: 8, height: 8, radius: 4 } },
-  grid: baseGrid,
+  grid: baseGrid.value,
   xaxis: {
     categories: series.value.map((r) => String(r.bucket || '').slice(-5)),
-    labels: { style: { colors: '#6b7280', fontSize: '11px' } },
+    labels: axisLabels('11px'),
     axisBorder: { show: false }, axisTicks: { show: false }
   },
   yaxis: {
-    labels: { style: { colors: '#6b7280', fontSize: '11px' }, formatter: (v) => fmtCompact(v) },
+    labels: { ...axisLabels('11px'), formatter: (v) => fmtCompact(v) },
     axisBorder: { show: false }
   },
-  tooltip: { theme: 'dark', y: { formatter: (v) => fmtMoney(v) + ' ' + currencyCode } }
+  tooltip: { theme: palette.value.mode, y: { formatter: (v) => fmtMoney(v) + ' ' + currencyCode } }
 }))
 
 // ── KPI sparklines ─────────────────────────────────────────────────────────
 function makeSparkOptions(color) {
   return {
-    chart: { ...baseChart, type: 'area', sparkline: { enabled: true } },
+    chart: { background: 'transparent', type: 'area', sparkline: { enabled: true }, animations: { enabled: true, speed: 400 } },
     stroke: { curve: 'smooth', width: 2 },
     colors: [color],
     fill: { type: 'gradient', gradient: { opacityFrom: 0.4, opacityTo: 0 } },
     tooltip: { enabled: false }
   }
 }
+const sparkOptions = {
+  gross: makeSparkOptions('#22c55e'),
+  topups: makeSparkOptions('#3b82f6'),
+  refunded: makeSparkOptions('#ef4444'),
+  arpu: makeSparkOptions('#f59e0b')
+}
 const sparkGross  = computed(() => [{ data: series.value.map((r) => Math.round(r.gross  || 0)) }])
 const sparkTopups = computed(() => [{ data: series.value.map((r) => Math.round(r.topups || 0)) }])
 const sparkRefund = computed(() => [{ data: series.value.map((r) => Math.round(r.refunded || 0)) }])
 const sparkPayers = computed(() => [{ data: series.value.map(() => totals.value.payers || 0) }])
+
+const kpiCards = computed(() => [
+  {
+    key: 'gross', icon: DollarOutlined, label: t('admin.rev.kpiGross'), value: totals.value.gross,
+    delta: delta(totals.value.gross, prev.value.gross),
+    foot: `30d · ${t('admin.rev.vsPrev')} ${fmtCompact(prev.value.gross)}`, spark: sparkGross.value
+  },
+  {
+    key: 'topups', icon: ArrowUpOutlined, label: t('admin.rev.kpiTopups'), value: totals.value.topups,
+    delta: delta(totals.value.topups, prev.value.topups),
+    foot: `30d · ${t('admin.rev.vsPrev')} ${fmtCompact(prev.value.topups)}`, spark: sparkTopups.value
+  },
+  {
+    key: 'refunded', icon: RollbackOutlined, label: t('admin.rev.kpiRefunded'), value: totals.value.refunded, danger: true,
+    delta: prev.value.refunded === 0 && totals.value.refunded === 0 ? { color: 'default', flat: true, text: '0' } : delta(totals.value.refunded, prev.value.refunded, { invert: true }),
+    foot: `30d · ${t('admin.rev.vsPrev')} ${fmtCompact(prev.value.refunded)}`, spark: sparkRefund.value
+  },
+  {
+    key: 'arpu', icon: RiseOutlined, label: t('admin.rev.kpiArpu'), value: arpu.value,
+    delta: arpuPrev.value > 0 ? delta(arpu.value, arpuPrev.value) : null,
+    footIcon: TeamOutlined, foot: `${totals.value.payers || 0} ${t('admin.rev.payersSub')}`, spark: sparkPayers.value
+  }
+])
 
 // ── Donut: revenue by proxy type ───────────────────────────────────────────
 const donutTypeSeries = computed(() => {
@@ -142,7 +192,8 @@ const donutTypeSeries = computed(() => {
   return [Number(breakdown.value.byType?.ipv4 || 0), Number(breakdown.value.byType?.ipv6 || 0)]
 })
 const donutTypeOptions = computed(() => ({
-  chart: { ...baseChart, type: 'donut' },
+  chart: { ...baseChart.value, type: 'donut' },
+  theme: baseTheme.value,
   labels: ['IPv4', 'IPv6'],
   colors: ['#3b82f6', '#22c55e'],
   legend: { position: 'bottom', fontSize: '12px', markers: { width: 10, height: 10, radius: 5 } },
@@ -152,13 +203,13 @@ const donutTypeOptions = computed(() => ({
         size: '72%',
         labels: {
           show: true,
-          name: { fontSize: '12px', color: '#9ca3af' },
+          name: { fontSize: '12px', color: palette.value.muted },
           value: {
-            fontSize: '20px', fontWeight: 700, color: '#fff',
+            fontSize: '20px', fontWeight: 700, color: palette.value.strong,
             formatter: (v) => fmtCompact(v) + ' ' + currencyCode
           },
           total: {
-            show: true, label: t('admin.rev.totalSpend'), color: '#9ca3af',
+            show: true, label: t('admin.rev.totalSpend'), color: palette.value.muted,
             formatter: () => {
               const sum = donutTypeSeries.value.reduce((a, b) => a + b, 0)
               return fmtCompact(sum) + ' ' + currencyCode
@@ -170,7 +221,7 @@ const donutTypeOptions = computed(() => ({
   },
   stroke: { width: 0 },
   dataLabels: { enabled: false },
-  tooltip: { theme: 'dark', y: { formatter: (v) => fmtMoney(v) + ' ' + currencyCode } }
+  tooltip: { theme: palette.value.mode, y: { formatter: (v) => fmtMoney(v) + ' ' + currencyCode } }
 }))
 
 // ── Bar: revenue by hour-of-day ─────────────────────────────────────────────
@@ -179,19 +230,20 @@ const hourSeries = computed(() => [{
   data: (breakdown.value?.byHour || new Array(24).fill(0)).map((v) => Math.round(v))
 }])
 const hourOptions = computed(() => ({
-  chart: { ...baseChart, type: 'bar' },
+  chart: { ...baseChart.value, type: 'bar' },
+  theme: baseTheme.value,
   colors: ['#22c55e'],
   plotOptions: { bar: { borderRadius: 4, columnWidth: '60%' } },
   dataLabels: { enabled: false },
   stroke: { width: 0 },
-  grid: baseGrid,
+  grid: baseGrid.value,
   xaxis: {
     categories: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0')),
-    labels: { style: { colors: '#6b7280', fontSize: '10px' } },
+    labels: axisLabels('10px'),
     axisBorder: { show: false }, axisTicks: { show: false }
   },
-  yaxis: { labels: { style: { colors: '#6b7280', fontSize: '11px' }, formatter: (v) => fmtCompact(v) } },
-  tooltip: { theme: 'dark', y: { formatter: (v) => fmtMoney(v) + ' ' + currencyCode } }
+  yaxis: { labels: { ...axisLabels('11px'), formatter: (v) => fmtCompact(v) } },
+  tooltip: { theme: palette.value.mode, y: { formatter: (v) => fmtMoney(v) + ' ' + currencyCode } }
 }))
 
 // ── Donut: churn buckets ────────────────────────────────────────────────────
@@ -200,14 +252,16 @@ const churnSeries = computed(() => {
   return [churn.value.active7, churn.value.active30, churn.value.dormant30_60, churn.value.dormant60_90, churn.value.churned90plus, churn.value.never]
 })
 const churnOptions = computed(() => ({
-  chart: { ...baseChart, type: 'donut' },
+  chart: { ...baseChart.value, type: 'donut' },
+  theme: baseTheme.value,
   labels: ['0–7d', '8–30d', '31–60d', '61–90d', '90d+', 'Never'],
   colors: ['#16a34a', '#22c55e', '#f59e0b', '#fb923c', '#ef4444', '#6b7280'],
   legend: { position: 'right', fontSize: '11px', markers: { width: 8, height: 8, radius: 4 } },
   plotOptions: { pie: { donut: { size: '68%' } } },
   stroke: { width: 0 },
   dataLabels: { enabled: false },
-  tooltip: { theme: 'dark' }
+  tooltip: { theme: palette.value.mode },
+  responsive: [{ breakpoint: 576, options: { legend: { position: 'bottom' } } }]
 }))
 
 // ── Heatmap: orders by day × hour ──────────────────────────────────────────
@@ -221,9 +275,10 @@ const heatmapSeries = computed(() => {
   })).reverse()  // Sunday on top → bottom (visual: T7 top, CN bottom)
 })
 const heatmapOptions = computed(() => ({
-  chart: { ...baseChart, type: 'heatmap', toolbar: { show: false } },
+  chart: { ...baseChart.value, type: 'heatmap', toolbar: { show: false } },
+  theme: baseTheme.value,
   dataLabels: { enabled: false },
-  stroke: { width: 1, colors: ['#0a0e14'] },
+  stroke: { width: 1, colors: [palette.value.surface] },
   colors: ['#22c55e'],
   plotOptions: {
     heatmap: {
@@ -231,7 +286,7 @@ const heatmapOptions = computed(() => ({
       radius: 3,
       colorScale: {
         ranges: [
-          { from: 0, to: 0,   color: 'rgba(148, 163, 184, 0.06)', name: '0' },
+          { from: 0, to: 0,   color: palette.value.zero,           name: '0' },
           { from: 1, to: 1,   color: 'rgba(34, 197, 94, 0.18)',   name: '1' },
           { from: 2, to: 4,   color: 'rgba(34, 197, 94, 0.36)',   name: '2–4' },
           { from: 5, to: 9,   color: 'rgba(34, 197, 94, 0.58)',   name: '5–9' },
@@ -241,244 +296,148 @@ const heatmapOptions = computed(() => ({
     }
   },
   grid: { padding: { right: 12, left: 4 } },
-  xaxis: { labels: { style: { colors: '#6b7280', fontSize: '10px' } }, axisBorder: { show: false }, axisTicks: { show: false } },
-  yaxis: { labels: { style: { colors: '#6b7280', fontSize: '10px' } } },
-  tooltip: { theme: 'dark', y: { formatter: (v) => `${v} đơn` } }
+  xaxis: { labels: axisLabels('10px'), axisBorder: { show: false }, axisTicks: { show: false } },
+  yaxis: { labels: axisLabels('10px') },
+  tooltip: { theme: palette.value.mode, y: { formatter: (v) => `${v} đơn` } }
 }))
 
 onMounted(refresh)
 </script>
 
 <template>
-  <section class="finrev">
-    <!-- ─── Header ─── -->
-    <header class="finrev-head">
-      <div>
-        <p class="eyebrow"><DollarSign :size="12" /> {{ t('admin.rev.title') }}</p>
-        <h1>{{ t('admin.rev.heroTitle') }}</h1>
-        <p class="sub">{{ t('admin.rev.heroSub') }}</p>
-      </div>
-      <div class="head-actions">
-        <div class="segment-tabs">
-          <button :class="{ active: period === 'day' }" type="button" @click="period = 'day'; refresh()">{{ t('admin.rev.daily') }}</button>
-          <button :class="{ active: period === 'week' }" type="button" @click="period = 'week'; refresh()">{{ t('admin.rev.weekly') }}</button>
-          <button :class="{ active: period === 'month' }" type="button" @click="period = 'month'; refresh()">{{ t('admin.rev.monthly') }}</button>
-        </div>
-        <button class="icon-btn" type="button" :disabled="loading" @click="refresh"><RefreshCw :size="14" :class="{ spin: loading }" /></button>
-      </div>
-    </header>
+  <div class="page">
+    <!-- ─── Toolbar ─── -->
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.rev.heroSub') }}</a-typography-text>
+      <a-space>
+        <a-segmented :value="period" :options="periodOptions" @change="setPeriod" />
+        <a-button :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+        </a-button>
+      </a-space>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" />
 
     <!-- ─── KPI hero ─── -->
-    <div class="kpi-hero">
-      <article class="kpi-card">
-        <div class="kpi-top">
-          <span class="kpi-label"><DollarSign :size="13" /> {{ t('admin.rev.kpiGross') }}</span>
-          <span class="kpi-delta" :class="pctDelta(totals.gross, prev.gross) >= 0 ? 'up' : 'down'">
-            <component :is="pctDelta(totals.gross, prev.gross) >= 0 ? ArrowUpRight : ArrowDownRight" :size="12" />
-            {{ Math.abs(pctDelta(totals.gross, prev.gross)).toFixed(1) }}%
-          </span>
-        </div>
-        <strong class="kpi-value">{{ fmtMoney(totals.gross) }}<small>{{ currencyCode }}</small></strong>
-        <span class="kpi-foot">30d · {{ t('admin.rev.vsPrev') }} {{ fmtCompact(prev.gross) }}</span>
-        <apexchart v-if="series.length" type="area" :options="makeSparkOptions('#22c55e')" :series="sparkGross" :height="50" />
-      </article>
-
-      <article class="kpi-card">
-        <div class="kpi-top">
-          <span class="kpi-label"><ArrowUpRight :size="13" /> {{ t('admin.rev.kpiTopups') }}</span>
-          <span class="kpi-delta" :class="pctDelta(totals.topups, prev.topups) >= 0 ? 'up' : 'down'">
-            <component :is="pctDelta(totals.topups, prev.topups) >= 0 ? ArrowUpRight : ArrowDownRight" :size="12" />
-            {{ Math.abs(pctDelta(totals.topups, prev.topups)).toFixed(1) }}%
-          </span>
-        </div>
-        <strong class="kpi-value">{{ fmtMoney(totals.topups) }}<small>{{ currencyCode }}</small></strong>
-        <span class="kpi-foot">30d · {{ t('admin.rev.vsPrev') }} {{ fmtCompact(prev.topups) }}</span>
-        <apexchart v-if="series.length" type="area" :options="makeSparkOptions('#3b82f6')" :series="sparkTopups" :height="50" />
-      </article>
-
-      <article class="kpi-card">
-        <div class="kpi-top">
-          <span class="kpi-label"><RotateCcw :size="13" /> {{ t('admin.rev.kpiRefunded') }}</span>
-          <span class="kpi-delta neutral" v-if="prev.refunded === 0 && totals.refunded === 0"><Minus :size="12" />0%</span>
-          <span class="kpi-delta" :class="pctDelta(totals.refunded, prev.refunded) <= 0 ? 'up' : 'down'" v-else>
-            <component :is="pctDelta(totals.refunded, prev.refunded) <= 0 ? ArrowDownRight : ArrowUpRight" :size="12" />
-            {{ Math.abs(pctDelta(totals.refunded, prev.refunded)).toFixed(1) }}%
-          </span>
-        </div>
-        <strong class="kpi-value danger">{{ fmtMoney(totals.refunded) }}<small>{{ currencyCode }}</small></strong>
-        <span class="kpi-foot">30d · {{ t('admin.rev.vsPrev') }} {{ fmtCompact(prev.refunded) }}</span>
-        <apexchart v-if="series.length" type="area" :options="makeSparkOptions('#ef4444')" :series="sparkRefund" :height="50" />
-      </article>
-
-      <article class="kpi-card">
-        <div class="kpi-top">
-          <span class="kpi-label"><TrendingUp :size="13" /> {{ t('admin.rev.kpiArpu') }}</span>
-          <span class="kpi-delta" :class="pctDelta(arpu, arpuPrev) >= 0 ? 'up' : 'down'" v-if="arpuPrev > 0">
-            <component :is="pctDelta(arpu, arpuPrev) >= 0 ? ArrowUpRight : ArrowDownRight" :size="12" />
-            {{ Math.abs(pctDelta(arpu, arpuPrev)).toFixed(1) }}%
-          </span>
-        </div>
-        <strong class="kpi-value">{{ fmtMoney(arpu) }}<small>{{ currencyCode }}</small></strong>
-        <span class="kpi-foot"><Users :size="11" /> {{ totals.payers || 0 }} {{ t('admin.rev.payersSub') }}</span>
-        <apexchart v-if="series.length" type="area" :options="makeSparkOptions('#f59e0b')" :series="sparkPayers" :height="50" />
-      </article>
-    </div>
+    <a-row :gutter="[16, 16]">
+      <a-col v-for="k in kpiCards" :key="k.key" :xs="24" :sm="12" :xl="6">
+        <a-card size="small" class="kpi-card" :body-style="{ paddingBottom: 0 }">
+          <a-flex justify="space-between" align="center" gap="small">
+            <a-typography-text type="secondary" class="kpi-label">
+              <component :is="k.icon" /> {{ k.label }}
+            </a-typography-text>
+            <a-tag v-if="k.delta" :color="k.delta.color" :bordered="false" class="kpi-delta">
+              <MinusOutlined v-if="k.delta.flat" />
+              <ArrowUpOutlined v-else-if="k.delta.up" />
+              <ArrowDownOutlined v-else />
+              {{ k.delta.text }}%
+            </a-tag>
+          </a-flex>
+          <a-statistic :value="k.value" :suffix="currencyCode" class="kpi-stat" :value-style="k.danger ? { color: 'var(--pb-error)' } : undefined">
+            <template #formatter="{ value }">{{ fmtMoney(value) }}</template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-foot">
+            <component :is="k.footIcon" v-if="k.footIcon" /> {{ k.foot }}
+          </a-typography-text>
+          <apexchart v-if="series.length" type="area" :options="sparkOptions[k.key]" :series="k.spark" :height="50" />
+          <div v-else class="spark-gap"></div>
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- ─── Main chart: trend ─── -->
-    <section class="card-block">
-      <div class="card-head">
-        <div>
-          <h3>{{ t('admin.rev.trendTitle') }}</h3>
-          <p class="muted">{{ t('admin.rev.trendSub', { period: t('admin.rev.period.' + period) }) }}</p>
-        </div>
-      </div>
+    <a-card :title="t('admin.rev.trendTitle')" :loading="loading && !data">
+      <a-typography-text type="secondary" class="card-sub">{{ t('admin.rev.trendSub', { period: t('admin.rev.period.' + period) }) }}</a-typography-text>
       <apexchart v-if="series.length" type="area" :options="mainOptions" :series="mainSeries" :height="340" />
-      <p v-else class="empty">{{ t('admin.rev.empty') }}</p>
-    </section>
+      <a-empty v-else :image="emptyImage" :description="t('admin.rev.empty')" class="empty" />
+    </a-card>
 
     <!-- ─── Row 2: donut by type + bar by hour ─── -->
-    <div class="grid-2">
-      <section class="card-block">
-        <div class="card-head"><h3>{{ t('admin.rev.byTypeTitle') }}</h3></div>
-        <apexchart v-if="breakdown && (donutTypeSeries[0] || donutTypeSeries[1])"
-          type="donut" :options="donutTypeOptions" :series="donutTypeSeries" :height="280" />
-        <p v-else class="empty">{{ t('admin.rev.empty') }}</p>
-      </section>
-
-      <section class="card-block">
-        <div class="card-head"><h3>{{ t('admin.rev.byHourTitle') }}</h3></div>
-        <apexchart v-if="breakdown" type="bar" :options="hourOptions" :series="hourSeries" :height="280" />
-        <p v-else class="empty">{{ t('admin.rev.empty') }}</p>
-      </section>
-    </div>
+    <a-row :gutter="[16, 16]">
+      <a-col :xs="24" :lg="12">
+        <a-card :title="t('admin.rev.byTypeTitle')" class="full-height">
+          <apexchart
+            v-if="breakdown && (donutTypeSeries[0] || donutTypeSeries[1])"
+            type="donut" :options="donutTypeOptions" :series="donutTypeSeries" :height="280"
+          />
+          <a-empty v-else :image="emptyImage" :description="t('admin.rev.empty')" class="empty" />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :lg="12">
+        <a-card :title="t('admin.rev.byHourTitle')" class="full-height">
+          <apexchart v-if="breakdown" type="bar" :options="hourOptions" :series="hourSeries" :height="280" />
+          <a-empty v-else :image="emptyImage" :description="t('admin.rev.empty')" class="empty" />
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- ─── Row 3: top spenders + churn donut ─── -->
-    <div class="grid-2">
-      <section class="card-block">
-        <div class="card-head">
-          <h3><Crown :size="14" style="vertical-align:-2px; color:#f59e0b" /> {{ t('admin.rev.topSpenders') }}</h3>
-          <span class="muted small">{{ t('admin.rev.topSub') }}</span>
-        </div>
-        <div v-if="topSpenders.length" class="spender-list">
-          <article v-for="(r, i) in topSpenders" :key="r.ownerId" class="spender-row" @click="viewUser(r.ownerId)">
-            <span class="rank">#{{ i + 1 }}</span>
-            <div class="spender-body">
-              <strong>{{ r.user.email }}</strong>
-              <span class="muted">{{ r.orderCount }} đơn</span>
-            </div>
-            <span class="spender-amt">{{ fmtCompact(r.total) }}</span>
-            <div class="spender-bar"><span :style="{ width: (r.total / maxSpend * 100) + '%' }"></span></div>
-          </article>
-        </div>
-        <p v-else class="empty">{{ t('admin.rev.empty') }}</p>
-      </section>
+    <a-row :gutter="[16, 16]">
+      <a-col :xs="24" :lg="12">
+        <a-card class="full-height">
+          <template #title><CrownOutlined class="crown" /> {{ t('admin.rev.topSpenders') }}</template>
+          <a-typography-text type="secondary" class="card-sub">{{ t('admin.rev.topSub') }}</a-typography-text>
+          <a-list v-if="topSpenders.length" :data-source="topSpenders" :split="false" size="small">
+            <template #renderItem="{ item: r, index: i }">
+              <a-list-item class="spender" @click="viewUser(r.ownerId)">
+                <div class="spender-row">
+                  <a-flex align="center" gap="small">
+                    <a-typography-text type="warning" strong class="mono rank">#{{ i + 1 }}</a-typography-text>
+                    <div class="spender-body">
+                      <a-typography-text strong :ellipsis="{ tooltip: r.user.email }" :content="r.user.email" class="spender-email" />
+                      <a-typography-text type="secondary" class="small">{{ r.orderCount }} đơn</a-typography-text>
+                    </div>
+                    <a-typography-text type="success" strong class="mono">{{ fmtCompact(r.total) }}</a-typography-text>
+                  </a-flex>
+                  <a-progress :percent="(r.total / maxSpend) * 100" :show-info="false" size="small" stroke-color="#22c55e" class="spender-bar" />
+                </div>
+              </a-list-item>
+            </template>
+          </a-list>
+          <a-empty v-else :image="emptyImage" :description="t('admin.rev.empty')" class="empty" />
+        </a-card>
+      </a-col>
 
-      <section class="card-block">
-        <div class="card-head">
-          <h3>{{ t('admin.rev.churnTitle') }}</h3>
-          <span class="muted small">{{ t('admin.rev.churnHelp') }}</span>
-        </div>
-        <apexchart v-if="churn" type="donut" :options="churnOptions" :series="churnSeries" :height="280" />
-        <p v-else class="empty">{{ t('admin.rev.empty') }}</p>
-      </section>
-    </div>
+      <a-col :xs="24" :lg="12">
+        <a-card :title="t('admin.rev.churnTitle')" class="full-height">
+          <a-typography-text type="secondary" class="card-sub">{{ t('admin.rev.churnHelp') }}</a-typography-text>
+          <apexchart v-if="churn" type="donut" :options="churnOptions" :series="churnSeries" :height="280" />
+          <a-empty v-else :image="emptyImage" :description="t('admin.rev.empty')" class="empty" />
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- ─── Order heatmap ─── -->
-    <section class="card-block">
-      <div class="card-head">
-        <h3>{{ t('admin.rev.heatmapTitle') }}</h3>
-        <span class="muted small">{{ t('admin.rev.heatmapHelp') }}</span>
-      </div>
+    <a-card :title="t('admin.rev.heatmapTitle')">
+      <a-typography-text type="secondary" class="card-sub">{{ t('admin.rev.heatmapHelp') }}</a-typography-text>
       <apexchart v-if="heatmap" type="heatmap" :options="heatmapOptions" :series="heatmapSeries" :height="280" />
-      <p v-else class="empty">{{ t('admin.rev.empty') }}</p>
-    </section>
-  </section>
+      <a-empty v-else :image="emptyImage" :description="t('admin.rev.empty')" class="empty" />
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.finrev { display: flex; flex-direction: column; gap: 18px; padding-bottom: 24px; }
+.full-height { height: 100%; }
+.kpi-card { height: 100%; overflow: hidden; }
+.kpi-label { font-size: 12px; }
+.kpi-delta { margin-inline-end: 0; font-weight: 600; }
+.kpi-stat { margin-top: 6px; }
+.kpi-stat :deep(.ant-statistic-content-value) { font-family: var(--pb-mono); font-weight: 700; }
+.kpi-stat :deep(.ant-statistic-content-suffix) { font-size: 12px; opacity: 0.6; }
+.kpi-foot { display: block; font-size: 12px; margin: 2px 0 6px; }
+.spark-gap { height: 12px; }
+.card-sub { display: block; font-size: 12px; margin-bottom: 8px; }
+.empty { padding: 32px 0; }
+.crown { color: var(--pb-warning); }
+.small { font-size: 12px; }
 
-/* ── Header ─────────────────────────────────────────────────── */
-.finrev-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 14px; }
-.finrev-head .eyebrow { color: #22c55e; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 5px; margin: 0 0 4px; }
-.finrev-head h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
-.finrev-head .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-.head-actions { display: inline-flex; gap: 10px; align-items: center; }
-.icon-btn { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 7px 9px; cursor: pointer; display: inline-flex; align-items: center; }
-.icon-btn:hover { background: rgba(148, 163, 184, 0.08); }
-.icon-btn .spin { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ── KPI hero ───────────────────────────────────────────────── */
-.kpi-hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-.kpi-card {
-  background: linear-gradient(180deg, rgba(34, 197, 94, 0.04) 0%, transparent 50%), var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 16px 18px 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: 0.2s;
-}
-.kpi-card:hover { border-color: rgba(34, 197, 94, 0.3); transform: translateY(-1px); }
-.kpi-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.kpi-label { color: var(--muted); font-size: 11.5px; font-weight: 500; letter-spacing: 0.02em; display: inline-flex; align-items: center; gap: 5px; }
-.kpi-delta { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; display: inline-flex; align-items: center; gap: 2px; }
-.kpi-delta.up { color: #22c55e; background: rgba(34, 197, 94, 0.12); }
-.kpi-delta.down { color: #ef4444; background: rgba(239, 68, 68, 0.12); }
-.kpi-delta.neutral { color: var(--muted); background: rgba(148, 163, 184, 0.1); }
-.kpi-value { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 26px; font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; color: var(--text); display: flex; align-items: baseline; gap: 4px; }
-.kpi-value.danger { color: #ef4444; }
-.kpi-value small { font-size: 10.5px; color: var(--muted); font-weight: 500; }
-.kpi-foot { color: var(--muted); font-size: 10.5px; margin: 4px 0 8px; display: inline-flex; align-items: center; gap: 4px; }
-
-/* ── Card blocks ────────────────────────────────────────────── */
-.card-block {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 18px 20px;
-}
-.card-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 12px; gap: 8px; flex-wrap: wrap; }
-.card-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
-.card-head .muted { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.card-head .small { font-size: 11px; }
-.empty { padding: 60px 0; text-align: center; color: var(--muted); font-size: 13px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-
-/* ── Top spenders ───────────────────────────────────────────── */
-.spender-list { display: flex; flex-direction: column; gap: 4px; }
-.spender-row {
-  display: grid;
-  grid-template-columns: 28px 1fr auto;
-  grid-template-rows: auto auto;
-  grid-template-areas: 'rank body amt' 'bar bar bar';
-  gap: 4px 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: 0.15s;
-}
-.spender-row:hover { background: rgba(148, 163, 184, 0.05); }
-.spender-row .rank { grid-area: rank; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #f59e0b; font-size: 12px; }
-.spender-body { grid-area: body; display: flex; flex-direction: column; min-width: 0; }
-.spender-body strong { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.spender-body .muted { font-size: 10.5px; color: var(--muted); }
-.spender-amt { grid-area: amt; font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; color: #22c55e; align-self: center; }
-.spender-bar { grid-area: bar; height: 3px; background: rgba(148, 163, 184, 0.08); border-radius: 2px; overflow: hidden; margin-top: 2px; }
-.spender-bar span { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #16a34a); border-radius: 2px; transition: width 0.4s; }
-
-/* ── Responsive ─────────────────────────────────────────────── */
-@media (max-width: 1100px) {
-  .kpi-hero { grid-template-columns: repeat(2, 1fr); }
-  .grid-2 { grid-template-columns: 1fr; }
-}
-@media (max-width: 600px) {
-  .kpi-hero { grid-template-columns: 1fr; }
-  .finrev-head h1 { font-size: 22px; }
-  .kpi-value { font-size: 22px; }
-}
+.spender { cursor: pointer; border-radius: 8px; padding-inline: 8px !important; }
+.spender:hover { background: var(--pb-primary-soft); }
+.spender-row { width: 100%; min-width: 0; }
+.rank { width: 28px; flex-shrink: 0; font-size: 12px; }
+.spender-body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.spender-email { max-width: 100%; }
+.spender-bar { margin: 2px 0 0; }
+.spender-bar :deep(.ant-progress-outer) { padding: 0; }
 </style>

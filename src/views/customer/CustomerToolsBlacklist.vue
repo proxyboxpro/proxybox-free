@@ -71,7 +71,7 @@ const columns = [
           <a-input
             v-model:value="input"
             size="large"
-            class="mono ip-input"
+            class="ip-input mono-field"
             :placeholder="t('cust.tools.blacklist.placeholder')"
             :status="trimmed && !isIpv4 ? 'error' : undefined"
             autocomplete="off"
@@ -177,4 +177,5 @@ const columns = [
 .hint { margin-bottom: 0; font-size: 12px; }
 .small { font-size: 12px; }
 .summary :deep(.ant-alert-message) { width: 100%; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

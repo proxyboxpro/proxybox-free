@@ -1,21 +1,23 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { Edit3, FileText, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { confirmAsync, message } from '../../ui/feedback'
 
 const { t } = useI18n()
 const docs = ref([])
 const err = ref('')
-const flash = ref('')
+const loading = ref(false)
 const editing = ref(null)  // doc being edited (or new draft)
 const creating = ref(false)
 const saving = ref(false)
 
 async function refresh() {
   err.value = ''
+  loading.value = true
   try { docs.value = await apiFetch('/api/admin/docs') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 
 function startNew() {
@@ -36,30 +38,29 @@ function cancel() {
 async function save() {
   if (!editing.value || saving.value) return
   saving.value = true
-  err.value = ''
   try {
     if (creating.value) {
       const created = await apiFetch('/api/admin/docs', { method: 'POST', body: editing.value })
       docs.value.push(created)
-      flash.value = t('admin.docs.flashCreated', { title: created.title })
+      message.success(t('admin.docs.flashCreated', { title: created.title }))
     } else {
       const updated = await apiFetch(`/api/admin/docs/${editing.value.id}`, { method: 'PATCH', body: editing.value })
       const idx = docs.value.findIndex((d) => d.id === updated.id)
       if (idx >= 0) docs.value[idx] = updated
-      flash.value = t('admin.docs.flashUpdated', { title: updated.title })
+      message.success(t('admin.docs.flashUpdated', { title: updated.title }))
     }
     editing.value = null; creating.value = false
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { saving.value = false }
 }
 
 async function remove(d) {
-  if (!confirm(t('admin.docs.confirmDel', { title: d.title }))) return
+  if (!(await confirmAsync({ title: t('admin.docs.confirmDel', { title: d.title }), danger: true }))) return
   try {
     await apiFetch(`/api/admin/docs/${d.id}`, { method: 'DELETE' })
     docs.value = docs.value.filter((x) => x.id !== d.id)
-    flash.value = t('admin.docs.flashDeleted')
-  } catch (e) { err.value = e.message }
+    message.success(t('admin.docs.flashDeleted'))
+  } catch (e) { message.error(e.message) }
 }
 
 const grouped = computed(() => {
@@ -78,71 +79,116 @@ onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow"><FileText :size="13" style="vertical-align:-2px" /> {{ t('admin.docs.eyebrow') }} ({{ docs.length }})</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="13" /> {{ t('admin.docs.refresh') }}</button>
-      <button class="primary-action small" type="button" @click="startNew"><Plus :size="13" /> {{ t('admin.docs.newDoc') }}</button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.docs.eyebrow') }} ({{ docs.length }})</a-typography-text>
+      <a-space wrap>
+        <a-button :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+          {{ t('admin.docs.refresh') }}
+        </a-button>
+        <a-button type="primary" @click="startNew">
+          <template #icon><PlusOutlined /></template>
+          {{ t('admin.docs.newDoc') }}
+        </a-button>
+      </a-space>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color:#15803d">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.docs.listTitle') }}</h2></div>
-      <div v-if="!docs.length" class="empty-text" v-html="t('admin.docs.empty')"></div>
+    <a-card :title="t('admin.docs.listTitle')" :loading="loading && !docs.length">
+      <a-empty v-if="!docs.length">
+        <!-- eslint-disable-next-line vue/no-v-html -->
+        <template #description><span v-html="t('admin.docs.empty')" /></template>
+      </a-empty>
       <template v-else>
-        <div v-for="g in grouped" :key="g.cat" style="margin-bottom:16px">
-          <h3 style="font-size:11.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; margin:8px 0 6px">{{ g.cat }}</h3>
-          <div class="data-table">
-            <div v-for="d in g.items" :key="d.id" class="table-row" style="grid-template-columns: 1.4fr 1fr 0.5fr 0.5fr auto auto">
-              <span style="color:#fff">{{ d.title }}</span>
-              <span class="cell-mono" style="color:var(--muted); font-size:11.5px">{{ d.slug }}</span>
-              <span class="cell-mono" style="font-size:11.5px">order: {{ d.order }}</span>
-              <span><span class="tag" :style="d.published ? 'background:rgba(34,197,94,.12); color:#22c55e' : 'background:rgba(148,163,184,.1); color:var(--muted)'">{{ d.published ? t('admin.docs.statusPublished') : t('admin.docs.statusDraft') }}</span></span>
-              <button class="ghost-button mini" type="button" @click="startEdit(d)"><Edit3 :size="11" /></button>
-              <button class="ghost-button mini" type="button" @click="remove(d)"><Trash2 :size="11" /></button>
-            </div>
-          </div>
+        <div v-for="g in grouped" :key="g.cat" class="group">
+          <a-divider orientation="left" orientation-margin="0" plain class="group-title">
+            <a-typography-text type="secondary" strong>{{ g.cat }}</a-typography-text>
+          </a-divider>
+          <a-list :data-source="g.items" size="small" bordered :row-key="(d) => d.id">
+            <template #renderItem="{ item: d }">
+              <a-list-item>
+                <a-list-item-meta>
+                  <template #title>
+                    <a-space wrap :size="[8, 2]">
+                      <span>{{ d.title }}</span>
+                      <a-tag :color="d.published ? 'success' : 'default'" :bordered="false">
+                        {{ d.published ? t('admin.docs.statusPublished') : t('admin.docs.statusDraft') }}
+                      </a-tag>
+                    </a-space>
+                  </template>
+                  <template #description>
+                    <a-space wrap :size="[12, 0]">
+                      <span class="mono">{{ d.slug }}</span>
+                      <span class="mono">order: {{ d.order }}</span>
+                    </a-space>
+                  </template>
+                </a-list-item-meta>
+                <template #actions>
+                  <a-tooltip :title="t('admin.common.edit')">
+                    <a-button size="small" @click="startEdit(d)"><template #icon><EditOutlined /></template></a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="t('admin.common.delete')">
+                    <a-button size="small" danger @click="remove(d)"><template #icon><DeleteOutlined /></template></a-button>
+                  </a-tooltip>
+                </template>
+              </a-list-item>
+            </template>
+          </a-list>
         </div>
       </template>
-    </section>
+    </a-card>
 
     <!-- Editor modal -->
-    <div v-if="editing" class="modal-backdrop" @click="cancel"></div>
-    <div v-if="editing" class="modal-card" @click.stop>
-      <header>
-        <strong>{{ creating ? t('admin.docs.editorNew') : t('admin.docs.editorEdit', { title: editing.title }) }}</strong>
-        <button type="button" class="ghost-button" @click="cancel"><X :size="14" /></button>
-      </header>
-      <div class="modal-body">
-        <div class="form-grid" style="grid-template-columns: 2fr 1fr 80px 100px; gap:10px">
-          <label class="input-field"><span>{{ t('admin.docs.fieldTitle') }}</span><input v-model="editing.title" /></label>
-          <label class="input-field"><span>{{ t('admin.docs.fieldCategory') }}</span><input v-model="editing.category" :placeholder="t('admin.docs.categoryPh')" /></label>
-          <label class="input-field"><span>{{ t('admin.docs.fieldOrder') }}</span><input v-model.number="editing.order" type="number" min="0" /></label>
-          <label class="check-line" style="align-items:center; gap:6px"><input v-model="editing.published" type="checkbox" /><span>{{ t('admin.docs.fieldPublished') }}</span></label>
-        </div>
-        <label class="input-field" style="margin-top:10px"><span>{{ t('admin.docs.fieldSlug') }}</span><input v-model="editing.slug" :placeholder="t('admin.docs.slugPh')" /></label>
-        <label class="input-field" style="margin-top:10px">
-          <span>{{ t('admin.docs.fieldBody') }}</span>
-          <textarea v-model="editing.body" rows="14" style="font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.55"></textarea>
-        </label>
-      </div>
-      <footer>
-        <button type="button" class="ghost-button" @click="cancel">{{ t('admin.docs.cancel') }}</button>
-        <button type="button" class="primary-action small" :disabled="saving" @click="save"><Save :size="13" /> {{ saving ? t('admin.docs.saving') : (creating ? t('admin.docs.btnCreate') : t('admin.docs.btnSave')) }}</button>
-      </footer>
-    </div>
-  </section>
+    <a-modal
+      :open="!!editing"
+      :title="editing ? (creating ? t('admin.docs.editorNew') : t('admin.docs.editorEdit', { title: editing.title })) : ''"
+      :width="820"
+      :confirm-loading="saving"
+      :ok-text="saving ? t('admin.docs.saving') : (creating ? t('admin.docs.btnCreate') : t('admin.docs.btnSave'))"
+      :cancel-text="t('admin.docs.cancel')"
+      destroy-on-close
+      @ok="save"
+      @cancel="cancel"
+    >
+      <a-form v-if="editing" :model="editing" layout="vertical" class="editor">
+        <a-row :gutter="12">
+          <a-col :xs="24" :md="11">
+            <a-form-item :label="t('admin.docs.fieldTitle')" name="title">
+              <a-input v-model:value="editing.title" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="7">
+            <a-form-item :label="t('admin.docs.fieldCategory')" name="category">
+              <a-input v-model:value="editing.category" :placeholder="t('admin.docs.categoryPh')" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="12" :md="3">
+            <a-form-item :label="t('admin.docs.fieldOrder')" name="order">
+              <a-input-number v-model:value="editing.order" :min="0" class="full-width" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="12" :md="3">
+            <a-form-item :label="t('admin.docs.fieldPublished')" name="published">
+              <a-switch v-model:checked="editing.published" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-form-item :label="t('admin.docs.fieldSlug')" name="slug">
+          <a-input v-model:value="editing.slug" :placeholder="t('admin.docs.slugPh')" />
+        </a-form-item>
+        <a-form-item :label="t('admin.docs.fieldBody')" name="body">
+          <a-textarea v-model:value="editing.body" :rows="14" class="mono body-input" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+  </div>
 </template>
 
 <style scoped>
-.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 90; }
-.modal-card { position: fixed; top: 4%; left: 50%; transform: translateX(-50%); width: min(820px, 95vw); max-height: 92vh; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; z-index: 91; display: flex; flex-direction: column; }
-.modal-card header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-.modal-card header strong { font-size: 14px; color: var(--text); }
-.modal-body { padding: 18px; overflow-y: auto; flex: 1; }
-.modal-card footer { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
-.ghost-button.mini { padding: 4px 8px; }
+.group + .group { margin-top: 8px; }
+.group-title { margin: 0 0 8px; }
+.editor { margin-top: 12px; }
+.body-input { font-size: 12px; line-height: 1.55; }
 </style>

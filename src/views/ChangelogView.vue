@@ -1,11 +1,14 @@
 <script setup>
 import { computed } from 'vue'
-import { Box, ArrowRight, Sparkles, Wrench, AlertTriangle, ShieldCheck, Rocket } from 'lucide-vue-next'
+import {
+  BulbOutlined, RocketOutlined, SafetyCertificateOutlined, ToolOutlined, WarningOutlined
+} from '@ant-design/icons-vue'
 import { useI18n } from '../i18n'
 import PublicTopNav from '../components/PublicTopNav.vue'
 
-const { t, locale, setLocale } = useI18n()
+const { t, locale } = useI18n()
 const appVersion = (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0')
+const year = new Date().getFullYear()
 
 // Version history. Newest first. `tag` drives the colour pill.
 //   feature  → blue/green   new capability
@@ -273,12 +276,13 @@ const releases = [
   }
 ]
 
+// `color` → a-tag preset, `dot` → timeline dot colour (theme CSS vars).
 const tagMeta = {
-  release:  { icon: Rocket,        cls: 't-release',  label: { en: 'Release',     vi: 'Bản phát hành' } },
-  feature:  { icon: Sparkles,      cls: 't-feature',  label: { en: 'Feature',     vi: 'Tính năng'      } },
-  fix:      { icon: Wrench,        cls: 't-fix',      label: { en: 'Fix',         vi: 'Sửa lỗi'        } },
-  security: { icon: ShieldCheck,   cls: 't-security', label: { en: 'Security',    vi: 'Bảo mật'        } },
-  breaking: { icon: AlertTriangle, cls: 't-breaking', label: { en: 'Breaking',    vi: 'Phá vỡ tương thích' } }
+  release:  { icon: RocketOutlined,            color: 'success',    dot: 'var(--pb-success)', label: { en: 'Release',  vi: 'Bản phát hành' } },
+  feature:  { icon: BulbOutlined,              color: 'processing', dot: 'var(--pb-info)',    label: { en: 'Feature',  vi: 'Tính năng' } },
+  fix:      { icon: ToolOutlined,              color: 'warning',    dot: 'var(--pb-warning)', label: { en: 'Fix',      vi: 'Sửa lỗi' } },
+  security: { icon: SafetyCertificateOutlined, color: 'error',      dot: 'var(--pb-error)',   label: { en: 'Security', vi: 'Bảo mật' } },
+  breaking: { icon: WarningOutlined,           color: 'error',      dot: 'var(--pb-error)',   label: { en: 'Breaking', vi: 'Phá vỡ tương thích' } }
 }
 
 function tagOf(t) { return tagMeta[t] || tagMeta.feature }
@@ -296,238 +300,114 @@ const items = computed(() => releases.map((r) => ({
 </script>
 
 <template>
-  <div class="changelog">
+  <a-layout class="pub-page">
     <PublicTopNav sub-label="Changelog" />
 
-    <main class="changelog-shell">
-      <div class="changelog-hero">
-        <span class="hero-eyebrow">{{ locale === 'vi' ? 'Nhật ký phát hành' : 'Release log' }}</span>
-        <h1>{{ locale === 'vi' ? 'Changelog' : 'Changelog' }}</h1>
-        <p>{{ locale === 'vi'
+    <a-layout-content class="pub-shell">
+      <header class="pub-head">
+        <a-tag color="success" :bordered="false" class="kicker-tag">{{ locale === 'vi' ? 'Nhật ký phát hành' : 'Release log' }}</a-tag>
+        <a-typography-title :level="1" class="page-title">Changelog</a-typography-title>
+        <a-typography-paragraph type="secondary" class="page-sub">
+          {{ locale === 'vi'
             ? 'Lịch sử các phiên bản ProxyBox + những gì thay đổi. Bản hiện tại của panel này: ' + appVersion + '. Self-host operators có thể tự nâng cấp ở /admin/settings → Upgrade.'
-            : 'Every ProxyBox release and what changed. This panel currently runs v' + appVersion + '. Self-host operators upgrade from /admin/settings → Upgrade.' }}</p>
-      </div>
+            : 'Every ProxyBox release and what changed. This panel currently runs v' + appVersion + '. Self-host operators upgrade from /admin/settings → Upgrade.' }}
+        </a-typography-paragraph>
+      </header>
 
-      <ol class="timeline">
-        <li v-for="r in items" :key="r.version" class="entry">
-          <div class="entry-meta">
-            <div :class="['tag', tagOf(r.tag).cls]">
-              <component :is="tagOf(r.tag).icon" :size="13" />
-              <span>{{ tagOf(r.tag).label[locale] || tagOf(r.tag).label.en }}</span>
-            </div>
-            <span class="ver">v{{ r.version }}</span>
-            <span class="date">{{ dateFmt(r.date) }}</span>
-          </div>
-          <h2>{{ r.title }}</h2>
-          <ul class="bullets">
-            <li v-for="(b, i) in r.bullets" :key="i">{{ b }}</li>
-          </ul>
-        </li>
-      </ol>
+      <a-timeline class="release-timeline">
+        <a-timeline-item v-for="r in items" :key="r.version" :color="tagOf(r.tag).dot">
+          <template #dot><component :is="tagOf(r.tag).icon" class="release-dot" /></template>
+          <a-card size="small" class="release-card">
+            <a-flex align="center" gap="small" wrap="wrap" class="release-meta">
+              <a-tag :color="tagOf(r.tag).color" :bordered="false">
+                <template #icon><component :is="tagOf(r.tag).icon" /></template>
+                {{ tagOf(r.tag).label[locale] || tagOf(r.tag).label.en }}
+              </a-tag>
+              <a-tag class="mono">v{{ r.version }}</a-tag>
+              <a-typography-text type="secondary" class="release-date">{{ dateFmt(r.date) }}</a-typography-text>
+            </a-flex>
+            <a-typography-title :level="2" class="release-title">{{ r.title }}</a-typography-title>
+            <a-typography>
+              <ul class="release-bullets">
+                <li v-for="(b, i) in r.bullets" :key="i">{{ b }}</li>
+              </ul>
+            </a-typography>
+          </a-card>
+        </a-timeline-item>
+      </a-timeline>
 
-      <div class="changelog-foot-cta">
-        <RouterLink to="/faq#self-host-panel" class="btn primary">
-          {{ locale === 'vi' ? 'Hướng dẫn tự host' : 'Self-host guide' }} <ArrowRight :size="14" />
+      <a-divider class="cta-divider" />
+      <a-flex gap="small" wrap="wrap">
+        <RouterLink v-slot="{ href, navigate }" to="/faq#self-host-panel" custom>
+          <a-button type="primary" size="large" :href="href" @click="navigate">
+            {{ locale === 'vi' ? 'Hướng dẫn tự host' : 'Self-host guide' }} <ArrowRightOutlined />
+          </a-button>
         </RouterLink>
-        <RouterLink to="/api-docs" class="btn ghost">
-          {{ locale === 'vi' ? 'Xem API docs' : 'Read API docs' }}
+        <RouterLink v-slot="{ href, navigate }" to="/api-docs" custom>
+          <a-button size="large" :href="href" @click="navigate">
+            <template #icon><ApiOutlined /></template>
+            {{ locale === 'vi' ? 'Xem API docs' : 'Read API docs' }}
+          </a-button>
         </RouterLink>
-      </div>
-    </main>
+      </a-flex>
+    </a-layout-content>
 
-    <footer class="changelog-foot">
-      <span>{{ t('landing.foot.copyright', { year: new Date().getFullYear(), ver: appVersion }) }}</span>
-      <span class="foot-onie">
-        {{ t('landing.foot.publishedBy') }}
-        <a href="https://proxybox.pro" target="_blank" rel="noopener">{{ t('landing.foot.onieName') }}</a>
-        · <a href="https://proxybox.pro" target="_blank" rel="noopener">proxybox.pro</a>
-      </span>
-      <span>
-        <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink>
-        ·
-        <RouterLink to="/api-docs">{{ t('landing.nav.api') }}</RouterLink>
-        ·
-      </span>
-    </footer>
-  </div>
+    <a-layout-footer class="pub-foot">
+      <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="pub-foot-inner">
+        <span>{{ t('landing.foot.copyright', { year, ver: appVersion }) }}</span>
+        <span>
+          {{ t('landing.foot.publishedBy') }}
+          <a href="https://proxybox.pro" target="_blank" rel="noopener" class="foot-strong">{{ t('landing.foot.onieName') }}</a>
+          · <a href="https://proxybox.pro" target="_blank" rel="noopener">proxybox.pro</a>
+        </span>
+        <span>
+          <RouterLink to="/faq">{{ t('landing.nav.faq') }}</RouterLink> ·
+          <RouterLink to="/api-docs">{{ t('landing.nav.api') }}</RouterLink>
+        </span>
+      </a-flex>
+    </a-layout-footer>
+  </a-layout>
 </template>
 
 <style scoped>
-.changelog {
-  min-height: 100vh;
-  background: var(--bg);
-  color: var(--text);
-  overflow-x: hidden;
-}
-.changelog * { box-sizing: border-box; }
-.changelog a { color: inherit; text-decoration: none; }
-
-/* Top nav (mirror landing) */
-.landing-nav {
-  display: flex; align-items: center; gap: 24px;
-  padding: 14px 32px;
-  border-bottom: 1px solid var(--border-soft);
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-  backdrop-filter: blur(8px);
-  position: sticky; top: 0; z-index: 50;
-}
-.landing-brand { display: inline-flex; align-items: center; gap: 10px; font-size: 16px; flex-shrink: 0; }
-.landing-brand .logo-mark {
-  width: 32px; height: 32px; border-radius: 8px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #58a6ff, #3fb950); color: #0a0e14;
-}
-.landing-brand .brand-sub {
-  font-size: 11px; color: var(--dim); padding: 2px 6px;
-  border: 1px solid var(--border); border-radius: 4px;
-  margin-left: 2px; font-weight: 500; letter-spacing: 0.4px;
-}
-.landing-nav-links { display: flex; gap: 22px; margin-left: 18px; flex: 1; min-width: 0; }
-.landing-nav-links a { color: var(--dim); font-size: 14px; white-space: nowrap; }
-.landing-nav-links a:hover { color: var(--text); }
-.landing-nav-actions { display: flex; gap: 8px; align-items: center; }
-.lang-toggle, .theme-btn {
-  display: inline-flex; align-items: center;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
-  overflow: hidden;
-}
-.lang-toggle button {
-  border: 0; background: transparent; color: var(--dim);
-  padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.lang-toggle button.active { background: var(--surface); color: var(--text); }
-.theme-btn { border: 1px solid var(--border); padding: 6px 10px; color: var(--dim); cursor: pointer; }
-.btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: var(--radius-sm);
-  font-size: 13px; font-weight: 600;
-  border: 1px solid var(--border); background: var(--surface-2);
-  color: var(--text); cursor: pointer; white-space: nowrap;
-}
-.btn:hover { background: var(--surface); border-color: var(--blue); }
-.btn.primary { background: linear-gradient(135deg, #58a6ff, #2f81f7); border-color: transparent; color: #0a0e14; }
-.btn.ghost { background: transparent; }
-
-/* Shell */
-.changelog-shell {
-  max-width: 880px; margin: 0 auto;
-  padding: 56px 32px 80px;
-}
-.changelog-hero { margin-bottom: 40px; }
-.hero-eyebrow {
-  display: inline-block; padding: 4px 10px;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
-  border: 1px solid var(--border); border-radius: 999px;
-  color: var(--green); background: var(--green-soft);
-  margin-bottom: 16px;
-}
-.changelog-hero h1 {
-  margin: 0 0 12px;
-  font-size: 36px; font-weight: 700; letter-spacing: -0.5px;
-}
-.changelog-hero p {
-  margin: 0; color: var(--dim);
-  font-size: 15px; line-height: 1.6;
+.pub-page { min-height: 100vh; }
+.pub-shell {
+  width: 100%; max-width: 880px; margin: 0 auto;
+  padding: 48px 24px 56px;
 }
 
-/* Timeline of releases */
-.timeline {
-  list-style: none; padding: 0; margin: 0;
-  position: relative;
-}
-.timeline::before {
-  content: ''; position: absolute;
-  top: 14px; bottom: 14px; left: 8px;
-  width: 1px; background: var(--border);
-}
-.entry {
-  position: relative;
-  padding: 0 0 32px 32px;
-}
-.entry::before {
-  content: ''; position: absolute;
-  top: 10px; left: 3px;
-  width: 11px; height: 11px; border-radius: 999px;
-  background: var(--surface);
-  border: 2px solid var(--blue);
-  box-shadow: 0 0 0 3px var(--bg);
-}
-.entry-meta {
-  display: flex; align-items: center; gap: 10px;
-  flex-wrap: wrap; margin-bottom: 8px;
-  font-size: 12px;
-}
-.tag {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 8px; border-radius: 999px;
-  font-size: 11px; font-weight: 600;
-  letter-spacing: 0.3px;
-}
-.t-release  { background: var(--green-soft);  color: var(--green); }
-.t-feature  { background: var(--blue-soft);   color: var(--blue); }
-.t-fix      { background: var(--yellow-soft); color: var(--yellow); }
-.t-security { background: var(--red-soft);    color: var(--red); }
-.t-breaking { background: var(--red-soft);    color: var(--red); }
-.ver {
-  font-family: var(--mono); font-size: 12px;
-  background: var(--surface-2); border: 1px solid var(--border-soft);
-  padding: 2px 8px; border-radius: 4px; color: var(--text);
-}
-.date { color: var(--dim); font-size: 12px; }
-.entry h2 {
-  margin: 0 0 12px;
-  font-size: 19px; font-weight: 700;
-  letter-spacing: -0.2px;
-}
-.bullets {
-  padding-left: 18px; margin: 0;
-  color: var(--text); font-size: 14px; line-height: 1.7;
-}
-.bullets li {
-  padding-left: 6px; margin-bottom: 6px;
-  color: var(--text);
-}
-.bullets li::marker { color: var(--dim); }
+/* Hero */
+.pub-head { margin-bottom: 32px; }
+.kicker-tag { font-weight: 600; letter-spacing: 0.04em; }
+.page-title { margin: 14px 0 10px !important; font-size: 36px !important; letter-spacing: -0.5px; }
+.page-sub { margin: 0 !important; font-size: 15px; line-height: 1.6; }
 
-.changelog-foot-cta {
-  display: flex; gap: 10px; flex-wrap: wrap;
-  margin-top: 24px;
-  padding-top: 24px;
-  border-top: 1px solid var(--border-soft);
-}
+/* Releases */
+.release-timeline { padding-top: 8px; }
+.release-dot { font-size: 16px; }
+.release-meta { margin-bottom: 8px; }
+.release-meta :deep(.ant-tag) { margin-inline-end: 0; }
+.release-date { font-size: 12.5px; }
+.release-title { margin: 0 0 10px !important; font-size: 18px !important; line-height: 1.4 !important; }
+.release-bullets { margin-bottom: 0 !important; font-size: 14px; line-height: 1.7; }
+.release-bullets li { margin-bottom: 4px; }
 
-.changelog-foot {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 24px 32px;
-  max-width: 1240px; margin: 0 auto;
-  border-top: 1px solid var(--border-soft);
-  color: var(--dim); font-size: 12px; gap: 12px; flex-wrap: wrap;
-}
-.foot-onie a { color: var(--text); text-decoration: none; font-weight: 600; }
-.foot-onie a:hover { color: var(--blue); }
+.cta-divider { margin: 8px 0 24px; }
 
-/* Tablet */
-@media (max-width: 980px) {
-  .landing-nav { padding: 12px 16px; gap: 12px; }
-  .landing-nav-links { display: none; }
-  .desktop-only { display: none; }
-  .changelog-shell { padding: 40px 20px 60px; }
-  .changelog-hero h1 { font-size: 30px; }
-}
-/* Phone */
-@media (max-width: 640px) {
-  .landing-nav { padding: 10px 14px; gap: 8px; }
-  .landing-brand strong { font-size: 15px; }
-  .landing-brand .brand-sub { display: none; }
-  .theme-btn { display: none; }
-  .lang-toggle button { padding: 5px 8px; font-size: 11px; }
-  .btn { padding: 7px 12px; font-size: 12px; }
-  .changelog-shell { padding: 28px 16px 50px; }
-  .changelog-hero h1 { font-size: 24px; }
-  .changelog-hero p { font-size: 14px; }
-  .entry { padding-left: 26px; }
-  .entry h2 { font-size: 17px; }
-  .bullets { font-size: 13.5px; }
-  .changelog-foot { flex-direction: column; align-items: flex-start; padding: 20px 16px; }
+/* Footer */
+.pub-foot { padding: 20px 24px; border-top: 1px solid var(--pb-border-soft); }
+.pub-foot-inner { max-width: 1232px; margin: 0 auto; font-size: 12.5px; color: var(--pb-text-3); }
+.pub-foot a { color: var(--pb-text-2); }
+.pub-foot a:hover { color: var(--pb-primary); }
+.pub-foot .foot-strong { font-weight: 600; color: var(--pb-text); }
+
+@media (max-width: 767px) {
+  .pub-shell { padding: 28px 16px 40px; }
+  .page-title { font-size: 26px !important; }
+  .page-sub { font-size: 14px; }
+  .release-title { font-size: 16px !important; }
+  .release-bullets { font-size: 13.5px; }
+  .pub-foot { padding: 18px 16px; }
+  .pub-foot-inner { flex-direction: column; align-items: flex-start !important; }
 }
 </style>

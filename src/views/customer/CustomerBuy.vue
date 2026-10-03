@@ -2,12 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  AlertCircle, Box, Check, CheckCircle2, Clock, Globe, Info, Lock, MapPin, Minus, Plus,
-  RefreshCw, Server, ShieldCheck, ShoppingCart, Sparkles, Zap
-} from 'lucide-vue-next'
-import { Cloud, Cpu, MapPin as MapPinIcon, Wifi } from 'lucide-vue-next'
+  CloudServerOutlined, DeploymentUnitOutlined, GlobalOutlined, ShoppingCartOutlined, CloudOutlined
+} from '@ant-design/icons-vue'
+import { Empty } from 'ant-design-vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 import CountryFlag from '../../components/CountryFlag.vue'
 
 const { t } = useI18n()
@@ -18,6 +18,11 @@ const router = useRouter()
 //               'byon' = use customer's own node (free).
 //               'hub'  = rent VPS hub from us (paid hourly, agent auto-installed).
 const sourceMode = ref('pool')
+const sourceOptions = [
+  { id: 'pool', icon: ShoppingCartOutlined, titleKey: 'cust.buy.src.poolTitle', subKey: 'cust.buy.src.poolSub' },
+  { id: 'hub', icon: CloudOutlined, titleKey: 'cust.buy.src.hubTitle', subKey: 'cust.buy.src.hubSub', badge: 'PRO', badgeColor: 'cyan' },
+  { id: 'byon', icon: DeploymentUnitOutlined, titleKey: 'cust.buy.src.byonTitle', subKey: 'cust.buy.src.byonSub', badge: 'FREE', badgeColor: 'green' }
+]
 const byonNodes = ref([])
 const byonForm = ref({ nodeId: '', type: 'ipv6', quantity: 1, rotate: false, durationDays: 365 })
 const byonBusy = ref(false)
@@ -49,13 +54,13 @@ function pickHubPlan(plan) {
 }
 async function placeHubOrder() {
   if (hubBusy.value) return
-  if (!hubForm.value.planId) { err.value = t('cust.buy.hub.pickPlanErr'); return }
-  hubBusy.value = true; err.value = ''; flash.value = ''
+  if (!hubForm.value.planId) { fail(t('cust.buy.hub.pickPlanErr')); return }
+  hubBusy.value = true; err.value = ''
   try {
     const r = await apiFetch('/api/v1/user/hubs/buy', { method: 'POST', body: hubForm.value })
-    flash.value = t('cust.buy.hub.provisioned', { hint: r.hint || 'Hub provisioned', cost: r.totalCost?.toLocaleString() || '' })
+    message.success(t('cust.buy.hub.provisioned', { hint: r.hint || 'Hub provisioned', cost: r.totalCost?.toLocaleString() || '' }))
     setTimeout(() => router.push('/my-nodes'), 1800)
-  } catch (e) { err.value = e.message }
+  } catch (e) { fail(e.message) }
   finally { hubBusy.value = false }
 }
 async function loadByon() {
@@ -64,17 +69,21 @@ async function loadByon() {
   if (byonNodes.value.length && !byonForm.value.nodeId) byonForm.value.nodeId = byonNodes.value[0].id
 }
 const selectedByonNode = computed(() => byonNodes.value.find((n) => n.id === byonForm.value.nodeId) || null)
+const byonNodeOptions = computed(() => byonNodes.value.map((n) => ({
+  value: n.id,
+  label: `${n.name} — ${n.host} (${(n.family || 'dual').toUpperCase()}) · ${n.status}`
+})))
 async function placeFreeOrder() {
   if (byonBusy.value) return
-  if (!byonForm.value.nodeId) { err.value = t('cust.buy.byon.noNodeErr'); return }
-  byonBusy.value = true; err.value = ''; flash.value = ''
+  if (!byonForm.value.nodeId) { fail(t('cust.buy.byon.noNodeErr')); return }
+  byonBusy.value = true; err.value = ''
   try {
     const body = { ...byonForm.value }
     if (selectedByonNode.value?.family && selectedByonNode.value.family !== 'dual') body.type = selectedByonNode.value.family
     const r = await apiFetch('/api/v1/user/proxies/from-own-node', { method: 'POST', body })
-    flash.value = t('cust.buy.byon.created', { count: r.count, node: selectedByonNode.value?.name || r.nodeId })
+    message.success(t('cust.buy.byon.created', { count: r.count, node: selectedByonNode.value?.name || r.nodeId }))
     setTimeout(() => router.push({ name: 'proxies' }), 1500)
-  } catch (e) { err.value = e.message }
+  } catch (e) { fail(e.message) }
   finally { byonBusy.value = false }
 }
 
@@ -84,7 +93,8 @@ const account = ref(null)
 const grants = ref([])   // active scoped free-credit grants for this user
 const busy = ref(false)
 const err = ref('')
-const flash = ref('')
+// Action failures: toast + keep the inline a-alert, which carries the "Top up now" shortcut.
+function fail(msg) { err.value = msg; message.error(msg) }
 
 const form = ref({
   type: 'ipv4',          // 'ipv4' | 'ipv6'  — ONLY shape backend accepts
@@ -124,8 +134,8 @@ async function refresh() {
 const productTypes = computed(() => {
   if (!pricing.value) return []
   return [
-    { id: 'ipv4', color: 'blue',  icon: Server, labelKey: 'cust.buy.t.ipv4',     subKey: 'cust.buy.t.ipv4Sub',     perHour: Number(pricing.value.ipv4?.perHour || 0), backendType: 'ipv4' },
-    { id: 'ipv6', color: 'green', icon: Globe,  labelKey: 'cust.buy.t.ipv6',     subKey: 'cust.buy.t.ipv6Sub',     perHour: Number(pricing.value.ipv6?.perHour || 0), backendType: 'ipv6' }
+    { id: 'ipv4', color: 'blue',  icon: CloudServerOutlined, labelKey: 'cust.buy.t.ipv4', subKey: 'cust.buy.t.ipv4Sub', perHour: Number(pricing.value.ipv4?.perHour || 0), backendType: 'ipv4' },
+    { id: 'ipv6', color: 'green', icon: GlobalOutlined,      labelKey: 'cust.buy.t.ipv6', subKey: 'cust.buy.t.ipv6Sub', perHour: Number(pricing.value.ipv6?.perHour || 0), backendType: 'ipv6' }
   ]
 })
 
@@ -133,6 +143,10 @@ const selectedProduct = computed(() => productTypes.value.find((p) => p.id === f
 const currencyCode = computed(() => String(pricing.value?.currency || 'VND').toUpperCase())
 const minHours = computed(() => Number(pricing.value?.minHours || 1))
 const maxHours = computed(() => Number(pricing.value?.maxHours || 8760))
+const methodOptions = computed(() => [
+  { label: t('cust.buy.sticky'), value: false },
+  { label: `${t('cust.buy.rotating')} — ${t('cust.buy.rotatingSub')}`, value: true }
+])
 
 // Hour presets matching backend hours-based pricing
 const hourPresets = [
@@ -231,13 +245,13 @@ function selectZoneCard(card) {
 
 async function placeOrder() {
   if (busy.value) return
-  if (!selectedProduct.value) { err.value = t('cust.buy.errNoPricing'); return }
+  if (!selectedProduct.value) { fail(t('cust.buy.errNoPricing')); return }
   // Auto-balance was removed — zone must be a real, loaded zone id.
   if (!form.value.zone || !zones.value.some((z) => z.id === form.value.zone)) {
-    err.value = t('cust.buy.errNoZone')
+    fail(t('cust.buy.errNoZone'))
     return
   }
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true; err.value = ''
   try {
     const safeZone = form.value.zone
     const body = {
@@ -249,679 +263,604 @@ async function placeOrder() {
       autoRenew: form.value.autoRenew
     }
     const r = await apiFetch('/api/v1/user/orders', { method: 'POST', body })
-    flash.value = t('cust.buy.success', { id: r.order?.id || '' })
+    message.success(t('cust.buy.success', { id: r.order?.id || '' }))
     // Orders page was removed in the /proxies refactor — proxy groups now live
     // inside /proxies (route name 'proxy-order'). The old 'order-detail' name no
     // longer resolves, so pushing it threw and the buyer was never redirected.
     const orderId = r.order?.id
     setTimeout(() => router.push(orderId ? { name: 'proxy-order', params: { orderId } } : { name: 'proxies' }), 1200)
-  } catch (e) { err.value = e.message }
+  } catch (e) { fail(e.message) }
   finally { busy.value = false }
 }
 function goTopup() { router.push({ name: 'billing' }) }
 function fmtMoney(n) { return Number(n || 0).toLocaleString('vi-VN') }
+// Summary rows: label left, value right-aligned.
+const kvContent = { justifyContent: 'flex-end', textAlign: 'right' }
+const totalStyle = { color: 'var(--pb-primary)', fontFamily: 'var(--pb-mono)', fontWeight: 700 }
+const simpleEmpty = Empty.PRESENTED_IMAGE_SIMPLE
 
 onMounted(async () => { await refresh(); applyQuery(); loadByon(); loadHubPlans() })
 </script>
 
 <template>
-  <h1>{{ t('cust.buy.title') }}</h1>
-  <p class="sub">{{ t('cust.buy.subtitle') }}</p>
+  <div class="page">
+    <a-typography-text type="secondary">{{ t('cust.buy.subtitle') }}</a-typography-text>
 
-  <!-- Source switcher: pool (paid) vs own node (free) -->
-  <div class="source-tabs">
-    <button type="button" :class="{ active: sourceMode === 'pool' }" @click="sourceMode = 'pool'">
-      <ShoppingCart :size="14" />
-      <span><strong>{{ t('cust.buy.src.poolTitle') }}</strong><small>{{ t('cust.buy.src.poolSub') }}</small></span>
-    </button>
-    <button type="button" :class="{ active: sourceMode === 'hub' }" @click="sourceMode = 'hub'">
-      <Cloud :size="14" />
-      <span><strong>{{ t('cust.buy.src.hubTitle') }} <em class="badge-pro">PRO</em></strong><small>{{ t('cust.buy.src.hubSub') }}</small></span>
-    </button>
-    <button type="button" :class="{ active: sourceMode === 'byon' }" @click="sourceMode = 'byon'">
-      <Cpu :size="14" />
-      <span><strong>{{ t('cust.buy.src.byonTitle') }} <em class="badge-free">FREE</em></strong><small>{{ t('cust.buy.src.byonSub') }}</small></span>
-    </button>
-  </div>
-
-  <p v-if="err" class="error-text">
-    {{ err }}
-    <button v-if="/balance|insufficient/i.test(err)" class="ghost-button" type="button" style="margin-left:8px" @click="goTopup">{{ t('cust.detail.topupNow') }}</button>
-  </p>
-  <p v-if="flash" style="color:#4ade80; font-size:13px">{{ flash }}</p>
-
-  <!-- ── HUB branch: rent VPS hub from us (paid hourly, auto-installed) ── -->
-  <section v-if="sourceMode === 'hub'" class="hub-layout">
-    <div style="display:flex; flex-direction:column; gap:14px">
-      <!-- 1. ZONE selector — derived from admin's Virtualizor instances -->
-      <section class="surface zone-section">
-        <div class="step-head">
-          <span class="step-num">1</span>
-          <h2><MapPinIcon :size="15" /> {{ t('cust.buy.hub.stepZone') }}</h2>
-          <span class="step-help">{{ t('cust.buy.hub.stepZoneHelp') }}</span>
-        </div>
-        <div v-if="!hubZones.length" class="empty-text" style="text-align:left; padding:14px">
-          {{ t('cust.buy.hub.noPlans') }}
-        </div>
-        <div v-else class="zone-grid">
-          <button v-for="z in hubZones" :key="z.id" type="button" class="zone-card" :class="{ selected: hubForm.zone === z.id }" @click="pickHubZone(z.id)">
-            <span class="z-flag"><CountryFlag :code="z.flag" :size="28" /></span>
-            <span class="z-text">
-              <strong>{{ z.name }}</strong>
-              <span class="z-sub">{{ z.planCount }} plan · {{ z.sub }}</span>
-            </span>
-            <Check v-if="hubForm.zone === z.id" :size="14" class="z-check" />
-          </button>
-        </div>
-      </section>
-
-      <!-- 2. PLAN cards filtered by selected zone -->
-      <section class="surface" v-if="hubPlansForZone.length">
-        <div class="step-head">
-          <span class="step-num">2</span>
-          <h2><Cloud :size="15" /> {{ t('cust.buy.hub.stepConfig') }}</h2>
-          <span class="step-help">{{ t('cust.buy.hub.stepConfigHelp') }}</span>
-        </div>
-        <div class="product-grid" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr))">
-          <div v-for="p in hubPlansForZone" :key="p.id" class="product-card" :class="{ selected: hubForm.planId === p.id }" @click="pickHubPlan(p)">
-            <div class="head">
-              <span class="icon-box" :class="p.family === 'ipv6' ? 'fam-v6' : 'fam-v4'"><Cloud :size="22" /></span>
-              <div>
-                <h3>{{ p.name }}</h3>
-                <p class="desc-sub">
-                  <span :class="['fam-tag', p.family]">Proxy Hub {{ p.family.toUpperCase() }}</span>
-                  <span style="margin-left:6px; color:var(--muted)">· {{ p.region }}</span>
-                </p>
-              </div>
+    <!-- Source switcher: pool (paid) vs hub (rent VPS) vs own node (free) -->
+    <a-row :gutter="[12, 12]" role="radiogroup">
+      <a-col v-for="s in sourceOptions" :key="s.id" :xs="24" :md="8">
+        <a-card
+          size="small"
+          hoverable
+          class="choice"
+          :class="{ 'is-selected': sourceMode === s.id }"
+          role="radio"
+          tabindex="0"
+          :aria-checked="sourceMode === s.id"
+          @click="sourceMode = s.id"
+          @keydown.enter.space.prevent="sourceMode = s.id"
+        >
+          <a-flex align="center" gap="middle">
+            <a-avatar shape="square" :size="40" class="ico ico-green">
+              <template #icon><component :is="s.icon" /></template>
+            </a-avatar>
+            <div class="choice-text">
+              <span class="choice-title">
+                <a-typography-text strong>{{ t(s.titleKey) }}</a-typography-text>
+                <a-tag v-if="s.badge" :color="s.badgeColor" :bordered="false" class="mini-tag">{{ s.badge }}</a-tag>
+              </span>
+              <a-typography-text type="secondary" class="choice-sub">{{ t(s.subKey) }}</a-typography-text>
             </div>
-            <p class="feat" v-if="p.description"><Check :size="13" /> {{ p.description }}</p>
-            <ul class="spec-list">
-              <li><strong>{{ p.specs.cpu }}</strong> vCPU</li>
-              <li><strong>{{ p.specs.ramGB }}</strong> GB RAM</li>
-              <li><strong>{{ p.specs.diskGB }}</strong> GB Disk</li>
-              <li v-if="p.specs.bandwidthGB"><strong>{{ p.specs.bandwidthGB }}</strong> GB BW/m</li>
-              <li v-if="p.specs.ipv4Count"><strong>{{ p.specs.ipv4Count }}</strong> IPv4</li>
-              <li v-if="p.specs.ipv6Range"><strong>{{ p.specs.ipv6Range }}</strong> IPv6</li>
-            </ul>
-            <div class="price">
-              {{ t('cust.product.from') }}
-              <strong>{{ Number(p.hourlyPrice).toLocaleString() }}</strong>
-              <small>{{ p.currency }} {{ t('cust.buy.hub.perHour') }}</small>
-            </div>
-          </div>
-        </div>
-      </section>
-      <section v-else-if="hubForm.zone" class="surface" style="padding:18px">
-        <p class="empty-text" style="margin:0; text-align:left">{{ t('cust.buy.hub.zoneNoPlan', { zone: hubForm.zone }) }}</p>
-      </section>
-    </div>
+          </a-flex>
+          <CheckCircleFilled v-if="sourceMode === s.id" class="choice-check" />
+        </a-card>
+      </a-col>
+    </a-row>
 
-    <!-- RIGHT: hours + total + buy -->
-    <aside class="surface" style="padding:18px">
-      <h3 style="margin:0 0 12px; font-size:15px"><Clock :size="14" style="vertical-align:-2px" /> {{ t('cust.buy.hub.hoursLabel') }}</h3>
-      <input v-model.number="hubForm.hours" type="number" :min="selectedHubPlan?.minHours || 1" :max="selectedHubPlan?.maxHours || 720"
-        class="cell-mono"
-        style="width:100%; height:38px; padding:0 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:14px; text-align:right" />
-      <div v-if="selectedHubPlan" class="hub-total" style="margin-top:14px; padding:12px; background:var(--bg); border-radius:8px; border:1px solid var(--border)">
-        <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted)">
-          <span>Plan</span><span>{{ selectedHubPlan.name }}</span>
-        </div>
-        <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:4px">
-          <span>{{ t('cust.buy.hub.pricePerHour') }}</span><span class="cell-mono">{{ Number(selectedHubPlan.hourlyPrice).toLocaleString() }} {{ selectedHubPlan.currency }}</span>
-        </div>
-        <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:4px">
-          <span>{{ t('cust.buy.hub.numHours') }}</span><span class="cell-mono">{{ hubForm.hours }}</span>
-        </div>
-        <hr style="border:none; border-top:1px dashed var(--border); margin:8px 0" />
-        <div style="display:flex; justify-content:space-between; align-items:baseline">
-          <strong>{{ t('cust.buy.hub.total') }}</strong>
-          <strong class="cell-mono" style="font-size:18px; color:var(--green)">{{ Number(hubCost).toLocaleString() }} {{ selectedHubPlan.currency }}</strong>
-        </div>
-      </div>
-      <button class="primary-action" type="button" :disabled="hubBusy || !hubForm.planId" @click="placeHubOrder" style="margin-top:14px; width:100%">
-        <Plus :size="13" /> {{ hubBusy ? t('cust.buy.hub.creating') : (hubForm.planId ? t('cust.buy.hub.rentBtn', { cost: Number(hubCost).toLocaleString(), currency: selectedHubPlan?.currency || 'VND' }) : t('cust.buy.hub.pickPlan')) }}
-      </button>
-      <p class="hub-note" style="margin:12px 0 0; font-size:11px; color:var(--muted); line-height:1.5" v-html="t('cust.buy.hub.note')"></p>
-    </aside>
-  </section>
+    <a-alert v-if="err" type="error" show-icon closable :message="err" @close="err = ''">
+      <template v-if="/balance|insufficient/i.test(err)" #action>
+        <a-button size="small" type="primary" @click="goTopup">{{ t('cust.detail.topupNow') }}</a-button>
+      </template>
+    </a-alert>
 
-  <!-- ── BYON branch: free creation on customer's own node ── -->
-  <section v-if="sourceMode === 'byon'" class="surface" style="padding:18px">
-    <div v-if="!byonNodes.length" class="empty-text" style="text-align:left">
-      <p style="margin:0 0 10px"><strong>{{ t('cust.buy.byon.noNodes') }}</strong></p>
-      <p style="margin:0 0 10px; font-size:13px" v-html="t('cust.buy.byon.noNodesHint')"></p>
-      <p style="margin:0; font-size:11.5px; color:var(--muted)" v-html="t('cust.buy.byon.freeNote')"></p>
-    </div>
-    <div v-else>
-      <div class="byon-form-grid">
-        <label class="field">
-          <span>Node</span>
-          <select v-model="byonForm.nodeId">
-            <option v-for="n in byonNodes" :key="n.id" :value="n.id">
-              {{ n.name }} — {{ n.host }} ({{ (n.family || 'dual').toUpperCase() }}) · {{ n.status }}
-            </option>
-          </select>
-        </label>
-        <label class="field" v-if="selectedByonNode && selectedByonNode.family === 'dual'">
-          <span>{{ t('cust.buy.byon.typeLabel') }}</span>
-          <select v-model="byonForm.type">
-            <option value="ipv4">IPv4</option>
-            <option value="ipv6">IPv6 (rotating pool)</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>{{ t('cust.buy.quantity') }}</span>
-          <input v-model.number="byonForm.quantity" type="number" min="1" max="20" />
-        </label>
-        <label class="field">
-          <span>{{ t('cust.buy.byon.durationDays') }}</span>
-          <input v-model.number="byonForm.durationDays" type="number" min="1" max="3650" />
-        </label>
-        <label v-if="byonForm.type === 'ipv6' || selectedByonNode?.family === 'ipv6'" class="field" style="grid-column:span 2">
-          <span style="display:flex; gap:6px; align-items:center">
-            <input v-model="byonForm.rotate" type="checkbox" /> {{ t('cust.buy.byon.rotationPool') }}
-          </span>
-        </label>
-      </div>
-      <button class="primary-action" type="button" :disabled="byonBusy || !byonForm.nodeId" @click="placeFreeOrder" style="margin-top:14px">
-        <Plus :size="13" /> {{ byonBusy ? t('cust.buy.byon.creating') : t('cust.buy.byon.createBtn', { n: byonForm.quantity }) }}
-      </button>
-      <p class="byon-note" v-html="t('cust.buy.byon.note', { n: byonForm.quantity })"></p>
-    </div>
-  </section>
+    <!-- ── HUB branch: rent VPS hub from us (paid hourly, auto-installed) ── -->
+    <a-row v-if="sourceMode === 'hub'" :gutter="[16, 16]">
+      <a-col :xs="24" :lg="15" :xl="16">
+        <a-flex vertical gap="middle">
+          <!-- 1. ZONE selector — derived from admin's Virtualizor instances -->
+          <a-card>
+            <template #title>
+              <span class="step-title"><a-avatar :size="22" class="step-num">1</a-avatar><EnvironmentOutlined /> {{ t('cust.buy.hub.stepZone') }}</span>
+            </template>
+            <template #extra><a-typography-text type="secondary" class="step-help">{{ t('cust.buy.hub.stepZoneHelp') }}</a-typography-text></template>
+            <a-empty v-if="!hubZones.length" :image="simpleEmpty" :description="t('cust.buy.hub.noPlans')" />
+            <a-row v-else :gutter="[10, 10]" role="radiogroup">
+              <a-col v-for="z in hubZones" :key="z.id" :xs="24" :sm="12" :md="8" :xxl="6">
+                <a-card
+                  size="small"
+                  hoverable
+                  class="choice"
+                  :class="{ 'is-selected': hubForm.zone === z.id }"
+                  role="radio"
+                  tabindex="0"
+                  :aria-checked="hubForm.zone === z.id"
+                  @click="pickHubZone(z.id)"
+                  @keydown.enter.space.prevent="pickHubZone(z.id)"
+                >
+                  <a-flex align="center" gap="small">
+                    <CountryFlag :code="z.flag" :size="28" />
+                    <div class="choice-text">
+                      <a-typography-text strong class="choice-title">{{ z.name }}</a-typography-text>
+                      <a-typography-text type="secondary" class="choice-sub mono one-line">{{ z.planCount }} plan · {{ z.sub }}</a-typography-text>
+                    </div>
+                  </a-flex>
+                  <CheckCircleFilled v-if="hubForm.zone === z.id" class="choice-check" />
+                </a-card>
+              </a-col>
+            </a-row>
+          </a-card>
 
-  <div v-if="!pricing && sourceMode === 'pool'" class="empty-text" style="padding:60px">{{ t('common.loading') }}</div>
+          <!-- 2. PLAN cards filtered by selected zone -->
+          <a-card v-if="hubPlansForZone.length">
+            <template #title>
+              <span class="step-title"><a-avatar :size="22" class="step-num">2</a-avatar><CloudOutlined /> {{ t('cust.buy.hub.stepConfig') }}</span>
+            </template>
+            <template #extra><a-typography-text type="secondary" class="step-help">{{ t('cust.buy.hub.stepConfigHelp') }}</a-typography-text></template>
+            <a-row :gutter="[12, 12]" role="radiogroup">
+              <a-col v-for="p in hubPlansForZone" :key="p.id" :xs="24" :sm="12" :xl="8">
+                <a-card
+                  size="small"
+                  hoverable
+                  class="choice"
+                  :class="{ 'is-selected': hubForm.planId === p.id }"
+                  role="radio"
+                  tabindex="0"
+                  :aria-checked="hubForm.planId === p.id"
+                  @click="pickHubPlan(p)"
+                  @keydown.enter.space.prevent="pickHubPlan(p)"
+                >
+                  <a-flex vertical gap="small">
+                    <a-flex align="center" gap="middle">
+                      <a-avatar shape="square" :size="44" :class="['ico', p.family === 'ipv6' ? 'ico-purple' : 'ico-blue']">
+                        <template #icon><CloudOutlined /></template>
+                      </a-avatar>
+                      <div class="choice-text">
+                        <a-typography-text strong class="choice-title">{{ p.name }}</a-typography-text>
+                        <span>
+                          <a-tag :color="p.family === 'ipv6' ? 'purple' : 'blue'" :bordered="false" class="mini-tag">Proxy Hub {{ p.family.toUpperCase() }}</a-tag>
+                          <a-typography-text type="secondary" class="choice-sub">· {{ p.region }}</a-typography-text>
+                        </span>
+                      </div>
+                    </a-flex>
+                    <a-typography-text v-if="p.description" type="secondary" class="small-text"><CheckOutlined class="ok-ico" /> {{ p.description }}</a-typography-text>
+                    <a-row :gutter="[12, 2]" class="small-text">
+                      <a-col :span="12"><strong class="mono">{{ p.specs.cpu }}</strong> vCPU</a-col>
+                      <a-col :span="12"><strong class="mono">{{ p.specs.ramGB }}</strong> GB RAM</a-col>
+                      <a-col :span="12"><strong class="mono">{{ p.specs.diskGB }}</strong> GB Disk</a-col>
+                      <a-col v-if="p.specs.bandwidthGB" :span="12"><strong class="mono">{{ p.specs.bandwidthGB }}</strong> GB BW/m</a-col>
+                      <a-col v-if="p.specs.ipv4Count" :span="12"><strong class="mono">{{ p.specs.ipv4Count }}</strong> IPv4</a-col>
+                      <a-col v-if="p.specs.ipv6Range" :span="12"><strong class="mono">{{ p.specs.ipv6Range }}</strong> IPv6</a-col>
+                    </a-row>
+                    <div class="price">
+                      <a-typography-text type="secondary">{{ t('cust.product.from') }}</a-typography-text>
+                      <strong class="mono price-val">{{ Number(p.hourlyPrice).toLocaleString() }}</strong>
+                      <a-typography-text type="secondary" class="small-text">{{ p.currency }} {{ t('cust.buy.hub.perHour') }}</a-typography-text>
+                    </div>
+                  </a-flex>
+                  <CheckCircleFilled v-if="hubForm.planId === p.id" class="choice-check" />
+                </a-card>
+              </a-col>
+            </a-row>
+          </a-card>
+          <a-card v-else-if="hubForm.zone">
+            <a-empty :image="simpleEmpty" :description="t('cust.buy.hub.zoneNoPlan', { zone: hubForm.zone })" />
+          </a-card>
+        </a-flex>
+      </a-col>
 
-  <div v-else-if="sourceMode === 'pool'" class="pool-layout">
-    <!-- LEFT: zone → product → form -->
-    <div class="pool-main">
-      <!-- 1. ZONE SELECTOR (flag cards, first step) -->
-      <section class="surface zone-section">
-        <div class="step-head">
-          <span class="step-num">1</span>
-          <h2><MapPin :size="15" /> {{ t('cust.buy.stepZone') }}</h2>
-          <span class="step-help">{{ t('cust.buy.stepZoneHelp') }}</span>
-        </div>
-        <div class="zone-grid">
-          <button
-            v-for="z in zoneCards" :key="z.id || 'auto'"
-            type="button"
-            class="zone-card"
-            :class="{ selected: form.zone === z.id, 'is-soon': z.comingSoon }"
-            :disabled="z.comingSoon"
-            @click="selectZoneCard(z)"
-          >
-            <span class="z-flag">
-              <CountryFlag :code="z.flag" :size="28" />
-            </span>
-            <span class="z-text">
-              <strong>{{ z.name }}</strong>
-              <span class="z-sub" v-if="z.comingSoon">{{ t('cust.side.comingSoon') }}</span>
-              <span class="z-sub" v-else>{{ z.online }} node · {{ z.sub }}</span>
-            </span>
-            <Check v-if="form.zone === z.id" :size="14" class="z-check" />
-          </button>
-        </div>
-      </section>
-
-      <!-- 2. PRODUCT TYPE -->
-      <section class="surface">
-        <div class="step-head">
-          <span class="step-num">2</span>
-          <h2><Server :size="15" /> {{ t('cust.buy.stepType') }}</h2>
-          <span class="step-help">{{ t('cust.buy.stepTypeHelp') }}</span>
-        </div>
-        <div class="product-grid pool-types">
-          <div
-            v-for="p in productTypes" :key="p.id"
-            class="product-card"
-            :class="{ selected: form.type === p.id }"
-            @click="selectType(p.id)"
-          >
-            <div v-if="form.type === p.id" class="check-mark"><Check :size="14" /></div>
-            <div class="head">
-              <span class="icon-box" :class="p.color"><component :is="p.icon" :size="22" /></span>
-              <div>
-                <h3>{{ t(p.labelKey) }}</h3>
-                <p class="desc-sub">{{ t(p.subKey) }}</p>
-              </div>
-            </div>
-            <div class="price">
-              {{ t('cust.product.from') }}
-              <strong>{{ fmtMoney(p.perHour) }}</strong>
-              <small>{{ currencyCode }} / {{ t('cust.buy.hour') }}</small>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 3. CONFIG -->
-      <section class="surface">
-        <div class="step-head">
-          <span class="step-num">3</span>
-          <h2><Clock :size="15" /> {{ t('cust.buy.configTitle') }}</h2>
-          <span class="step-help">{{ t('cust.buy.stepConfigHelp') }}</span>
-        </div>
-        <div class="form-grid" style="grid-template-columns: 1fr; gap:14px">
-          <label class="input-field" v-if="form.type === 'ipv6'">
-            <span>{{ t('cust.buy.method') }} <Info :size="12" style="color:var(--muted); vertical-align:-2px" /></span>
-            <select v-model="form.rotate">
-              <option :value="false">{{ t('cust.buy.sticky') }}</option>
-              <option :value="true">{{ t('cust.buy.rotating') }} — {{ t('cust.buy.rotatingSub') }}</option>
-            </select>
-          </label>
-          <label class="check-line" style="grid-column: 1 / -1; padding: 6px 0">
-            <input v-model="form.autoRenew" type="checkbox" />
-            <span style="color:var(--text); font-size:13px">{{ t('cust.buy.autoRenew') }}</span>
-            <span style="color:var(--muted); font-size:11.5px; margin-left:6px">{{ t('cust.buy.autoRenewDesc') }}</span>
-          </label>
-        </div>
-
-        <!-- Hours (slider + presets) -->
-        <div style="margin-top:8px">
-          <label class="input-field" style="margin-bottom:8px">
-            <span>{{ t('cust.buy.hours') }} ({{ minHours }} – {{ maxHours }} h)</span>
-          </label>
-          <div class="slider-row">
-            <input
-              v-model.number="form.hours" type="range"
-              :min="minHours" :max="Math.min(maxHours, 720)" step="1"
-              class="slider-range"
-            />
-            <div class="num-stepper">
-              <button type="button" class="row-menu" @click="setHours(form.hours - 1)"><Minus :size="14" /></button>
-              <input
-                v-model.number="form.hours" type="number" :min="minHours" :max="maxHours"
-                class="num-input"
+      <!-- RIGHT: hours + total + buy -->
+      <a-col :xs="24" :lg="9" :xl="8">
+        <div class="aside">
+          <a-card>
+            <template #title><ClockCircleOutlined /> {{ t('cust.buy.hub.hoursLabel') }}</template>
+            <a-flex vertical gap="middle">
+              <a-input-number
+                v-model:value="hubForm.hours"
+                :min="selectedHubPlan?.minHours || 1"
+                :max="selectedHubPlan?.maxHours || 720"
+                size="large"
+                class="mono full-width"
               />
-              <span class="num-unit">h</span>
-              <button type="button" class="row-menu" @click="setHours(form.hours + 1)"><Plus :size="14" /></button>
-            </div>
-          </div>
-          <div class="chips" style="margin-top:4px">
-            <button v-for="h in hourPresets" :key="h.hours" type="button" :class="{ active: form.hours === h.hours }" @click="setHours(h.hours)">{{ t(h.labelKey) }}</button>
-          </div>
+              <template v-if="selectedHubPlan">
+                <a-descriptions :column="1" size="small" :colon="false" :content-style="kvContent" class="summary">
+                  <a-descriptions-item label="Plan">{{ selectedHubPlan.name }}</a-descriptions-item>
+                  <a-descriptions-item :label="t('cust.buy.hub.pricePerHour')">
+                    <span class="mono">{{ Number(selectedHubPlan.hourlyPrice).toLocaleString() }} {{ selectedHubPlan.currency }}</span>
+                  </a-descriptions-item>
+                  <a-descriptions-item :label="t('cust.buy.hub.numHours')"><span class="mono">{{ hubForm.hours }}</span></a-descriptions-item>
+                </a-descriptions>
+                <a-statistic :title="t('cust.buy.hub.total')" :value="hubCost" :suffix="selectedHubPlan.currency" :value-style="totalStyle">
+                  <template #formatter="{ value }">{{ Number(value).toLocaleString() }}</template>
+                </a-statistic>
+              </template>
+              <a-button type="primary" size="large" block :loading="hubBusy" :disabled="!hubForm.planId" @click="placeHubOrder">
+                <template #icon><PlusOutlined /></template>
+                {{ hubBusy ? t('cust.buy.hub.creating') : (hubForm.planId ? t('cust.buy.hub.rentBtn', { cost: Number(hubCost).toLocaleString(), currency: selectedHubPlan?.currency || 'VND' }) : t('cust.buy.hub.pickPlan')) }}
+              </a-button>
+              <a-typography-text type="secondary" class="small-text html-note"><span v-html="t('cust.buy.hub.note')"></span></a-typography-text>
+            </a-flex>
+          </a-card>
         </div>
+      </a-col>
+    </a-row>
 
-        <!-- Quantity (slider + presets) -->
-        <div style="margin-top:18px">
-          <label class="input-field" style="margin-bottom:8px">
-            <span>{{ t('cust.buy.quantity') }} (1 – 254)</span>
-          </label>
-          <div class="slider-row">
-            <input
-              v-model.number="form.quantity" type="range" min="1" max="100" step="1"
-              class="slider-range"
-            />
-            <div class="num-stepper">
-              <button type="button" class="row-menu" @click="setQuantity(form.quantity - 1)"><Minus :size="14" /></button>
-              <input
-                v-model.number="form.quantity" type="number" min="1" max="254"
-                class="num-input"
-              />
-              <span class="num-unit">{{ t('cust.buy.proxyUnit') }}</span>
-              <button type="button" class="row-menu" @click="setQuantity(form.quantity + 1)"><Plus :size="14" /></button>
-            </div>
-          </div>
-          <div class="chips" style="margin-top:4px">
-            <button v-for="q in quantityPresets" :key="q" type="button" :class="{ active: form.quantity === q }" @click="setQuantity(q)">{{ q }} {{ t('cust.buy.proxyUnit') }}</button>
-          </div>
-        </div>
+    <!-- ── BYON branch: free creation on customer's own node ── -->
+    <a-card v-if="sourceMode === 'byon'">
+      <a-empty v-if="!byonNodes.length" :image="simpleEmpty">
+        <template #description>
+          <a-flex vertical gap="small" class="html-note byon-empty">
+            <a-typography-text strong>{{ t('cust.buy.byon.noNodes') }}</a-typography-text>
+            <a-typography-text><span v-html="t('cust.buy.byon.noNodesHint')"></span></a-typography-text>
+            <a-typography-text type="secondary" class="small-text"><span v-html="t('cust.buy.byon.freeNote')"></span></a-typography-text>
+          </a-flex>
+        </template>
+      </a-empty>
+      <a-form v-else layout="vertical" :model="byonForm">
+        <a-row :gutter="16">
+          <a-col :xs="24" :md="12">
+            <a-form-item label="Node">
+              <a-select v-model:value="byonForm.nodeId" :options="byonNodeOptions" class="mono" />
+            </a-form-item>
+          </a-col>
+          <a-col v-if="selectedByonNode && selectedByonNode.family === 'dual'" :xs="24" :md="12">
+            <a-form-item :label="t('cust.buy.byon.typeLabel')">
+              <a-select v-model:value="byonForm.type">
+                <a-select-option value="ipv4">IPv4</a-select-option>
+                <a-select-option value="ipv6">IPv6 (rotating pool)</a-select-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('cust.buy.quantity')">
+              <a-input-number v-model:value="byonForm.quantity" :min="1" :max="20" class="mono full-width" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('cust.buy.byon.durationDays')">
+              <a-input-number v-model:value="byonForm.durationDays" :min="1" :max="3650" class="mono full-width" />
+            </a-form-item>
+          </a-col>
+          <a-col v-if="byonForm.type === 'ipv6' || selectedByonNode?.family === 'ipv6'" :span="24">
+            <a-form-item>
+              <a-checkbox v-model:checked="byonForm.rotate">{{ t('cust.buy.byon.rotationPool') }}</a-checkbox>
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-flex vertical gap="small" align="flex-start">
+          <a-button type="primary" size="large" :loading="byonBusy" :disabled="!byonForm.nodeId" @click="placeFreeOrder">
+            <template #icon><PlusOutlined /></template>
+            {{ byonBusy ? t('cust.buy.byon.creating') : t('cust.buy.byon.createBtn', { n: byonForm.quantity }) }}
+          </a-button>
+          <a-typography-text type="secondary" class="small-text html-note"><span v-html="t('cust.buy.byon.note', { n: byonForm.quantity })"></span></a-typography-text>
+        </a-flex>
+      </a-form>
+    </a-card>
 
+    <a-card v-if="!pricing && sourceMode === 'pool'">
+      <a-flex justify="center" align="center" gap="small" class="loading-box">
+        <a-spin />
+        <a-typography-text type="secondary">{{ t('common.loading') }}</a-typography-text>
+      </a-flex>
+    </a-card>
 
-        <div style="margin-top:14px; padding:10px 14px; border: 1px dashed var(--pxl-bd); border-radius:10px; display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px">
-          <Sparkles :size="14" style="color: var(--pxl)" />
-          {{ form.zone
-              ? t('cust.buy.hint', { country: selectedZoneInfo?.name || form.zone })
-              : t('cust.buy.hintAuto') }}
-        </div>
-      </section>
+    <a-row v-else-if="sourceMode === 'pool'" :gutter="[16, 16]">
+      <!-- LEFT: zone → product → form -->
+      <a-col :xs="24" :lg="15" :xl="16">
+        <a-flex vertical gap="middle">
+          <!-- 1. ZONE SELECTOR (flag cards, first step) -->
+          <a-card>
+            <template #title>
+              <span class="step-title"><a-avatar :size="22" class="step-num">1</a-avatar><EnvironmentOutlined /> {{ t('cust.buy.stepZone') }}</span>
+            </template>
+            <template #extra><a-typography-text type="secondary" class="step-help">{{ t('cust.buy.stepZoneHelp') }}</a-typography-text></template>
+            <a-row :gutter="[10, 10]" role="radiogroup">
+              <a-col v-for="z in zoneCards" :key="z.id || 'auto'" :xs="24" :sm="12" :md="8" :xxl="6">
+                <a-card
+                  size="small"
+                  :hoverable="!z.comingSoon"
+                  class="choice"
+                  :class="{ 'is-selected': form.zone === z.id, 'is-disabled': z.comingSoon }"
+                  role="radio"
+                  :tabindex="z.comingSoon ? -1 : 0"
+                  :aria-checked="form.zone === z.id"
+                  :aria-disabled="z.comingSoon"
+                  @click="selectZoneCard(z)"
+                  @keydown.enter.space.prevent="selectZoneCard(z)"
+                >
+                  <a-flex align="center" gap="small">
+                    <CountryFlag :code="z.flag" :size="28" />
+                    <div class="choice-text">
+                      <a-typography-text strong class="choice-title">{{ z.name }}</a-typography-text>
+                      <a-typography-text v-if="z.comingSoon" type="warning" strong class="choice-sub">{{ t('cust.side.comingSoon') }}</a-typography-text>
+                      <a-typography-text v-else type="secondary" class="choice-sub mono one-line">{{ z.online }} node · {{ z.sub }}</a-typography-text>
+                    </div>
+                  </a-flex>
+                  <CheckCircleFilled v-if="form.zone === z.id" class="choice-check" />
+                </a-card>
+              </a-col>
+            </a-row>
+          </a-card>
 
-      <!-- Why-choose-us -->
-      <section class="surface">
-        <h2 style="color:var(--text); font-size:16px; margin-bottom:14px">{{ t('cust.why.title') }}</h2>
-        <div class="why-choose" style="padding:0; background:transparent; border:none">
-          <div class="feature-card">
-            <span class="ico"><ShieldCheck :size="18" /></span>
-            <div><div class="lbl">{{ t('cust.why.ipReal') }}</div><div class="desc-sub">{{ t('cust.why.ipRealDesc') }}</div></div>
-          </div>
-          <div class="feature-card">
-            <span class="ico"><CheckCircle2 :size="18" /></span>
-            <div><div class="lbl">{{ t('cust.why.success') }}</div><div class="desc-sub">{{ t('cust.why.successDesc') }}</div></div>
-          </div>
-          <div class="feature-card">
-            <span class="ico"><Clock :size="18" /></span>
-            <div><div class="lbl">{{ t('cust.why.hourly') }}</div><div class="desc-sub">{{ t('cust.why.hourlyDesc') }}</div></div>
-          </div>
-          <div class="feature-card">
-            <span class="ico"><Zap :size="18" /></span>
-            <div><div class="lbl">{{ t('cust.why.support247') }}</div><div class="desc-sub">{{ t('cust.why.support247Desc') }}</div></div>
-          </div>
-        </div>
-      </section>
-    </div>
+          <!-- 2. PRODUCT TYPE -->
+          <a-card>
+            <template #title>
+              <span class="step-title"><a-avatar :size="22" class="step-num">2</a-avatar><CloudServerOutlined /> {{ t('cust.buy.stepType') }}</span>
+            </template>
+            <template #extra><a-typography-text type="secondary" class="step-help">{{ t('cust.buy.stepTypeHelp') }}</a-typography-text></template>
+            <a-row :gutter="[12, 12]" role="radiogroup">
+              <a-col v-for="p in productTypes" :key="p.id" :xs="24" :sm="12">
+                <a-card
+                  size="small"
+                  hoverable
+                  class="choice"
+                  :class="{ 'is-selected': form.type === p.id }"
+                  role="radio"
+                  tabindex="0"
+                  :aria-checked="form.type === p.id"
+                  @click="selectType(p.id)"
+                  @keydown.enter.space.prevent="selectType(p.id)"
+                >
+                  <a-flex vertical gap="middle">
+                    <a-flex align="center" gap="middle">
+                      <a-avatar shape="square" :size="44" :class="['ico', `ico-${p.color}`]">
+                        <template #icon><component :is="p.icon" /></template>
+                      </a-avatar>
+                      <div class="choice-text">
+                        <a-typography-text strong class="choice-title">{{ t(p.labelKey) }}</a-typography-text>
+                        <a-typography-text type="secondary" class="choice-sub">{{ t(p.subKey) }}</a-typography-text>
+                      </div>
+                    </a-flex>
+                    <div class="price">
+                      <a-typography-text type="secondary">{{ t('cust.product.from') }}</a-typography-text>
+                      <strong class="mono price-val">{{ fmtMoney(p.perHour) }}</strong>
+                      <a-typography-text type="secondary" class="small-text">{{ currencyCode }} / {{ t('cust.buy.hour') }}</a-typography-text>
+                    </div>
+                  </a-flex>
+                  <CheckCircleFilled v-if="form.type === p.id" class="choice-check" />
+                </a-card>
+              </a-col>
+            </a-row>
+          </a-card>
 
-    <!-- RIGHT: order summary -->
-    <aside class="pool-aside">
-      <div class="px-order-summary">
-        <h3 style="margin:0; color:var(--text); font-size:15px; font-weight:600">{{ t('cust.buy.summary') }}</h3>
-        <div class="divider"></div>
-        <div class="sum-kv"><span class="k">{{ t('cust.col.type') }}</span><span class="v pxl">{{ selectedProduct ? t(selectedProduct.labelKey) : '—' }}</span></div>
-        <div class="sum-kv">
-          <span class="k">{{ t('cust.col.country') }}</span>
-          <span class="v" style="display:inline-flex; gap:6px; align-items:center">
-            <CountryFlag v-if="form.zone" :code="selectedCountryCode" :size="16" />
-            {{ form.zone ? (selectedZoneInfo?.name || form.zone) : '—' }}
-          </span>
-        </div>
-        <div class="sum-kv" v-if="form.type === 'ipv6'"><span class="k">{{ t('cust.buy.method') }}</span><span class="v">{{ form.rotate ? t('cust.buy.rotating') : t('cust.buy.sticky') }}</span></div>
-        <div class="sum-kv"><span class="k">{{ t('cust.buy.hours') }}</span><span class="v">{{ form.hours }} h</span></div>
-        <div class="sum-kv"><span class="k">{{ t('cust.buy.quantity') }}</span><span class="v">{{ form.quantity }} {{ t('cust.buy.proxyUnit') }}</span></div>
-        <div class="sum-kv"><span class="k">{{ t('cust.buy.unitPrice') }}</span><span class="v cell-mono">{{ fmtMoney(perHour) }} / h</span></div>
-        <div class="divider"></div>
-        <div class="sum-kv"><span class="k">{{ t('cust.buy.subtotal') }}</span><span class="v cell-mono">{{ fmtMoney(base) }} {{ currencyCode }}</span></div>
-        <div class="sum-kv" v-if="tierDiscount > 0">
-          <span class="k">{{ t('cust.buy.discount') }} <small style="color: #4ade80">(-{{ (tierDiscount * 100).toFixed(0) }}%)</small></span>
-          <span class="v cell-mono" style="color:#4ade80">-{{ fmtMoney(discountAmount) }}</span>
-        </div>
-        <div class="total">
-          <span class="lbl">{{ t('cust.buy.total') }}</span>
-          <span class="val cell-mono">{{ fmtMoney(total) }} {{ currencyCode }}</span>
-        </div>
-        <div class="sum-kv" v-if="creditApplied > 0"><span class="k">{{ t('cust.buy.creditApplied') }} <small style="color:#4ade80">({{ form.type.toUpperCase() }})</small></span><span class="v cell-mono" style="color:#4ade80">-{{ fmtMoney(creditApplied) }}</span></div>
-        <div class="sum-kv" v-if="creditApplied > 0" style="font-weight:600"><span class="k">{{ t('cust.buy.walletNeeded') }}</span><span class="v cell-mono">{{ fmtMoney(walletNeeded) }} {{ currencyCode }}</span></div>
-        <div class="sum-kv" style="font-size:12px"><span class="k">{{ t('cust.side.balance') }}</span><span class="v" :style="{ color: canAfford ? '#4ade80' : '#f87171' }">{{ fmtMoney(balance) }} {{ currencyCode }}</span></div>
+          <!-- 3. CONFIG -->
+          <a-card>
+            <template #title>
+              <span class="step-title"><a-avatar :size="22" class="step-num">3</a-avatar><ClockCircleOutlined /> {{ t('cust.buy.configTitle') }}</span>
+            </template>
+            <template #extra><a-typography-text type="secondary" class="step-help">{{ t('cust.buy.stepConfigHelp') }}</a-typography-text></template>
+            <a-form layout="vertical" :model="form">
+              <a-form-item v-if="form.type === 'ipv6'" :label="t('cust.buy.method')">
+                <a-radio-group v-model:value="form.rotate" option-type="button" button-style="solid" :options="methodOptions" />
+              </a-form-item>
+              <a-form-item>
+                <a-checkbox v-model:checked="form.autoRenew">{{ t('cust.buy.autoRenew') }}</a-checkbox>
+                <a-typography-text type="secondary" class="small-text">{{ t('cust.buy.autoRenewDesc') }}</a-typography-text>
+              </a-form-item>
 
-        <button class="detail-action" type="button" :disabled="busy || !canAfford || !form.zone" @click="placeOrder">
-          <Lock :size="15" /> {{ busy ? t('common.loading') : t('cust.buy.payNow') }}
-        </button>
+              <!-- Hours (slider + stepper + presets) -->
+              <a-form-item :label="`${t('cust.buy.hours')} (${minHours} – ${maxHours} h)`">
+                <a-row :gutter="[16, 8]" align="middle">
+                  <a-col flex="1 1 220px">
+                    <a-slider v-model:value="form.hours" :min="minHours" :max="Math.min(maxHours, 720)" :step="1" />
+                  </a-col>
+                  <a-col flex="none" class="stepper-col">
+                    <a-space-compact class="stepper">
+                      <a-button :aria-label="'-1 h'" @click="setHours(form.hours - 1)"><template #icon><MinusOutlined /></template></a-button>
+                      <a-input-number
+                        v-model:value="form.hours"
+                        :min="minHours"
+                        :max="maxHours"
+                        :controls="false"
+                        addon-after="h"
+                        class="mono stepper-input"
+                        @blur="setHours(form.hours)"
+                      />
+                      <a-button :aria-label="'+1 h'" @click="setHours(form.hours + 1)"><template #icon><PlusOutlined /></template></a-button>
+                    </a-space-compact>
+                  </a-col>
+                </a-row>
+                <a-flex wrap="wrap" gap="small" class="presets">
+                  <a-button
+                    v-for="h in hourPresets"
+                    :key="h.hours"
+                    size="small"
+                    :type="form.hours === h.hours ? 'primary' : 'default'"
+                    :ghost="form.hours === h.hours"
+                    @click="setHours(h.hours)"
+                  >
+                    {{ t(h.labelKey) }}
+                  </a-button>
+                </a-flex>
+              </a-form-item>
 
-        <div v-if="!form.zone" style="color:#f87171; font-size:12px; display:flex; align-items:center; gap:6px; margin-top:6px">
-          <AlertCircle :size="13" /> {{ t('cust.buy.errNoZone') }}
-        </div>
-        <div v-if="!canAfford" style="color:#f87171; font-size:12px; display:flex; align-items:center; gap:6px; margin-top:6px">
-          <AlertCircle :size="13" /> {{ t('cust.buy.insufficient') }}
-          <button class="px-promo-btn" type="button" style="margin-left:auto" @click="goTopup">{{ t('cust.detail.topupNow') }}</button>
-        </div>
-      </div>
+              <!-- Quantity (slider + stepper + presets) -->
+              <a-form-item :label="`${t('cust.buy.quantity')} (1 – 254)`">
+                <a-row :gutter="[16, 8]" align="middle">
+                  <a-col flex="1 1 220px">
+                    <a-slider v-model:value="form.quantity" :min="1" :max="100" :step="1" />
+                  </a-col>
+                  <a-col flex="none" class="stepper-col">
+                    <a-space-compact class="stepper">
+                      <a-button :aria-label="'-1'" @click="setQuantity(form.quantity - 1)"><template #icon><MinusOutlined /></template></a-button>
+                      <a-input-number
+                        v-model:value="form.quantity"
+                        :min="1"
+                        :max="254"
+                        :controls="false"
+                        :addon-after="t('cust.buy.proxyUnit')"
+                        class="mono stepper-input"
+                        @blur="setQuantity(form.quantity)"
+                      />
+                      <a-button :aria-label="'+1'" @click="setQuantity(form.quantity + 1)"><template #icon><PlusOutlined /></template></a-button>
+                    </a-space-compact>
+                  </a-col>
+                </a-row>
+                <a-flex wrap="wrap" gap="small" class="presets">
+                  <a-button
+                    v-for="q in quantityPresets"
+                    :key="q"
+                    size="small"
+                    :type="form.quantity === q ? 'primary' : 'default'"
+                    :ghost="form.quantity === q"
+                    @click="setQuantity(q)"
+                  >
+                    {{ q }} {{ t('cust.buy.proxyUnit') }}
+                  </a-button>
+                </a-flex>
+              </a-form-item>
+            </a-form>
 
-      <div class="px-order-summary">
-        <h3 style="margin:0; color:var(--text); font-size:14px; font-weight:600">{{ t('cust.buy.policyTitle') }}</h3>
-        <div style="display:flex; flex-direction:column; gap:8px; font-size:13px; color:var(--text); margin-top:6px">
-          <span style="display:flex; align-items:center; gap:8px"><Check :size="14" style="color:var(--green)" /> {{ t('cust.buy.policy1') }}</span>
-          <span style="display:flex; align-items:center; gap:8px"><Check :size="14" style="color:var(--green)" /> {{ t('cust.buy.policy2') }}</span>
-          <span style="display:flex; align-items:center; gap:8px"><Check :size="14" style="color:var(--green)" /> {{ t('cust.buy.policy3') }}</span>
-          <span style="display:flex; align-items:center; gap:8px"><Check :size="14" style="color:var(--green)" /> {{ t('cust.buy.policy4') }}</span>
-        </div>
-      </div>
+            <a-alert
+              type="info"
+              show-icon
+              :message="form.zone ? t('cust.buy.hint', { country: selectedZoneInfo?.name || form.zone }) : t('cust.buy.hintAuto')"
+            >
+              <template #icon><BulbOutlined /></template>
+            </a-alert>
+          </a-card>
 
-      <!-- Pricing tiers reveal -->
-      <div v-if="pricing.tiers?.length" class="px-order-summary">
-        <h3 style="margin:0; color:var(--text); font-size:13px; font-weight:600">{{ t('cust.buy.tiersTitle') }}</h3>
-        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px">
-          <span v-for="tier in pricing.tiers" :key="tier.min" class="tag-soft datacenter" style="font-size:10.5px">≥{{ tier.min }} → -{{ ((tier.discount || 0) * 100).toFixed(0) }}%</span>
-        </div>
-      </div>
-    </aside>
+          <!-- Why-choose-us -->
+          <a-card :title="t('cust.why.title')">
+            <a-row :gutter="[16, 16]">
+              <a-col :xs="24" :sm="12">
+                <a-flex gap="middle" align="flex-start">
+                  <a-avatar shape="square" :size="36" class="ico ico-green"><template #icon><SafetyCertificateOutlined /></template></a-avatar>
+                  <div><a-typography-text strong>{{ t('cust.why.ipReal') }}</a-typography-text><br /><a-typography-text type="secondary" class="small-text">{{ t('cust.why.ipRealDesc') }}</a-typography-text></div>
+                </a-flex>
+              </a-col>
+              <a-col :xs="24" :sm="12">
+                <a-flex gap="middle" align="flex-start">
+                  <a-avatar shape="square" :size="36" class="ico ico-green"><template #icon><CheckCircleOutlined /></template></a-avatar>
+                  <div><a-typography-text strong>{{ t('cust.why.success') }}</a-typography-text><br /><a-typography-text type="secondary" class="small-text">{{ t('cust.why.successDesc') }}</a-typography-text></div>
+                </a-flex>
+              </a-col>
+              <a-col :xs="24" :sm="12">
+                <a-flex gap="middle" align="flex-start">
+                  <a-avatar shape="square" :size="36" class="ico ico-green"><template #icon><ClockCircleOutlined /></template></a-avatar>
+                  <div><a-typography-text strong>{{ t('cust.why.hourly') }}</a-typography-text><br /><a-typography-text type="secondary" class="small-text">{{ t('cust.why.hourlyDesc') }}</a-typography-text></div>
+                </a-flex>
+              </a-col>
+              <a-col :xs="24" :sm="12">
+                <a-flex gap="middle" align="flex-start">
+                  <a-avatar shape="square" :size="36" class="ico ico-green"><template #icon><ThunderboltOutlined /></template></a-avatar>
+                  <div><a-typography-text strong>{{ t('cust.why.support247') }}</a-typography-text><br /><a-typography-text type="secondary" class="small-text">{{ t('cust.why.support247Desc') }}</a-typography-text></div>
+                </a-flex>
+              </a-col>
+            </a-row>
+          </a-card>
+        </a-flex>
+      </a-col>
+
+      <!-- RIGHT: order summary -->
+      <a-col :xs="24" :lg="9" :xl="8">
+        <a-flex vertical gap="middle" class="aside">
+          <a-card :title="t('cust.buy.summary')">
+            <a-descriptions :column="1" size="small" :colon="false" :content-style="kvContent" class="summary">
+              <a-descriptions-item :label="t('cust.col.type')">
+                <a-typography-text strong type="success">{{ selectedProduct ? t(selectedProduct.labelKey) : '—' }}</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.col.country')">
+                <a-space :size="6">
+                  <CountryFlag v-if="form.zone" :code="selectedCountryCode" :size="16" />
+                  <span>{{ form.zone ? (selectedZoneInfo?.name || form.zone) : '—' }}</span>
+                </a-space>
+              </a-descriptions-item>
+              <a-descriptions-item v-if="form.type === 'ipv6'" :label="t('cust.buy.method')">
+                {{ form.rotate ? t('cust.buy.rotating') : t('cust.buy.sticky') }}
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.buy.hours')">{{ form.hours }} h</a-descriptions-item>
+              <a-descriptions-item :label="t('cust.buy.quantity')">{{ form.quantity }} {{ t('cust.buy.proxyUnit') }}</a-descriptions-item>
+              <a-descriptions-item :label="t('cust.buy.unitPrice')"><span class="mono">{{ fmtMoney(perHour) }} / h</span></a-descriptions-item>
+            </a-descriptions>
+            <a-divider class="tight-divider" />
+            <a-descriptions :column="1" size="small" :colon="false" :content-style="kvContent" class="summary">
+              <a-descriptions-item :label="t('cust.buy.subtotal')"><span class="mono">{{ fmtMoney(base) }} {{ currencyCode }}</span></a-descriptions-item>
+              <a-descriptions-item v-if="tierDiscount > 0">
+                <template #label>
+                  {{ t('cust.buy.discount') }}
+                  <a-tag color="success" :bordered="false" class="mini-tag">-{{ (tierDiscount * 100).toFixed(0) }}%</a-tag>
+                </template>
+                <a-typography-text type="success" class="mono">-{{ fmtMoney(discountAmount) }}</a-typography-text>
+              </a-descriptions-item>
+            </a-descriptions>
+
+            <a-statistic :title="t('cust.buy.total')" :value="total" :suffix="currencyCode" :value-style="totalStyle" class="total-stat">
+              <template #formatter="{ value }">{{ fmtMoney(value) }}</template>
+            </a-statistic>
+
+            <a-descriptions :column="1" size="small" :colon="false" :content-style="kvContent" class="summary">
+              <a-descriptions-item v-if="creditApplied > 0">
+                <template #label>
+                  {{ t('cust.buy.creditApplied') }}
+                  <a-tag color="success" :bordered="false" class="mini-tag">{{ form.type.toUpperCase() }}</a-tag>
+                </template>
+                <a-typography-text type="success" class="mono">-{{ fmtMoney(creditApplied) }}</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item v-if="creditApplied > 0" :label="t('cust.buy.walletNeeded')">
+                <a-typography-text strong class="mono">{{ fmtMoney(walletNeeded) }} {{ currencyCode }}</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.side.balance')">
+                <a-typography-text :type="canAfford ? 'success' : 'danger'" class="mono">{{ fmtMoney(balance) }} {{ currencyCode }}</a-typography-text>
+              </a-descriptions-item>
+            </a-descriptions>
+
+            <a-flex vertical gap="small" class="pay-block">
+              <a-button type="primary" size="large" block :loading="busy" :disabled="!canAfford || !form.zone" @click="placeOrder">
+                <template #icon><LockOutlined /></template>
+                {{ busy ? t('common.loading') : t('cust.buy.payNow') }}
+              </a-button>
+              <a-alert v-if="!form.zone" type="warning" show-icon :message="t('cust.buy.errNoZone')" />
+              <a-alert v-if="!canAfford" type="error" show-icon :message="t('cust.buy.insufficient')">
+                <template #action>
+                  <a-button size="small" type="primary" @click="goTopup">{{ t('cust.detail.topupNow') }}</a-button>
+                </template>
+              </a-alert>
+            </a-flex>
+          </a-card>
+
+          <a-card size="small" :title="t('cust.buy.policyTitle')">
+            <a-flex vertical gap="small">
+              <span><CheckOutlined class="ok-ico" /> {{ t('cust.buy.policy1') }}</span>
+              <span><CheckOutlined class="ok-ico" /> {{ t('cust.buy.policy2') }}</span>
+              <span><CheckOutlined class="ok-ico" /> {{ t('cust.buy.policy3') }}</span>
+              <span><CheckOutlined class="ok-ico" /> {{ t('cust.buy.policy4') }}</span>
+            </a-flex>
+          </a-card>
+
+          <!-- Pricing tiers reveal -->
+          <a-card v-if="pricing.tiers?.length" size="small" :title="t('cust.buy.tiersTitle')">
+            <a-flex wrap="wrap" gap="small">
+              <a-tag v-for="tier in pricing.tiers" :key="tier.min" color="blue" :bordered="false" class="mono">≥{{ tier.min }} → -{{ ((tier.discount || 0) * 100).toFixed(0) }}%</a-tag>
+            </a-flex>
+          </a-card>
+        </a-flex>
+      </a-col>
+    </a-row>
   </div>
 </template>
 
 <style scoped>
-/* Step header — numbered circle + title + subtitle */
-.step-head {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 14px; flex-wrap: wrap;
-}
-.step-num {
-  width: 24px; height: 24px; border-radius: 50%;
-  background: var(--pxl); color:var(--text); font-weight: 700;
-  display: grid; place-items: center; font-size: 12px;
-  font-family: 'JetBrains Mono', monospace;
-  box-shadow: 0 0 12px rgba(63, 185, 80, 0.4);
-  flex: none;
-}
-.step-head h2 {
-  margin: 0; color:var(--text); font-size: 16px; font-weight: 600;
-  display: inline-flex; align-items: center; gap: 7px;
-}
-.step-head h2 svg { color: var(--pxl); }
-.step-help { color: var(--muted); font-size: 12px; margin-left: auto; }
+/* Selectable card (source / zone / product / plan) */
+.choice { position: relative; height: 100%; cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s; }
+.choice:focus-visible { outline: 2px solid var(--pb-primary); outline-offset: 2px; }
+.choice.is-selected { border-color: var(--pb-primary); box-shadow: 0 0 0 1px var(--pb-primary); background: var(--pb-primary-soft); }
+.choice.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.choice-check { position: absolute; top: 8px; right: 8px; color: var(--pb-primary); font-size: 16px; }
+.choice-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; padding-right: 18px; }
+.choice-title { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.choice-sub { font-size: 12px; }
+.one-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal; }
+.mini-tag { margin-inline: 6px 0; font-size: 10px; line-height: 16px; padding: 0 5px; font-weight: 700; }
 
-/* Zone cards grid */
-.zone-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
-}
-.zone-card {
-  position: relative;
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 14px;
-  background: var(--pxl-card-2);
-  border: 1px solid var(--pxl-bd);            /* was 1.5px → renders inconsistently across browsers */
-  border-radius: 12px;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: var(--text);
-  /* Explicit prop list — `transition: 160ms` (shorthand without prop) defaults
-     to `all`, which animates layout-affecting props (height, position) every
-     time vue re-renders and causes flicker on hover. */
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
-  box-sizing: border-box;
-}
-.zone-card:hover:not(:disabled) {
-  border-color: var(--pxl);
-  background: rgba(63, 185, 80, 0.06);
-  transform: translateY(-1px);
-}
-.zone-card.selected {
-  border-color: var(--pxl);
-  background: linear-gradient(135deg, rgba(63, 185, 80, 0.18) 0%, rgba(63, 185, 80, 0.08) 100%);
-  box-shadow: 0 4px 18px rgba(63, 185, 80, 0.18);
-}
-.zone-card.is-soon {
-  opacity: 0.45; cursor: not-allowed;
-}
-.zone-card.is-soon::after {
-  content: '';
-  position: absolute; inset: 0; border-radius: 12px;
-  background: repeating-linear-gradient(45deg, transparent 0 8px, rgba(255,255,255,0.02) 8px 16px);
-  pointer-events: none;
-}
-.z-flag {
-  width: 40px; height: 40px; border-radius: 8px;
-  background: var(--pxl-bg); display: grid; place-items: center;
-  flex: none; color: var(--muted);
-  border: 1px solid var(--pxl-bd-soft);
-  overflow: hidden;
-}
-.zone-card.selected .z-flag { background: rgba(255,255,255,0.06); }
-/* padding-right reserves the .z-check badge's column (right:8 + 18px wide) so
-   the truncated zone name never renders under the selected tick. */
-.z-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; padding-right: 20px; }
-.z-text strong {
-  color:var(--text); font-size: 13.5px; font-weight: 600;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.z-sub { color: var(--muted); font-size: 10.5px; font-family: 'JetBrains Mono', monospace; }
-.zone-card.is-soon .z-sub { color: #f59e0b; font-weight: 600; }
-.z-check {
-  position: absolute; top: 8px; right: 8px;
-  width: 18px; height: 18px; padding: 2px;
-  background: var(--pxl); color:var(--text); border-radius: 50%;
-}
+/* Soft-tinted icon boxes */
+.ico { flex: none; background: color-mix(in srgb, var(--ico) 16%, transparent); color: var(--ico); }
+.ico-green { --ico: var(--pb-primary); }
+.ico-blue { --ico: var(--pb-info); }
+.ico-purple { --ico: #8b5cf6; }
 
-@media (max-width: 640px) {
-  .zone-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
-  .zone-card { padding: 10px 12px; gap: 10px; }
-  .z-flag { width: 32px; height: 32px; }
-  .z-text strong { font-size: 12.5px; }
+/* Card step headers */
+.step-title { display: inline-flex; align-items: center; gap: 8px; }
+.step-num { background: var(--pb-primary); font-weight: 700; font-size: 12px; flex: none; }
+.step-help { font-size: 12px; font-weight: 400; }
+
+.price { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.price-val { font-size: 20px; }
+.small-text { font-size: 12px; }
+.ok-ico { color: var(--pb-primary); margin-inline-end: 4px; }
+.full-width { width: 100%; }
+.loading-box { padding: 48px 0; }
+
+.stepper-input { width: 150px; }
+.presets { margin-top: 8px; }
+
+.summary :deep(.ant-descriptions-item) { padding-bottom: 6px; }
+.tight-divider { margin: 6px 0 12px; }
+.total-stat { margin: 4px 0 12px; }
+.pay-block { margin-top: 12px; }
+.byon-empty { max-width: 520px; margin: 0 auto; }
+
+/* i18n HTML snippets reference the legacy --green var inline */
+.html-note { --green: var(--pb-primary); }
+
+@media (min-width: 992px) {
+  .aside { position: sticky; top: 84px; }
+}
+@media (max-width: 767px) {
   .step-help { display: none; }
 }
-@media (max-width: 380px) {
-  .zone-grid { grid-template-columns: 1fr; }
-}
-
-/* Source mode tabs: 3-col on desktop, 1-col on mobile */
-.source-tabs {
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin: 12px 0 16px;
-}
-@media (max-width: 800px) {
-  .source-tabs { grid-template-columns: 1fr; }
-}
-.source-tabs button {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 14px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--muted); cursor: pointer;
-  font: inherit; text-align: left;
-  transition: 150ms;
-}
-.source-tabs button > span { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.source-tabs button strong { display: block; font-size: 14px; line-height: 1.2; }
-.source-tabs button small { display: block; font-size: 11.5px; color: var(--muted); margin-top: 1px; }
-.source-tabs button:hover { border-color: var(--muted); color: var(--text); }
-.source-tabs button.active {
-  background: rgba(34,197,94,0.06);
-  border-color: var(--green);
-  color: var(--text);
-}
-.source-tabs button.active strong { color: var(--green); }
-.badge-free {
-  display: inline-block; margin-left: 6px;
-  font-size: 9.5px; font-weight: 700; font-style: normal; letter-spacing: 0.05em;
-  background: rgba(34,197,94,0.18); color: var(--green);
-  padding: 1px 5px; border-radius: 3px;
-}
-.badge-pro {
-  display: inline-block; margin-left: 6px;
-  font-size: 9.5px; font-weight: 700; font-style: normal; letter-spacing: 0.05em;
-  background: rgba(34,211,238,0.18); color: #22d3ee;
-  padding: 1px 5px; border-radius: 3px;
-}
-
-/* Hub spec list */
-.spec-list {
-  list-style: none; padding: 0; margin: 8px 0 10px;
-  display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px;
-  font-size: 12px; color: var(--muted);
-}
-.spec-list li { display: flex; align-items: baseline; gap: 5px; }
-.spec-list strong { color: var(--text); font-family: var(--mono); font-size: 12.5px; }
-.product-card.selected { border-color: var(--green); background: rgba(34,197,94,0.04); }
-
-/* Family-coded badges + icons (Proxy Hub IPv4 / IPv6) */
-.fam-tag { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 4px; }
-.fam-tag.ipv4 { background: rgba(59,130,246,0.16); color: #60a5fa; }
-.fam-tag.ipv6 { background: rgba(139,92,246,0.16); color: #a78bfa; }
-.icon-box.fam-v4 { background: rgba(59,130,246,0.16); color: #60a5fa; }
-.icon-box.fam-v6 { background: rgba(139,92,246,0.16); color: #a78bfa; }
-
-/* Hub flow layout */
-.hub-layout { display: grid; grid-template-columns: 1fr 360px; gap: 18px; align-items: start; }
-.hub-layout aside.surface { position: sticky; top: 80px; }
-
-@media (max-width: 800px) {
-  .hub-layout { grid-template-columns: 1fr; }
-  .hub-layout aside.surface { position: static; }
-  .byon-form-grid { grid-template-columns: 1fr !important; }
-  .spec-list { grid-template-columns: 1fr; }
-}
-
-/* BYON form */
-.byon-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-@media (max-width: 600px) { .byon-form-grid { grid-template-columns: 1fr; } }
-.byon-form-grid .field { display: flex; flex-direction: column; gap: 4px; }
-.byon-form-grid .field > span { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
-.byon-form-grid input, .byon-form-grid select {
-  height: 36px; padding: 0 10px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-family: var(--mono); font-size: 12.5px; outline: none;
-}
-.byon-form-grid input[type=number] { font-family: var(--mono); }
-.byon-form-grid input:focus, .byon-form-grid select:focus { border-color: var(--green); }
-.byon-note { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
-
-/* ── Pool branch layout (paid proxy from system pool) ─────────────────── */
-.pool-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 18px;
-  align-items: start;
-}
-.pool-main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-.pool-aside {
-  position: sticky; top: 80px;
-  display: flex; flex-direction: column; gap: 14px;
-  min-width: 0;
-}
-.pool-types { grid-template-columns: 1fr 1fr; }
-
-/* Slider row: range + numeric stepper side-by-side; wraps on phone */
-.slider-row {
-  display: flex; align-items: center; gap: 14px;
-  margin-bottom: 10px; flex-wrap: wrap;
-}
-.slider-range {
-  flex: 1 1 200px; min-width: 0;
-  accent-color: var(--pxl); height: 4px;
-}
-.num-stepper {
-  display: inline-flex; align-items: center;
-  background: var(--pxl-card-2);
-  border: 1px solid var(--pxl-bd);
-  border-radius: 8px;
-  padding: 2px 6px; gap: 6px;
-  flex-shrink: 0;
-}
-.num-input {
-  width: 64px; text-align: center;
-  background: none; border: none;
-  color: var(--text); font-weight: 600;
-  font-family: var(--mono); font-size: 14px;
-  -moz-appearance: textfield;
-}
-.num-input::-webkit-outer-spin-button,
-.num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.num-unit { color: var(--muted); font-size: 12px; }
-
-/* ── Mobile / tablet breakpoints ─────────────────────────────────────── */
-@media (max-width: 900px) {
-  .pool-layout { grid-template-columns: 1fr; }
-  .pool-aside { position: static; top: auto; }
-  .pool-types { grid-template-columns: 1fr 1fr; }
-}
-@media (max-width: 640px) {
-  .pool-types { grid-template-columns: 1fr; }
-  .slider-row { gap: 10px; }
-  .num-stepper { flex: 1 1 100%; justify-content: space-between; }
-  .num-input { flex: 1; width: auto; min-width: 0; }
-  .source-tabs button { padding: 10px 12px; gap: 10px; }
-  .source-tabs button strong { font-size: 13px; }
-  .source-tabs button small { font-size: 10.5px; }
-  /* Order summary aside: shrink padding on phone (referenced via global px-order-summary) */
-  :deep(.px-order-summary) { padding: 14px; }
-  :deep(.px-order-summary .sum-kv) { font-size: 12.5px; }
-  :deep(.px-order-summary .total .val) { font-size: 18px; }
-  /* Hours/quantity preset chips wrap nicely */
-  :deep(.chips) { flex-wrap: wrap; gap: 6px; }
-  :deep(.chips button) { padding: 5px 10px; font-size: 11.5px; }
-  /* Section padding scales down */
-  :deep(.surface) { padding: 14px 12px; }
-  .step-head h2 { font-size: 14.5px; }
-  .step-num { width: 22px; height: 22px; font-size: 11px; }
-}
-@media (max-width: 420px) {
-  h1 { font-size: 18px; }
-  .source-tabs button strong { font-size: 12.5px; }
-  .source-tabs button small { font-size: 10px; }
-  .zone-card { padding: 10px 12px; gap: 10px; }
-  .z-flag { width: 34px; height: 34px; }
-  .z-text strong { font-size: 12.5px; }
-  .num-input { font-size: 13px; }
+@media (max-width: 575px) {
+  .stepper-col { flex: 1 1 100% !important; }
+  .stepper { display: flex; width: 100%; }
+  .stepper-input { flex: 1; width: auto; min-width: 0; }
 }
 </style>

@@ -57,7 +57,7 @@ function pasteFromClipboard() {
           <a-input
             v-model:value="input"
             size="large"
-            class="mono ip-input"
+            class="ip-input mono-field"
             :placeholder="t('cust.tools.ipInfo.placeholder')"
             autocomplete="off"
             spellcheck="false"
@@ -136,4 +136,5 @@ function pasteFromClipboard() {
 .below { margin-top: 12px; }
 .hint { margin-bottom: 0; font-size: 12px; }
 .org { word-break: break-word; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

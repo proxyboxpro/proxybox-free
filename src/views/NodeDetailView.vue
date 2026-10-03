@@ -1,21 +1,25 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, AlertCircle, ArrowLeft, BarChart3, Bell, ChevronDown, ChevronRight, Cpu, Download, FileText, HardDrive, Network, Pause, Play, RefreshCw, Server, Terminal, Trash2, Trash, Users, Wrench, Zap } from 'lucide-vue-next'
+import { Empty } from 'ant-design-vue'
 import { useI18n } from '../i18n'
 import { apiFetch } from '../api'
 import { fetchNode, syncNode, removeNode, installNode } from '../store/nodes'
 import { formatBytes } from '../utils/format'
+import { isDark } from '../theme'
+import { message, confirmAsync } from '../ui/feedback'
+import StatusTag from '../components/ui/StatusTag.vue'
 
 const ApexChart = defineAsyncComponent(() => import('vue3-apexcharts'))
+const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
 const node = ref(null)
 const loading = ref(true)
-const errorText = ref('')
+const errorText = ref('')   // persistent load errors (node, upgrade cmd, bandwidth, drilldown)
 const syncing = ref(false)
 const installing = ref(false)
 const installOutput = ref('')
@@ -40,19 +44,19 @@ async function onSync() {
   if (syncing.value) return
   syncing.value = true
   try { await syncNode(nodeId.value); setTimeout(load, 1500) }
-  catch (e) { errorText.value = e.message }
+  catch (e) { message.error(e.message) }
   finally { syncing.value = false }
 }
 
 async function setFamily(fam) {
   if (familySaving.value) return
   if (node.value && (node.value.family || '').toLowerCase() === fam) return
-  familySaving.value = true; errorText.value = ''
+  familySaving.value = true
   try {
     const updated = await apiFetch(`/api/nodes/${nodeId.value}`, { method: 'PATCH', body: { family: fam } })
     node.value = { ...node.value, ...updated }
     setTimeout(load, 300)
-  } catch (e) { errorText.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { familySaving.value = false }
 }
 
@@ -69,9 +73,9 @@ async function onInstall() {
 
 async function onDelete() {
   if (isLocal.value) return
-  if (!confirm(t('nodes.confirmDelete'))) return
+  if (!(await confirmAsync({ title: t('nodes.confirmDelete'), danger: true }))) return
   try { await removeNode(nodeId.value); router.push({ name: 'admin-nodes' }) }
-  catch (e) { errorText.value = e.message }
+  catch (e) { message.error(e.message) }
 }
 
 const upgrade = ref(null)
@@ -85,10 +89,10 @@ async function loadUpgrade() {
   finally { upgradeLoading.value = false }
 }
 async function rotateUpgradeToken() {
-  if (!confirm(t('nodeDetail.confirmUpgradeTokenRotate'))) return
+  if (!(await confirmAsync({ title: t('nodeDetail.confirmUpgradeTokenRotate'), danger: true }))) return
   upgradeLoading.value = true
   try { upgrade.value = await apiFetch(`/api/nodes/${nodeId.value}/upgrade-command`, { method: 'POST' }) }
-  catch (e) { errorText.value = e.message }
+  catch (e) { message.error(e.message) }
   finally { upgradeLoading.value = false }
 }
 async function copyUpgradeCmd() {
@@ -138,8 +142,13 @@ const totalMonth = computed(() => proxies.value.reduce((a, p) => a + (p.stats?.m
 //   • recentErrors[] — open errors keyed on this node
 const owners = computed(() => node.value?.owners || [])
 const windows = computed(() => node.value?.windowsBandwidth || { h1: { up: 0, down: 0 }, h24: { up: 0, down: 0 }, d30: { up: 0, down: 0 } })
-const recentFixes = computed(() => node.value?.recentFixes || [])
+const recentFixes = computed(() => (node.value?.recentFixes || []).map((f, i) => ({ ...f, _k: i })))
 const recentErrors = computed(() => node.value?.recentErrors || [])
+const bwWindows = computed(() => [
+  { key: 'h1', label: t('nodeDetail.bw1h'), w: windows.value.h1 },
+  { key: 'h24', label: t('nodeDetail.bw24h'), w: windows.value.h24 },
+  { key: 'd30', label: t('nodeDetail.bw30d'), w: windows.value.d30 }
+])
 function fmtAgo(ms) {
   if (!ms) return '—'
   const s = Math.floor((Date.now() - Number(ms)) / 1000)
@@ -156,13 +165,13 @@ function goToUser(uid) { router.push({ name: 'admin-user-detail', params: { user
 const actionBusy = ref('')
 async function nodeAction(name, confirmText) {
   if (actionBusy.value) return
-  if (confirmText && !confirm(confirmText)) return
+  if (confirmText && !(await confirmAsync({ title: confirmText }))) return
   actionBusy.value = name
   try {
     const r = await apiFetch(`/api/nodes/${nodeId.value}/action/${name}`, { method: 'POST' })
-    if (r && r.error) errorText.value = r.error
+    if (r && r.error) message.error(r.error)
     setTimeout(load, 1500)
-  } catch (e) { errorText.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { actionBusy.value = '' }
 }
 
@@ -180,17 +189,21 @@ async function loadBandwidthSeries() {
   finally { bwLoading.value = false }
 }
 function setBwRange(r) { if (bwRange.value === r) return; bwRange.value = r; loadBandwidthSeries() }
-const chartOptions = computed(() => ({
-  chart: { id: 'node-bw', toolbar: { show: false }, foreColor: '#9bb8b1', animations: { enabled: false }, background: 'transparent' },
-  colors: ['#4ade80', '#60a5fa'],
-  stroke: { curve: 'smooth', width: 2 },
-  dataLabels: { enabled: false },
-  legend: { labels: { colors: '#9bb8b1' } },
-  xaxis: { type: 'datetime', labels: { style: { colors: '#9bb8b1' } } },
-  yaxis: { labels: { style: { colors: '#9bb8b1' }, formatter: (v) => formatBytes(v) } },
-  tooltip: { theme: 'dark', y: { formatter: (v) => formatBytes(v) } },
-  grid: { borderColor: '#1f2a35', strokeDashArray: 3 }
-}))
+const chartOptions = computed(() => {
+  const fg = isDark.value ? '#94a3b8' : '#64748b'
+  return {
+    chart: { id: 'node-bw', toolbar: { show: false }, foreColor: fg, animations: { enabled: false }, background: 'transparent', fontFamily: 'inherit' },
+    theme: { mode: isDark.value ? 'dark' : 'light' },
+    colors: ['#4ade80', '#60a5fa'],
+    stroke: { curve: 'smooth', width: 2 },
+    dataLabels: { enabled: false },
+    legend: { labels: { colors: fg } },
+    xaxis: { type: 'datetime', labels: { style: { colors: fg } } },
+    yaxis: { labels: { style: { colors: fg }, formatter: (v) => formatBytes(v) } },
+    tooltip: { theme: isDark.value ? 'dark' : 'light', y: { formatter: (v) => formatBytes(v) } },
+    grid: { borderColor: isDark.value ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)', strokeDashArray: 3 }
+  }
+})
 const chartSeries = computed(() => ([
   { name: 'Upload',   data: bwSeries.value.map((p) => [new Date(p.hour + ':00:00Z').getTime(), p.up]) },
   { name: 'Download', data: bwSeries.value.map((p) => [new Date(p.hour + ':00:00Z').getTime(), p.down]) }
@@ -200,7 +213,7 @@ const chartSeries = computed(() => ([
 const pool = ref(null)
 async function loadPool() {
   try { pool.value = await apiFetch(`/api/admin/nodes/${nodeId.value}/pool`) }
-  catch (e) { /* not fatal */ pool.value = null }
+  catch { /* not fatal */ pool.value = null }
 }
 
 // ─── owner drilldown (per-proxy 30d bytes for one owner on this node) ──
@@ -213,31 +226,36 @@ async function toggleOwnerDrill(ownerId) {
   catch (e) { errorText.value = e.message; ownerDrill.value = null }
   finally { ownerDrillLoading.value = '' }
 }
+const expandedOwnerKeys = computed(() => {
+  if (ownerDrillLoading.value) return [ownerDrillLoading.value]
+  return ownerDrill.value?.owner?.id ? [ownerDrill.value.owner.id] : []
+})
 
 // ─── per-node alert thresholds ─────────────────────────────────────
-const alertsForm = ref({ ramPct: '', load1: '', failPct: '' })
+// Inputs hold numbers or null (empty → server default).
+const alertsForm = ref({ ramPct: null, load1: null, failPct: null })
 const alertsSaving = ref(false)
 function syncAlertsForm() {
   const a = node.value?.alerts || {}
   alertsForm.value = {
-    ramPct: a.ramPct != null ? String(a.ramPct) : '',
-    load1: a.load1 != null ? String(a.load1) : '',
-    failPct: a.failPct != null ? String(a.failPct) : ''
+    ramPct: a.ramPct != null ? Number(a.ramPct) : null,
+    load1: a.load1 != null ? Number(a.load1) : null,
+    failPct: a.failPct != null ? Number(a.failPct) : null
   }
 }
 async function saveAlerts() {
   if (alertsSaving.value) return
-  alertsSaving.value = true; errorText.value = ''
+  alertsSaving.value = true
   const payload = {}
   for (const k of ['ramPct', 'load1', 'failPct']) {
     const v = alertsForm.value[k]
-    payload[k] = v === '' ? null : Number(v)
+    payload[k] = v === '' || v == null ? null : Number(v)
   }
   try {
     const updated = await apiFetch(`/api/nodes/${nodeId.value}`, { method: 'PATCH', body: { alerts: payload } })
     node.value = { ...node.value, ...updated }
     syncAlertsForm()
-  } catch (e) { errorText.value = e.message }
+  } catch (e) { message.error(e.message) }
   finally { alertsSaving.value = false }
 }
 
@@ -249,387 +267,501 @@ onMounted(() => { load(); loadUpgrade(); loadBandwidthSeries(); loadPool() })
 const reaper = computed(() => node.value?.reaper || null)
 function fmtMs(iso) {
   if (!iso) return '—'
-  try { const t = new Date(iso).getTime(); return fmtAgo(t) } catch { return '—' }
+  try { const ts = new Date(iso).getTime(); return fmtAgo(ts) } catch { return '—' }
 }
 
 // suspended count for management UI hint
 const suspendedCount = computed(() => proxies.value.filter((p) => p.suspended).length)
+
+function nodeStatusColor(s) { return s === 'online' ? 'success' : (s === 'install-failed' ? 'error' : 'warning') }
+function fixAction(f) {
+  const path = f.path || ''
+  if (path.endsWith('/rotate')) return { label: 'rotate', color: 'warning' }
+  if (path.endsWith('/replace')) return { label: 'replace', color: 'success' }
+  return { label: path.split('/').pop(), color: 'error' }
+}
+
+// ─── table columns ─────────────────────────────────────────────────
+const ownerColumns = computed(() => [
+  { title: t('nodeDetail.colCustomer'), key: 'email' },
+  { title: t('nodeDetail.colProxy'), key: 'total', align: 'right', width: 80 },
+  { title: t('nodeDetail.colActive'), key: 'active', align: 'right', width: 80 },
+  { title: t('nodeDetail.colExpired'), key: 'expired', align: 'right', width: 90 },
+  { title: t('nodeDetail.colBw30d'), key: 'bw', align: 'right', width: 160 },
+  { title: t('nodeDetail.colAutoFix'), key: 'autofix', align: 'right', width: 90 },
+  { title: t('nodeDetail.colLastCheck'), key: 'last', align: 'right', width: 120 }
+])
+const drillColumns = [
+  { title: 'Proxy', key: 'name', ellipsis: true },
+  { title: 'Endpoint', key: 'endpoint' },
+  { title: 'Status', key: 'status', width: 170 },
+  { title: 'Auto-fix', key: 'autofix', align: 'right', width: 90 },
+  { title: '30d', key: 'bytes', align: 'right', width: 150 }
+]
+const errorColumns = [
+  { title: '', key: 'ago', width: 64 },
+  { title: 'Level', key: 'level', width: 100 },
+  { title: 'Source', key: 'source', width: 200 },
+  { title: 'Message', key: 'message', dataIndex: 'message', ellipsis: true },
+  { title: '', key: 'count', align: 'right', width: 70 }
+]
+const fixColumns = [
+  { title: '', key: 'ts', width: 90 },
+  { title: '', key: 'action', width: 220 },
+  { title: '', key: 'note', dataIndex: 'note', ellipsis: true }
+]
+const proxyColumns = [
+  { title: 'Name', key: 'name', dataIndex: 'name', ellipsis: true },
+  { title: 'Endpoint', key: 'endpoint' },
+  { title: 'Status', key: 'status', width: 120, align: 'right' }
+]
+const proxyGroups = computed(() => [
+  { key: 'v4', label: 'IPv4', show: !isV6.value && ipv4Proxies.value.length, list: ipv4Proxies.value },
+  { key: 'v6', label: 'IPv6', show: !isV4.value && ipv6Proxies.value.length, list: ipv6Proxies.value }
+].filter((g) => g.show))
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <button class="ghost-button" type="button" @click="router.push({ name: 'admin-nodes' })"><ArrowLeft :size="15" /> {{ t('nodes.backToList') }}</button>
-      <div class="spacer"></div>
-      <button class="primary-action small" type="button" :disabled="syncing" @click="onSync"><RefreshCw :size="15" /> {{ syncing ? t('nodes.syncing') : t('nodes.sync') }}</button>
-      <button v-if="!isLocal && node && node.hasCreds && node.status !== 'online'" class="ghost-button" type="button" :disabled="installing" @click="onInstall">{{ installing ? t('nodes.installing') : t('nodes.install') }}</button>
-      <button v-if="!isLocal" class="ghost-button" type="button" @click="onDelete"><Trash2 :size="14" /></button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-button @click="router.push({ name: 'admin-nodes' })">
+        <template #icon><ArrowLeftOutlined /></template>
+        {{ t('nodes.backToList') }}
+      </a-button>
+      <a-flex wrap="wrap" gap="small">
+        <a-button type="primary" :loading="syncing" @click="onSync">
+          <template #icon><SyncOutlined /></template>
+          {{ syncing ? t('nodes.syncing') : t('nodes.sync') }}
+        </a-button>
+        <a-button v-if="!isLocal && node && node.hasCreds && node.status !== 'online'" :loading="installing" @click="onInstall">
+          {{ installing ? t('nodes.installing') : t('nodes.install') }}
+        </a-button>
+        <a-button v-if="!isLocal" danger @click="onDelete">
+          <template #icon><DeleteOutlined /></template>
+        </a-button>
+      </a-flex>
+    </a-flex>
 
-    <p v-if="errorText" class="error-text">{{ errorText }}</p>
-    <p v-if="loading && !node" class="empty-text">{{ t('common.loading') }}</p>
+    <a-alert v-if="errorText" type="error" show-icon :message="errorText" closable @close="errorText = ''" />
+    <a-card v-if="loading && !node"><a-skeleton active /></a-card>
 
-    <section v-if="node" class="surface">
-      <div class="section-head">
-        <h2><Server :size="16" style="vertical-align:-3px" /> {{ node.name }} <span style="color:var(--muted); font-size:12px; margin-left:8px">{{ nodeId }}</span></h2>
-        <span :class="['status-pill', node.status === 'online' ? 'active' : (node.status === 'install-failed' ? 'failed' : 'pending')]">{{ node.status }}</span>
-      </div>
-      <div class="detail-grid">
-        <div><span>{{ t('nodes.role') }}</span><strong>{{ node.role }}</strong></div>
-        <div>
-          <span>{{ t('nodes.family') }}</span>
-          <div class="family-toggle">
-            <button
-              type="button"
-              :class="['family-btn', { active: isV4 }]"
-              :disabled="familySaving"
-              @click="setFamily('ipv4')"
-            >IPv4</button>
-            <button
-              type="button"
-              :class="['family-btn', { active: isV6 }]"
-              :disabled="familySaving"
-              @click="setFamily('ipv6')"
-            >IPv6</button>
-          </div>
-        </div>
-        <div><span>{{ t('nodes.host') }}</span><strong class="cell-mono">{{ node.host }}</strong></div>
-        <div>
-          <span>{{ t('nodes.version') }}</span>
-          <strong>
-            {{ node.version || '—' }}
-            <span v-if="node.outdated" class="status-pill pending" style="margin-left:6px; font-size:10.5px">outdated</span>
-            <span v-else-if="node.version && node.latestAgentVersion === node.version" class="status-pill active" style="margin-left:6px; font-size:10.5px">latest</span>
-          </strong>
-        </div>
-        <div v-if="isLocal"><span>{{ t('nodes.uptime') }}</span><strong>{{ uptime(node.uptimeSeconds) }}</strong></div>
-        <div v-else><span>{{ t('nodes.lastSeen') }}</span><strong>{{ node.lastSeenAt || '—' }}</strong></div>
-        <div><span>{{ t('nodes.proxies') }}</span><strong>{{ proxies.length }}</strong></div>
-        <div><span>{{ t('detail.traffic') }} ↑/↓ {{ t('common.thisMonth') }}</span><strong class="cell-mono">{{ formatBytes(totalUp) }} / {{ formatBytes(totalDown) }} ({{ formatBytes(totalMonth) }})</strong></div>
-      </div>
-    </section>
+    <!-- ── Overview ── -->
+    <a-card v-if="node">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <a-space :size="8" wrap>
+            <CloudServerOutlined />
+            <span>{{ node.name }}</span>
+            <a-typography-text type="secondary" class="mono small">{{ nodeId }}</a-typography-text>
+          </a-space>
+          <StatusTag :status="node.status" :color="nodeStatusColor(node.status)" />
+        </a-flex>
+      </template>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 3 }">
+        <a-descriptions-item :label="t('nodes.role')">{{ node.role }}</a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.family')">
+          <a-radio-group :value="family" size="small" button-style="solid" :disabled="familySaving" @change="(e) => setFamily(e.target.value)">
+            <a-radio-button value="ipv4">IPv4</a-radio-button>
+            <a-radio-button value="ipv6">IPv6</a-radio-button>
+          </a-radio-group>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.host')">
+          <a-typography-text class="mono" :copyable="node.host ? { text: node.host } : false">{{ node.host }}</a-typography-text>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.version')">
+          <a-space :size="6" wrap>
+            <span class="mono">{{ node.version || '—' }}</span>
+            <StatusTag v-if="node.outdated" status="pending" label="outdated" />
+            <StatusTag v-else-if="node.version && node.latestAgentVersion === node.version" status="active" label="latest" />
+          </a-space>
+        </a-descriptions-item>
+        <a-descriptions-item v-if="isLocal" :label="t('nodes.uptime')">{{ uptime(node.uptimeSeconds) }}</a-descriptions-item>
+        <a-descriptions-item v-else :label="t('nodes.lastSeen')"><span class="mono">{{ node.lastSeenAt || '—' }}</span></a-descriptions-item>
+        <a-descriptions-item :label="t('nodes.proxies')">{{ proxies.length }}</a-descriptions-item>
+        <a-descriptions-item :label="`${t('detail.traffic')} ↑/↓ ${t('common.thisMonth')}`">
+          <span class="mono">{{ formatBytes(totalUp) }} / {{ formatBytes(totalDown) }} ({{ formatBytes(totalMonth) }})</span>
+        </a-descriptions-item>
+      </a-descriptions>
+    </a-card>
 
-    <section v-if="node && node.metrics" class="surface">
-      <div class="section-head"><h2><Cpu :size="16" style="vertical-align:-3px" /> {{ t('nodes.metrics') }}</h2></div>
-      <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">CPU</div><div class="metric-value">{{ node.metrics.cpuPct }}%</div></div>
-        <div class="metric-card"><div class="metric-label">RAM</div><div class="metric-value">{{ node.metrics.ramPct }}%</div><div class="metric-foot">{{ formatBytes(node.metrics.ramUsed) }} / {{ formatBytes(node.metrics.ramTotal) }}</div></div>
-        <div class="metric-card"><div class="metric-label">Load (1m / 5m)</div><div class="metric-value">{{ Number(node.metrics.load1).toFixed(2) }} / {{ Number(node.metrics.load5).toFixed(2) }}</div></div>
-        <div class="metric-card"><div class="metric-label">Net RX</div><div class="metric-value">{{ formatBytes(node.metrics.netRxBps) }}/s</div></div>
-        <div class="metric-card"><div class="metric-label">Net TX</div><div class="metric-value">{{ formatBytes(node.metrics.netTxBps) }}/s</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodes.uptime') }}</div><div class="metric-value">{{ uptime(node.metrics.uptimeSec) }}</div></div>
-      </div>
-    </section>
+    <!-- ── Live metrics ── -->
+    <a-card v-if="node && node.metrics">
+      <template #title><DashboardOutlined /> {{ t('nodes.metrics') }}</template>
+      <a-row :gutter="[16, 16]">
+        <a-col :xs="12" :sm="8" :xl="4">
+          <a-statistic title="CPU" :value="node.metrics.cpuPct" suffix="%" />
+          <a-progress :percent="Number(node.metrics.cpuPct) || 0" :show-info="false" size="small" />
+        </a-col>
+        <a-col :xs="12" :sm="8" :xl="4">
+          <a-statistic title="RAM" :value="node.metrics.ramPct" suffix="%" />
+          <a-typography-text type="secondary" class="foot mono">{{ formatBytes(node.metrics.ramUsed) }} / {{ formatBytes(node.metrics.ramTotal) }}</a-typography-text>
+        </a-col>
+        <a-col :xs="12" :sm="8" :xl="4">
+          <a-statistic title="Load (1m / 5m)" :value="`${Number(node.metrics.load1).toFixed(2)} / ${Number(node.metrics.load5).toFixed(2)}`" />
+        </a-col>
+        <a-col :xs="12" :sm="8" :xl="4"><a-statistic title="Net RX" :value="`${formatBytes(node.metrics.netRxBps)}/s`" /></a-col>
+        <a-col :xs="12" :sm="8" :xl="4"><a-statistic title="Net TX" :value="`${formatBytes(node.metrics.netTxBps)}/s`" /></a-col>
+        <a-col :xs="12" :sm="8" :xl="4"><a-statistic :title="t('nodes.uptime')" :value="uptime(node.metrics.uptimeSec)" /></a-col>
+      </a-row>
+    </a-card>
 
     <!-- ── Bandwidth (1h / 24h / 30d) — total traffic served from this node ── -->
-    <section v-if="node" class="surface">
-      <div class="section-head"><h2><BarChart3 :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.bwTitle') }}</h2></div>
-      <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bw1h') }}</div><div class="metric-value">{{ formatBytes((windows.h1.up + windows.h1.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h1.up) }} · ↓ {{ formatBytes(windows.h1.down) }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bw24h') }}</div><div class="metric-value">{{ formatBytes((windows.h24.up + windows.h24.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.h24.up) }} · ↓ {{ formatBytes(windows.h24.down) }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bw30d') }}</div><div class="metric-value">{{ formatBytes((windows.d30.up + windows.d30.down)) }}</div><div class="metric-foot">↑ {{ formatBytes(windows.d30.up) }} · ↓ {{ formatBytes(windows.d30.down) }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.bwOwners') }}</div><div class="metric-value">{{ owners.length }}</div><div class="metric-foot">{{ t('nodeDetail.bwOwnersSub', { n: proxies.length }) }}</div></div>
-      </div>
-      <!-- chart -->
-      <div style="display:flex; gap:6px; margin:14px 0 8px; align-items:center">
-        <button v-for="r in ['24h','7d','30d']" :key="r" type="button" :class="['ghost-button', bwRange === r ? 'active' : '']" style="padding:4px 10px; font-size:11px" @click="setBwRange(r)">{{ r }}</button>
-        <span v-if="bwLoading" style="font-size:11px; color:var(--muted); margin-left:8px">{{ t('nodeDetail.loading') }}</span>
-      </div>
+    <a-card v-if="node">
+      <template #title><BarChartOutlined /> {{ t('nodeDetail.bwTitle') }}</template>
+      <a-row :gutter="[16, 16]">
+        <a-col v-for="b in bwWindows" :key="b.key" :xs="12" :md="6">
+          <a-statistic :title="b.label" :value="formatBytes(b.w.up + b.w.down)" />
+          <a-typography-text type="secondary" class="foot">↑ {{ formatBytes(b.w.up) }} · ↓ {{ formatBytes(b.w.down) }}</a-typography-text>
+        </a-col>
+        <a-col :xs="12" :md="6">
+          <a-statistic :title="t('nodeDetail.bwOwners')" :value="owners.length" />
+          <a-typography-text type="secondary" class="foot">{{ t('nodeDetail.bwOwnersSub', { n: proxies.length }) }}</a-typography-text>
+        </a-col>
+      </a-row>
+      <a-flex align="center" gap="small" class="chart-controls">
+        <a-segmented :value="bwRange" :options="['24h', '7d', '30d']" size="small" @change="setBwRange" />
+        <a-typography-text v-if="bwLoading" type="secondary" class="small">{{ t('nodeDetail.loading') }}</a-typography-text>
+      </a-flex>
       <ApexChart v-if="bwSeries.length" type="area" height="240" :options="chartOptions" :series="chartSeries" />
-      <p v-else class="empty-text" style="padding:24px 0; text-align:center">{{ t('nodeDetail.bwEmpty') }}</p>
-    </section>
+      <a-empty v-else :image="simpleImage" :description="t('nodeDetail.bwEmpty')" />
+    </a-card>
 
     <!-- ── Customers on this node — who's using it, how much ── -->
-    <section v-if="node && owners.length" class="surface">
-      <div class="section-head">
-        <h2><Users :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.ownersTitle', { n: owners.length }) }}</h2>
-        <span style="color:var(--muted); font-size:12px">{{ t('nodeDetail.ownersNote') }}</span>
-      </div>
-      <div class="data-table">
-        <div class="table-head" style="grid-template-columns: 0.2fr 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr">
-          <span></span>
-          <span>{{ t('nodeDetail.colCustomer') }}</span>
-          <span style="text-align:right">{{ t('nodeDetail.colProxy') }}</span>
-          <span style="text-align:right">{{ t('nodeDetail.colActive') }}</span>
-          <span style="text-align:right">{{ t('nodeDetail.colExpired') }}</span>
-          <span style="text-align:right">{{ t('nodeDetail.colBw30d') }}</span>
-          <span style="text-align:right">{{ t('nodeDetail.colAutoFix') }}</span>
-          <span style="text-align:right">{{ t('nodeDetail.colLastCheck') }}</span>
-        </div>
-        <template v-for="o in owners" :key="o.ownerId">
-          <div class="table-row" style="grid-template-columns: 0.2fr 1.4fr 0.6fr 0.5fr 0.5fr 1fr 0.7fr 0.5fr; cursor:pointer" @click="toggleOwnerDrill(o.ownerId)">
-            <span style="color:var(--muted)">
-              <ChevronDown v-if="ownerDrill && ownerDrill.owner?.id === o.ownerId" :size="13" />
-              <ChevronRight v-else :size="13" />
-            </span>
-            <span>
-              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block">{{ o.email }}</span>
-              <small v-if="o.suspended" class="status-pill error" style="font-size:10px">{{ t('nodeDetail.suspended') }}</small>
-            </span>
-            <span class="cell-mono" style="text-align:right; font-weight:600">{{ o.total }}</span>
-            <span class="cell-mono" style="text-align:right; color:var(--green)">{{ o.active }}</span>
-            <span class="cell-mono" style="text-align:right; color:var(--muted)">{{ o.expired }}</span>
-            <span class="cell-mono" style="text-align:right">
-              {{ formatBytes(o.bytes30dTotal) }}
-              <small style="display:block; color:var(--muted); font-size:10.5px">↑{{ formatBytes(o.bytes30dUp) }} ↓{{ formatBytes(o.bytes30dDown) }}</small>
-            </span>
-            <span style="text-align:right">
-              <strong v-if="o.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">{{ o.autoFixCount }}</strong>
-              <span v-else style="color:var(--muted)">—</span>
-            </span>
-            <span class="cell-mono" style="text-align:right; font-size:11px; color:var(--muted)">{{ fmtAgo(o.lastActive) }}</span>
-          </div>
-          <!-- expanded drilldown -->
-          <div v-if="ownerDrill && ownerDrill.owner?.id === o.ownerId" class="owner-drill">
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-bottom:1px solid var(--border-soft)">
-              <span style="font-size:12px; color:var(--muted)" v-html="t('nodeDetail.drilldown', { email: ownerDrill.owner?.email || o.email, n: ownerDrill.proxies.length })"></span>
-              <button class="ghost-button" type="button" style="font-size:11px; padding:3px 8px" @click.stop="goToUser(o.ownerId)">{{ t('nodeDetail.openCustomer') }}</button>
-            </div>
-            <div v-if="ownerDrillLoading === o.ownerId" class="empty-text" style="padding:14px">{{ t('nodeDetail.drillLoading') }}</div>
-            <div v-else class="data-table" style="border:none">
-              <div v-for="p in ownerDrill.proxies" :key="p.id" class="table-row" style="grid-template-columns: 1.2fr 1.4fr 0.5fr 0.7fr 1fr">
-                <span class="cell-mono" style="font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ p.name || p.id }}</span>
-                <span class="cell-mono" style="font-size:11.5px">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-                <span><span :class="['status-pill', p.status]">{{ p.status }}</span><span v-if="p.suspended" class="status-pill error" style="font-size:10px; margin-left:4px">{{ t('nodeDetail.suspended') }}</span></span>
-                <span style="text-align:right">
-                  <strong v-if="p.autoFixCount > 0" class="cell-mono" style="color:var(--yellow)">×{{ p.autoFixCount }}</strong>
-                  <span v-else style="color:var(--muted)">—</span>
-                </span>
-                <span class="cell-mono" style="text-align:right; font-size:11.5px">
-                  {{ formatBytes(p.bytes30d.up + p.bytes30d.down) }}
-                  <small style="display:block; color:var(--muted); font-size:10.5px">↑{{ formatBytes(p.bytes30d.up) }} ↓{{ formatBytes(p.bytes30d.down) }}</small>
-                </span>
-              </div>
-            </div>
+    <a-card v-if="node && owners.length" :body-style="{ padding: 0 }">
+      <template #title><TeamOutlined /> {{ t('nodeDetail.ownersTitle', { n: owners.length }) }}</template>
+      <a-typography-paragraph type="secondary" class="card-note">{{ t('nodeDetail.ownersNote') }}</a-typography-paragraph>
+      <a-table
+        :columns="ownerColumns"
+        :data-source="owners"
+        row-key="ownerId"
+        size="middle"
+        :pagination="false"
+        :scroll="{ x: 860 }"
+        :expanded-row-keys="expandedOwnerKeys"
+        expand-row-by-click
+        class="clickable-rows"
+        @expand="(_, o) => toggleOwnerDrill(o.ownerId)"
+      >
+        <template #bodyCell="{ column, record: o }">
+          <template v-if="column.key === 'email'">
+            <a-space :size="4" wrap>
+              <span>{{ o.email }}</span>
+              <StatusTag v-if="o.suspended" status="error" :label="t('nodeDetail.suspended')" />
+            </a-space>
+          </template>
+          <template v-else-if="column.key === 'total'"><a-typography-text strong class="mono">{{ o.total }}</a-typography-text></template>
+          <template v-else-if="column.key === 'active'"><a-typography-text type="success" class="mono">{{ o.active }}</a-typography-text></template>
+          <template v-else-if="column.key === 'expired'"><a-typography-text type="secondary" class="mono">{{ o.expired }}</a-typography-text></template>
+          <template v-else-if="column.key === 'bw'">
+            <div class="mono">{{ formatBytes(o.bytes30dTotal) }}</div>
+            <a-typography-text type="secondary" class="mono small">↑{{ formatBytes(o.bytes30dUp) }} ↓{{ formatBytes(o.bytes30dDown) }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'autofix'">
+            <a-typography-text v-if="o.autoFixCount > 0" type="warning" strong class="mono">{{ o.autoFixCount }}</a-typography-text>
+            <a-typography-text v-else type="secondary">—</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'last'"><a-typography-text type="secondary" class="mono small">{{ fmtAgo(o.lastActive) }}</a-typography-text></template>
+        </template>
+        <template #expandedRowRender="{ record: o }">
+          <a-space v-if="ownerDrillLoading === o.ownerId">
+            <a-spin size="small" />
+            <a-typography-text type="secondary">{{ t('nodeDetail.drillLoading') }}</a-typography-text>
+          </a-space>
+          <div v-else-if="ownerDrill && ownerDrill.owner?.id === o.ownerId" class="drill">
+            <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="drill-head">
+              <a-typography-text type="secondary">{{ t('nodeDetail.drilldown', { email: ownerDrill.owner?.email || o.email, n: ownerDrill.proxies.length }) }}</a-typography-text>
+              <a-button size="small" @click.stop="goToUser(o.ownerId)">{{ t('nodeDetail.openCustomer') }}</a-button>
+            </a-flex>
+            <a-table :columns="drillColumns" :data-source="ownerDrill.proxies" row-key="id" size="small" :pagination="false" :scroll="{ x: 720 }">
+              <template #bodyCell="{ column, record: p }">
+                <template v-if="column.key === 'name'"><span class="mono">{{ p.name || p.id }}</span></template>
+                <template v-else-if="column.key === 'endpoint'"><a-typography-text class="mono" :copyable="{ text: `${p.ip || p.bindIp}:${p.port}` }">{{ p.ip || p.bindIp }}:{{ p.port }}</a-typography-text></template>
+                <template v-else-if="column.key === 'status'">
+                  <a-space :size="4" wrap>
+                    <StatusTag :status="p.status" />
+                    <StatusTag v-if="p.suspended" status="error" :label="t('nodeDetail.suspended')" />
+                  </a-space>
+                </template>
+                <template v-else-if="column.key === 'autofix'">
+                  <a-typography-text v-if="p.autoFixCount > 0" type="warning" strong class="mono">×{{ p.autoFixCount }}</a-typography-text>
+                  <a-typography-text v-else type="secondary">—</a-typography-text>
+                </template>
+                <template v-else-if="column.key === 'bytes'">
+                  <div class="mono">{{ formatBytes(p.bytes30d.up + p.bytes30d.down) }}</div>
+                  <a-typography-text type="secondary" class="mono small">↑{{ formatBytes(p.bytes30d.up) }} ↓{{ formatBytes(p.bytes30d.down) }}</a-typography-text>
+                </template>
+              </template>
+            </a-table>
           </div>
         </template>
-      </div>
-    </section>
+      </a-table>
+    </a-card>
 
     <!-- ── Management actions ── -->
-    <section v-if="node && !isLocal" class="surface">
-      <div class="section-head"><h2><Wrench :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.manageTitle') }}</h2></div>
-      <div class="action-row" style="display:flex; gap:8px; flex-wrap:wrap">
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(node.disabled ? 'undrain' : 'drain', node.disabled ? null : t('nodeDetail.confirmDrain'))">
-          <Play v-if="node.disabled" :size="13" /><Pause v-else :size="13" />
+    <a-card v-if="node && !isLocal">
+      <template #title><ToolOutlined /> {{ t('nodeDetail.manageTitle') }}</template>
+      <a-space wrap>
+        <a-button :disabled="!!actionBusy && actionBusy !== 'drain' && actionBusy !== 'undrain'" :loading="actionBusy === 'drain' || actionBusy === 'undrain'" @click="nodeAction(node.disabled ? 'undrain' : 'drain', node.disabled ? null : t('nodeDetail.confirmDrain'))">
+          <template #icon><PlayCircleOutlined v-if="node.disabled" /><PauseCircleOutlined v-else /></template>
           {{ node.disabled ? t('nodeDetail.btnUndrain') : t('nodeDetail.btnDrain') }}
-        </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction(suspendedCount > 0 ? 'resume-all-proxies' : 'suspend-all-proxies', suspendedCount > 0 ? t('nodeDetail.confirmResumeAll') : t('nodeDetail.confirmSuspendAll'))">
-          <Play v-if="suspendedCount > 0" :size="13" /><Pause v-else :size="13" />
+        </a-button>
+        <a-button :disabled="!!actionBusy && !actionBusy.endsWith('-all-proxies')" :loading="actionBusy.endsWith('-all-proxies')" @click="nodeAction(suspendedCount > 0 ? 'resume-all-proxies' : 'suspend-all-proxies', suspendedCount > 0 ? t('nodeDetail.confirmResumeAll') : t('nodeDetail.confirmSuspendAll'))">
+          <template #icon><PlayCircleOutlined v-if="suspendedCount > 0" /><PauseCircleOutlined v-else /></template>
           {{ suspendedCount > 0 ? t('nodeDetail.btnResumeN', { n: suspendedCount }) : t('nodeDetail.btnSuspendAll') }}
-        </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('restart-agent', t('nodeDetail.confirmRestartAgent'))">
-          <RefreshCw :size="13" /> {{ t('nodeDetail.btnRestartAgent') }}
-        </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('refresh-network', null)">
-          <Zap :size="13" /> {{ t('nodeDetail.btnRefreshNet') }}
-        </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('diagnostics', null)">
-          <Activity :size="13" /> {{ t('nodeDetail.btnDiagnostics') }}
-        </button>
-        <button class="ghost-button" type="button" :disabled="!!actionBusy" @click="nodeAction('rotate-token', t('nodeDetail.confirmRotateToken'))">
-          <RefreshCw :size="13" /> {{ t('nodeDetail.btnRotateToken') }}
-        </button>
+        </a-button>
+        <a-button :disabled="!!actionBusy && actionBusy !== 'restart-agent'" :loading="actionBusy === 'restart-agent'" @click="nodeAction('restart-agent', t('nodeDetail.confirmRestartAgent'))">
+          <template #icon><ReloadOutlined /></template>
+          {{ t('nodeDetail.btnRestartAgent') }}
+        </a-button>
+        <a-button :disabled="!!actionBusy && actionBusy !== 'refresh-network'" :loading="actionBusy === 'refresh-network'" @click="nodeAction('refresh-network', null)">
+          <template #icon><ThunderboltOutlined /></template>
+          {{ t('nodeDetail.btnRefreshNet') }}
+        </a-button>
+        <a-button :disabled="!!actionBusy && actionBusy !== 'diagnostics'" :loading="actionBusy === 'diagnostics'" @click="nodeAction('diagnostics', null)">
+          <template #icon><MedicineBoxOutlined /></template>
+          {{ t('nodeDetail.btnDiagnostics') }}
+        </a-button>
+        <a-button danger :disabled="!!actionBusy && actionBusy !== 'rotate-token'" :loading="actionBusy === 'rotate-token'" @click="nodeAction('rotate-token', t('nodeDetail.confirmRotateToken'))">
+          <template #icon><KeyOutlined /></template>
+          {{ t('nodeDetail.btnRotateToken') }}
+        </a-button>
+      </a-space>
+      <div v-if="actionBusy" class="action-running">
+        <a-typography-text type="secondary">{{ t('nodeDetail.actionRunning', { name: actionBusy }) }}</a-typography-text>
       </div>
-      <p v-if="actionBusy" class="empty-text" style="padding:8px 0">{{ t('nodeDetail.actionRunning', { name: actionBusy }) }}</p>
-    </section>
+    </a-card>
 
     <!-- ── Alert thresholds (per-node override) ── -->
-    <section v-if="node && !isLocal" class="surface">
-      <div class="section-head">
-        <h2><Bell :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.alertsTitle') }}</h2>
-        <span style="font-size:11.5px; color:var(--muted)">{{ t('nodeDetail.alertsHint') }}</span>
-      </div>
-      <div class="detail-grid">
-        <div>
-          <span>{{ t('nodeDetail.alertsRam') }}</span>
-          <input v-model="alertsForm.ramPct" type="number" min="1" max="100" placeholder="90" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
-        </div>
-        <div>
-          <span>{{ t('nodeDetail.alertsLoad') }}</span>
-          <input v-model="alertsForm.load1" type="number" min="1" max="10000" placeholder="100" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
-        </div>
-        <div>
-          <span>{{ t('nodeDetail.alertsFail') }}</span>
-          <input v-model="alertsForm.failPct" type="number" min="1" max="100" placeholder="80" style="width:100%; padding:5px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px" />
-        </div>
-        <div style="display:flex; align-items:flex-end">
-          <button class="primary-action small" type="button" :disabled="alertsSaving" @click="saveAlerts">{{ alertsSaving ? t('nodeDetail.alertsSaving') : t('nodeDetail.alertsSave') }}</button>
-        </div>
-      </div>
-    </section>
+    <a-card v-if="node && !isLocal">
+      <template #title><BellOutlined /> {{ t('nodeDetail.alertsTitle') }}</template>
+      <a-typography-paragraph type="secondary">{{ t('nodeDetail.alertsHint') }}</a-typography-paragraph>
+      <a-form :model="alertsForm" layout="vertical" @finish="saveAlerts">
+        <a-row :gutter="16" align="bottom">
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('nodeDetail.alertsRam')" name="ramPct">
+              <a-input-number v-model:value="alertsForm.ramPct" :min="1" :max="100" placeholder="90" class="full-width mono" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('nodeDetail.alertsLoad')" name="load1">
+              <a-input-number v-model:value="alertsForm.load1" :min="1" :max="10000" placeholder="100" class="full-width mono" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('nodeDetail.alertsFail')" name="failPct">
+              <a-input-number v-model:value="alertsForm.failPct" :min="1" :max="100" placeholder="80" class="full-width mono" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item>
+              <a-button type="primary" html-type="submit" :loading="alertsSaving">{{ alertsSaving ? t('nodeDetail.alertsSaving') : t('nodeDetail.alertsSave') }}</a-button>
+            </a-form-item>
+          </a-col>
+        </a-row>
+      </a-form>
+    </a-card>
 
     <!-- ── Reaper telemetry (IPv6 stale-address sweeper) ── -->
-    <section v-if="reaper" class="surface">
-      <div class="section-head"><h2><Trash :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.reaperTitle') }}</h2></div>
-      <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperActive') }}</div><div class="metric-value">{{ reaper.activeCount }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperLastSweep') }}</div><div class="metric-value" style="font-size:18px">{{ fmtMs(reaper.lastSweepAt) }}</div><div class="metric-foot cell-mono">{{ reaper.lastSweepAt }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperLastReaped') }}</div><div class="metric-value">{{ reaper.lastReapedCount }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.reaperTotal') }}</div><div class="metric-value">{{ reaper.totalReaped }}</div></div>
-      </div>
-    </section>
+    <a-card v-if="reaper">
+      <template #title><ClearOutlined /> {{ t('nodeDetail.reaperTitle') }}</template>
+      <a-row :gutter="[16, 16]">
+        <a-col :xs="12" :md="6"><a-statistic :title="t('nodeDetail.reaperActive')" :value="reaper.activeCount" /></a-col>
+        <a-col :xs="12" :md="6">
+          <a-statistic :title="t('nodeDetail.reaperLastSweep')" :value="fmtMs(reaper.lastSweepAt)" />
+          <a-typography-text type="secondary" class="foot mono">{{ reaper.lastSweepAt }}</a-typography-text>
+        </a-col>
+        <a-col :xs="12" :md="6"><a-statistic :title="t('nodeDetail.reaperLastReaped')" :value="reaper.lastReapedCount" /></a-col>
+        <a-col :xs="12" :md="6"><a-statistic :title="t('nodeDetail.reaperTotal')" :value="reaper.totalReaped" /></a-col>
+      </a-row>
+    </a-card>
 
-    <!-- ── IPv6 pool utilization ── -->
-    <section v-if="pool" class="surface">
-      <div class="section-head"><h2><Network :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.poolTitle', { family: pool.family }) }}</h2></div>
-      <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolProxies') }}</div><div class="metric-value">{{ pool.proxiesOnNode }}</div></div>
-        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolIpv6Attached') }}</div><div class="metric-value">{{ pool.ipv6Attached }}</div><div class="metric-foot">{{ t('nodeDetail.poolIpv6InUse', { n: pool.ipv6InUse, pct: pool.utilizationPctOfAttached }) }}</div></div>
-        <div v-if="pool.family === 'ipv4'" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolIpv4Attached') }}</div><div class="metric-value">{{ pool.ipv4Attached }}</div><div class="metric-foot">{{ t('nodeDetail.poolIpv4InUse', { n: pool.ipv4InUse }) }}</div></div>
-        <div v-if="pool.family === 'ipv6'" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolDistinct64') }}</div><div class="metric-value">{{ pool.distinct64InUse }}</div><div class="metric-foot">{{ t('nodeDetail.poolDistinct64A', { n: pool.distinct64Attached }) }}</div></div>
-        <div v-if="pool.family === 'ipv6' && pool.capacityCidr" class="metric-card"><div class="metric-label">{{ t('nodeDetail.poolCapacity') }}</div><div class="metric-value cell-mono" style="font-size:14px">{{ pool.capacityCidr }}</div><div class="metric-foot">{{ t('nodeDetail.poolHosts', { n: 128 - Number(pool.capacityCidr.split('/')[1] || 0) }) }}</div></div>
-      </div>
-    </section>
+    <!-- ── IP pool utilization ── -->
+    <a-card v-if="pool">
+      <template #title><ApartmentOutlined /> {{ t('nodeDetail.poolTitle', { family: pool.family }) }}</template>
+      <a-row :gutter="[16, 16]">
+        <a-col :xs="12" :md="6"><a-statistic :title="t('nodeDetail.poolProxies')" :value="pool.proxiesOnNode" /></a-col>
+        <a-col v-if="pool.family === 'ipv6'" :xs="12" :md="6">
+          <a-statistic :title="t('nodeDetail.poolIpv6Attached')" :value="pool.ipv6Attached" />
+          <a-typography-text type="secondary" class="foot">{{ t('nodeDetail.poolIpv6InUse', { n: pool.ipv6InUse, pct: pool.utilizationPctOfAttached }) }}</a-typography-text>
+        </a-col>
+        <a-col v-if="pool.family === 'ipv4'" :xs="12" :md="6">
+          <a-statistic :title="t('nodeDetail.poolIpv4Attached')" :value="pool.ipv4Attached" />
+          <a-typography-text type="secondary" class="foot">{{ t('nodeDetail.poolIpv4InUse', { n: pool.ipv4InUse }) }}</a-typography-text>
+        </a-col>
+        <a-col v-if="pool.family === 'ipv6'" :xs="12" :md="6">
+          <a-statistic :title="t('nodeDetail.poolDistinct64')" :value="pool.distinct64InUse" />
+          <a-typography-text type="secondary" class="foot">{{ t('nodeDetail.poolDistinct64A', { n: pool.distinct64Attached }) }}</a-typography-text>
+        </a-col>
+        <a-col v-if="pool.family === 'ipv6' && pool.capacityCidr" :xs="12" :md="6">
+          <a-statistic :title="t('nodeDetail.poolCapacity')" :value="pool.capacityCidr" :value-style="{ fontFamily: 'var(--pb-mono)', fontSize: '16px' }" />
+          <a-typography-text type="secondary" class="foot">{{ t('nodeDetail.poolHosts', { n: 128 - Number(pool.capacityCidr.split('/')[1] || 0) }) }}</a-typography-text>
+        </a-col>
+      </a-row>
+    </a-card>
 
     <!-- ── Recent activity: auto-heal events + open errors for this node ── -->
-    <section v-if="node && (recentFixes.length || recentErrors.length)" class="surface">
-      <div class="section-head"><h2><Activity :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.recentTitle') }}</h2></div>
-      <div v-if="recentErrors.length" style="margin-bottom:14px">
-        <h3 style="font-size:13px; color:var(--red); margin:0 0 8px"><AlertCircle :size="13" style="vertical-align:-2px" /> {{ t('nodeDetail.openErrors', { n: recentErrors.length }) }}</h3>
-        <div class="data-table">
-          <div v-for="e in recentErrors" :key="e.id" class="table-row" style="grid-template-columns: 0.5fr 0.7fr 1fr 1.6fr 0.4fr">
-            <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ fmtAgo(e.last_ts) }}</span>
-            <span><span :class="['status-pill', e.level === 'error' ? 'error' : 'pending']">{{ e.level }}</span></span>
-            <span class="cell-mono" style="font-size:11.5px">{{ e.source }}/{{ e.code }}</span>
-            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px">{{ e.message }}</span>
-            <span class="cell-mono" style="text-align:right; color:var(--yellow)">×{{ e.count }}</span>
-          </div>
-        </div>
-      </div>
-      <div v-if="recentFixes.length">
-        <h3 style="font-size:13px; color:var(--muted); margin:0 0 8px">{{ t('nodeDetail.autoHeal', { n: recentFixes.length }) }}</h3>
-        <div class="data-table">
-          <div v-for="(f, i) in recentFixes" :key="i" class="table-row" style="grid-template-columns: 0.7fr 0.7fr 2fr">
-            <span class="cell-mono" style="font-size:11px; color:var(--muted)">{{ f.ts.slice(11, 19) }}</span>
-            <span><span v-if="f.path && f.path.endsWith('/rotate')" class="status-pill pending">rotate</span><span v-else-if="f.path && f.path.endsWith('/replace')" class="status-pill active">replace</span><span v-else class="status-pill error">{{ (f.path||'').split('/').pop() }}</span> <small class="cell-mono" style="color:var(--muted); font-size:10.5px">{{ (f.path||'').match(/\/proxy\/([^/]+)/)?.[1] }}</small></span>
-            <span class="cell-mono" style="font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ f.note }}</span>
-          </div>
-        </div>
-      </div>
-    </section>
+    <a-card v-if="node && (recentFixes.length || recentErrors.length)">
+      <template #title><HistoryOutlined /> {{ t('nodeDetail.recentTitle') }}</template>
+      <template v-if="recentErrors.length">
+        <a-typography-title :level="5" type="danger" class="sub-title"><ExclamationCircleOutlined /> {{ t('nodeDetail.openErrors', { n: recentErrors.length }) }}</a-typography-title>
+        <a-table :columns="errorColumns" :data-source="recentErrors" row-key="id" size="small" :pagination="false" :show-header="false" :scroll="{ x: 640 }" class="block-gap">
+          <template #bodyCell="{ column, record: e }">
+            <template v-if="column.key === 'ago'"><a-typography-text type="secondary" class="mono small">{{ fmtAgo(e.last_ts) }}</a-typography-text></template>
+            <template v-else-if="column.key === 'level'"><StatusTag :status="e.level" :color="e.level === 'error' ? 'error' : 'warning'" /></template>
+            <template v-else-if="column.key === 'source'"><span class="mono">{{ e.source }}/{{ e.code }}</span></template>
+            <template v-else-if="column.key === 'count'"><a-typography-text type="warning" class="mono">×{{ e.count }}</a-typography-text></template>
+          </template>
+        </a-table>
+      </template>
+      <template v-if="recentFixes.length">
+        <a-typography-title :level="5" type="secondary" class="sub-title">{{ t('nodeDetail.autoHeal', { n: recentFixes.length }) }}</a-typography-title>
+        <a-table :columns="fixColumns" :data-source="recentFixes" row-key="_k" size="small" :pagination="false" :show-header="false" :scroll="{ x: 560 }">
+          <template #bodyCell="{ column, record: f }">
+            <template v-if="column.key === 'ts'"><a-typography-text type="secondary" class="mono small">{{ (f.ts || '').slice(11, 19) }}</a-typography-text></template>
+            <template v-else-if="column.key === 'action'">
+              <a-space :size="4">
+                <StatusTag :status="fixAction(f).label" :label="fixAction(f).label" :color="fixAction(f).color" />
+                <a-typography-text type="secondary" class="mono small">{{ (f.path || '').match(/\/proxy\/([^/]+)/)?.[1] }}</a-typography-text>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'note'"><span class="mono">{{ f.note }}</span></template>
+          </template>
+        </a-table>
+      </template>
+    </a-card>
 
-    <!-- Upgrade agent — admin runs the one-liner on the node to swap binary -->
-    <section v-if="node && !isLocal" class="surface">
-      <div class="section-head" style="display:flex; align-items:center; gap:10px">
-        <h2><Download :size="16" style="vertical-align:-3px" /> {{ t('nodeDetail.upgradeTitle') }}</h2>
-        <span v-if="upgrade?.outdated" class="status-pill pending" style="font-size:11px">{{ t('nodeDetail.upgradeOutdated', { cur: upgrade.currentVersion, latest: upgrade.latestVersion }) }}</span>
-        <span v-else-if="upgrade && !upgrade.outdated && upgrade.currentVersion" class="status-pill active" style="font-size:11px">{{ t('nodeDetail.upgradeLatest', { latest: upgrade.latestVersion }) }}</span>
-        <div class="spacer"></div>
-        <button class="ghost-button" type="button" :disabled="upgradeLoading" @click="rotateUpgradeToken" style="font-size:11px">{{ t('nodeDetail.upgradeRotate') }}</button>
-      </div>
-      <p v-if="!upgrade" class="empty-text" style="padding:10px 0">{{ t('nodeDetail.upgradeLoading') }}</p>
-      <div v-else>
-        <p style="font-size:13px; color:var(--muted); margin:0 0 8px" v-html="t('nodeDetail.upgradeHint', { host: node.host })">
-        </p>
-        <div class="upgrade-cmd-box">
-          <code>{{ upgrade.oneLiner }}</code>
-          <button class="ghost-button" type="button" @click="copyUpgradeCmd">
+    <!-- ── Upgrade agent — admin runs the one-liner on the node to swap binary ── -->
+    <a-card v-if="node && !isLocal">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <a-space :size="8" wrap>
+            <span><CloudDownloadOutlined /> {{ t('nodeDetail.upgradeTitle') }}</span>
+            <StatusTag v-if="upgrade?.outdated" status="pending" :label="t('nodeDetail.upgradeOutdated', { cur: upgrade.currentVersion, latest: upgrade.latestVersion })" />
+            <StatusTag v-else-if="upgrade && !upgrade.outdated && upgrade.currentVersion" status="active" :label="t('nodeDetail.upgradeLatest', { latest: upgrade.latestVersion })" />
+          </a-space>
+          <a-button size="small" :loading="upgradeLoading" @click="rotateUpgradeToken">{{ t('nodeDetail.upgradeRotate') }}</a-button>
+        </a-flex>
+      </template>
+      <a-space v-if="!upgrade">
+        <a-spin size="small" />
+        <a-typography-text type="secondary">{{ t('nodeDetail.upgradeLoading') }}</a-typography-text>
+      </a-space>
+      <template v-else>
+        <!-- eslint-disable-next-line vue/no-v-html -- trusted i18n markup (<code>) -->
+        <a-typography-paragraph type="secondary"><span v-html="t('nodeDetail.upgradeHint', { host: node.host })"></span></a-typography-paragraph>
+        <a-flex align="flex-start" gap="small" class="cmd-row">
+          <a-typography-paragraph class="cmd-block"><pre class="mono">{{ upgrade.oneLiner }}</pre></a-typography-paragraph>
+          <a-button @click="copyUpgradeCmd">
+            <template #icon><CheckOutlined v-if="upgradeCopied" /><CopyOutlined v-else /></template>
             {{ upgradeCopied ? t('nodeDetail.upgradeCopied') : t('nodeDetail.upgradeCopy') }}
-          </button>
-        </div>
-        <p style="font-size:11.5px; color:var(--muted); margin:8px 0 0">
-          {{ t('nodeDetail.upgradeScript') }}: <a :href="upgrade.upgradeScriptUrl" target="_blank" rel="noopener" style="color:var(--muted)">{{ t('nodeDetail.upgradeScriptView') }}</a> ·
-          {{ t('nodeDetail.upgradeBinary') }}: <a :href="upgrade.binaryUrl" target="_blank" rel="noopener" style="color:var(--muted)">{{ t('nodeDetail.upgradeBinaryDl') }}</a>
-        </p>
-      </div>
-    </section>
+          </a-button>
+        </a-flex>
+        <a-typography-text type="secondary" class="small">
+          {{ t('nodeDetail.upgradeScript') }}: <a-typography-link :href="upgrade.upgradeScriptUrl" target="_blank" rel="noopener">{{ t('nodeDetail.upgradeScriptView') }}</a-typography-link> ·
+          {{ t('nodeDetail.upgradeBinary') }}: <a-typography-link :href="upgrade.binaryUrl" target="_blank" rel="noopener">{{ t('nodeDetail.upgradeBinaryDl') }}</a-typography-link>
+        </a-typography-text>
+      </template>
+    </a-card>
 
-    <section v-if="node" class="surface">
-      <div class="section-head">
-        <h2><HardDrive :size="16" style="vertical-align:-3px" /> {{ t('nodes.networkInfra') }}</h2>
-        <button class="ghost-button" type="button" :disabled="syncing" @click="onSync"><RefreshCw :size="14" /> {{ t('nodes.syncIPs') }}</button>
-      </div>
-      <div class="detail-grid">
-        <div v-if="!isV6">
-          <span>{{ t('nodes.ipv4Count') }}</span>
-          <strong>{{ ipv4.length }} {{ t('nodes.addresses') }}</strong>
-        </div>
-        <div v-if="!isV4">
-          <span>{{ t('nodes.ipv6Count') }}</span>
-          <strong>{{ ipv6.length }} {{ t('nodes.addresses') }}</strong>
-        </div>
-        <div v-if="!isV4">
-          <span>{{ t('nodes.ipv6Prefix') }}</span>
-          <strong class="cell-mono">{{ ipv6Prefixes.length ? ipv6Prefixes.map((p) => p.cidr).join(', ') : '—' }}</strong>
-        </div>
-        <div v-if="node.network && node.network.ipv4PoolSize !== undefined">
-          <span>{{ t('nodes.poolSize') }}</span>
-          <strong>{{ isV6 ? (node.network.ipv6PoolSize || 0) : (isV4 ? (node.network.ipv4PoolSize || 0) : (node.network.ipv4PoolSize || 0) + (node.network.ipv6PoolSize || 0)) }}</strong>
-        </div>
-      </div>
-      <details v-if="!isV6 && ipv4.length" style="margin-top:12px">
-        <summary style="cursor:pointer; color:var(--muted); font-size:13px">{{ t('nodes.showIpv4List') }} ({{ ipv4.length }})</summary>
-        <div class="credential-box" style="margin-top:8px; max-height:200px; overflow:auto">
-          <code>{{ ipv4.map((e) => e.address).join(', ') }}</code>
-        </div>
-      </details>
-      <details v-if="!isV4 && ipv6.length" style="margin-top:8px">
-        <summary style="cursor:pointer; color:var(--muted); font-size:13px">{{ t('nodes.showIpv6List') }} ({{ ipv6.length }})</summary>
-        <div class="credential-box" style="margin-top:8px; max-height:200px; overflow:auto">
-          <code>{{ ipv6.map((e) => e.address).join(', ') }}</code>
-        </div>
-      </details>
-    </section>
+    <!-- ── Network infrastructure ── -->
+    <a-card v-if="node">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <span><HddOutlined /> {{ t('nodes.networkInfra') }}</span>
+          <a-button size="small" :loading="syncing" @click="onSync"><template #icon><SyncOutlined /></template>{{ t('nodes.syncIPs') }}</a-button>
+        </a-flex>
+      </template>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 4 }">
+        <a-descriptions-item v-if="!isV6" :label="t('nodes.ipv4Count')">{{ ipv4.length }} {{ t('nodes.addresses') }}</a-descriptions-item>
+        <a-descriptions-item v-if="!isV4" :label="t('nodes.ipv6Count')">{{ ipv6.length }} {{ t('nodes.addresses') }}</a-descriptions-item>
+        <a-descriptions-item v-if="!isV4" :label="t('nodes.ipv6Prefix')"><span class="mono">{{ ipv6Prefixes.length ? ipv6Prefixes.map((p) => p.cidr).join(', ') : '—' }}</span></a-descriptions-item>
+        <a-descriptions-item v-if="node.network && node.network.ipv4PoolSize !== undefined" :label="t('nodes.poolSize')">
+          {{ isV6 ? (node.network.ipv6PoolSize || 0) : (isV4 ? (node.network.ipv4PoolSize || 0) : (node.network.ipv4PoolSize || 0) + (node.network.ipv6PoolSize || 0)) }}
+        </a-descriptions-item>
+      </a-descriptions>
+      <a-collapse v-if="(!isV6 && ipv4.length) || (!isV4 && ipv6.length)" ghost class="ip-lists">
+        <a-collapse-panel v-if="!isV6 && ipv4.length" key="v4" :header="`${t('nodes.showIpv4List')} (${ipv4.length})`">
+          <a-typography-paragraph class="cmd-block scroll-block" :copyable="{ text: ipv4.map((e) => e.address).join(', ') }"><pre class="mono">{{ ipv4.map((e) => e.address).join(', ') }}</pre></a-typography-paragraph>
+        </a-collapse-panel>
+        <a-collapse-panel v-if="!isV4 && ipv6.length" key="v6" :header="`${t('nodes.showIpv6List')} (${ipv6.length})`">
+          <a-typography-paragraph class="cmd-block scroll-block" :copyable="{ text: ipv6.map((e) => e.address).join(', ') }"><pre class="mono">{{ ipv6.map((e) => e.address).join(', ') }}</pre></a-typography-paragraph>
+        </a-collapse-panel>
+      </a-collapse>
+    </a-card>
 
-    <section v-if="node && (ipv4Proxies.length || ipv6Proxies.length)" class="surface">
-      <div class="section-head"><h2><Cpu :size="16" style="vertical-align:-3px" /> {{ t('nodes.proxiesOnNode') }}</h2></div>
-      <p v-if="!isV6 && ipv4Proxies.length" style="font-size:13px; color:var(--muted); margin-bottom:6px">IPv4 ({{ ipv4Proxies.length }})</p>
-      <div v-if="!isV6 && ipv4Proxies.length" class="data-table" style="margin-bottom:14px">
-        <div v-for="p in ipv4Proxies.slice(0, 20)" :key="p.id" class="table-row" style="grid-template-columns: 1fr 1.5fr auto">
-          <span>{{ p.name }}</span>
-          <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-          <span :class="['status-pill', p.status]">{{ p.status }}</span>
-        </div>
-        <p v-if="ipv4Proxies.length > 20" class="empty-text">… {{ t('nodes.andMore') }} {{ ipv4Proxies.length - 20 }}</p>
+    <!-- ── Proxies on this node ── -->
+    <a-card v-if="node && proxyGroups.length">
+      <template #title><ClusterOutlined /> {{ t('nodes.proxiesOnNode') }}</template>
+      <div v-for="g in proxyGroups" :key="g.key" class="block-gap">
+        <a-typography-text type="secondary">{{ g.label }} ({{ g.list.length }})</a-typography-text>
+        <a-table :columns="proxyColumns" :data-source="g.list.slice(0, 20)" row-key="id" size="small" :pagination="false" :show-header="false" :scroll="{ x: 480 }">
+          <template #bodyCell="{ column, record: p }">
+            <template v-if="column.key === 'endpoint'">
+              <a-space :size="6" wrap>
+                <a-typography-text class="mono" :copyable="{ text: `${p.ip || p.bindIp}:${p.port}` }">{{ p.ip || p.bindIp }}:{{ p.port }}</a-typography-text>
+                <a-tag v-if="p.mode === 'rotating'" color="purple" :bordered="false">rotating</a-tag>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'status'"><StatusTag :status="p.status" /></template>
+          </template>
+        </a-table>
+        <a-typography-text v-if="g.list.length > 20" type="secondary">… {{ t('nodes.andMore') }} {{ g.list.length - 20 }}</a-typography-text>
       </div>
-      <p v-if="!isV4 && ipv6Proxies.length" style="font-size:13px; color:var(--muted); margin-bottom:6px">IPv6 ({{ ipv6Proxies.length }})</p>
-      <div v-if="!isV4 && ipv6Proxies.length" class="data-table">
-        <div v-for="p in ipv6Proxies.slice(0, 20)" :key="p.id" class="table-row" style="grid-template-columns: 1fr 1.5fr auto">
-          <span>{{ p.name }}</span>
-          <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}<span v-if="p.mode === 'rotating'" class="tag rotating" style="margin-left:6px">rotating</span></span>
-          <span :class="['status-pill', p.status]">{{ p.status }}</span>
-        </div>
-        <p v-if="ipv6Proxies.length > 20" class="empty-text">… {{ t('nodes.andMore') }} {{ ipv6Proxies.length - 20 }}</p>
-      </div>
-    </section>
+    </a-card>
 
-    <section v-if="installOutput" class="surface">
-      <div class="section-head"><h2>{{ t('nodes.installOutput') }}</h2></div>
-      <pre style="max-height:260px; overflow:auto"><code>{{ installOutput }}</code></pre>
-    </section>
+    <a-card v-if="installOutput" :title="t('nodes.installOutput')">
+      <a-typography-paragraph class="cmd-block scroll-block"><pre class="mono">{{ installOutput }}</pre></a-typography-paragraph>
+    </a-card>
 
-    <!-- Logs viewer (journalctl via SSH for remote, local file for control plane) -->
-    <section class="surface">
-      <div class="section-head">
-        <h2><Terminal :size="15" style="vertical-align:-3px" /> {{ t('nodes.logs') }}</h2>
-        <div class="action-row">
-          <label class="input-field" style="flex-direction:row; align-items:center; gap:6px; padding:0; font-size:11px; color:var(--muted); text-transform:none; letter-spacing:0">
-            {{ t('nodes.logsLines') }}:
-            <input v-model.number="logsLines" type="number" min="10" max="5000" style="width:80px; padding:4px 8px; font-size:12px" />
-          </label>
-          <button class="ghost-button" type="button" :disabled="logsLoading" @click="fetchLogs"><RefreshCw :size="13" /> {{ logsLoading ? t('common.loading') : t('common.refresh') }}</button>
-          <button class="ghost-button" type="button" @click="toggleLogs">{{ logsOpen ? t('nodes.logsHide') : t('nodes.logsShow') }}</button>
-        </div>
-      </div>
-      <p v-if="logsErr" class="error-text" style="margin-bottom: 10px">{{ logsErr }}</p>
-      <pre v-if="logsOpen" style="max-height: 480px; overflow: auto; font-size: 11.5px; background: #000; border-color: var(--border-soft)"><code style="color: #c4d8d4">{{ logsOutput || t('nodes.logsEmpty') }}</code></pre>
-      <p v-else-if="!logsErr" style="font-size: 12px; color: var(--muted); margin: 0">
-        <FileText :size="12" style="vertical-align:-2px" /> {{ isLocal ? t('nodes.logsHintLocal') : t('nodes.logsHintRemote') }}
-      </p>
-    </section>
-  </section>
+    <!-- ── Logs viewer (journalctl via SSH for remote, local file for control plane) ── -->
+    <a-card>
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <span><CodeOutlined /> {{ t('nodes.logs') }}</span>
+          <a-space wrap :size="8">
+            <a-input-number v-model:value="logsLines" :min="10" :max="5000" size="small" :addon-before="t('nodes.logsLines')" class="lines-input" />
+            <a-button size="small" :loading="logsLoading" @click="fetchLogs"><template #icon><ReloadOutlined /></template>{{ logsLoading ? t('common.loading') : t('common.refresh') }}</a-button>
+            <a-button size="small" @click="toggleLogs">{{ logsOpen ? t('nodes.logsHide') : t('nodes.logsShow') }}</a-button>
+          </a-space>
+        </a-flex>
+      </template>
+      <a-alert v-if="logsErr" type="error" show-icon :message="logsErr" class="block-gap" />
+      <pre v-if="logsOpen" class="mono log-block">{{ logsOutput || t('nodes.logsEmpty') }}</pre>
+      <a-typography-text v-else-if="!logsErr" type="secondary">
+        <FileTextOutlined /> {{ isLocal ? t('nodes.logsHintLocal') : t('nodes.logsHintRemote') }}
+      </a-typography-text>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.upgrade-cmd-box { display:flex; align-items:center; gap:10px; padding:10px 12px; background:#0f1419; border:1px solid var(--border); border-radius:var(--radius); font-family:var(--mono); font-size:12px }
-.upgrade-cmd-box code { flex:1; overflow-x:auto; white-space:nowrap; color:#9bb8b1 }
-.upgrade-cmd-box button { white-space:nowrap; font-size:11px }
-.family-toggle { display:inline-flex; gap:4px; margin-top:2px }
-.family-toggle .family-btn { background:var(--surface-2); border:1px solid var(--border); color:var(--muted); padding:3px 12px; border-radius:var(--radius); font-size:11.5px; font-weight:600; letter-spacing:0.4px; cursor:pointer; font-family:var(--mono) }
-.family-toggle .family-btn:hover:not(:disabled) { border-color:var(--green); color:var(--text) }
-.family-toggle .family-btn.active { background:rgba(74,222,128,0.12); border-color:var(--green); color:var(--green) }
-.family-toggle .family-btn:disabled { opacity:0.6; cursor:default }
-.ghost-button.active { background:rgba(74,222,128,0.12); border-color:var(--green); color:var(--green) }
-.owner-drill { background:var(--surface-2); border-left:2px solid var(--green); padding:4px 0 8px }
+.card-head-controls { padding: 8px 0; }
+.card-head-controls :deep(.ant-btn), .card-head-controls :deep(.ant-input-number-group-addon) { font-weight: 400; }
+.small { font-size: 12px; }
+.foot { display: block; font-size: 12px; margin-top: 2px; }
+.block-gap { margin-bottom: 16px; }
+.sub-title { font-size: 14px !important; margin-bottom: 8px !important; }
+.chart-controls { margin: 16px 0 8px; }
+.card-note { margin: 12px 16px !important; }
+.clickable-rows :deep(.ant-table-row) { cursor: pointer; }
+.drill-head { margin-bottom: 8px; }
+.action-running { margin-top: 12px; }
+.cmd-row { flex-wrap: wrap; }
+.cmd-row .cmd-block { flex: 1; min-width: 0; }
+.cmd-block { margin-bottom: 8px !important; }
+.cmd-block pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.scroll-block pre { max-height: 240px; overflow: auto; }
+.ip-lists { margin-top: 12px; }
+.lines-input { width: 140px; }
+.log-block {
+  margin: 0;
+  max-height: 480px;
+  overflow: auto;
+  padding: 12px;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  background: var(--pb-bg);
+  border: 1px solid var(--pb-border-soft);
+  border-radius: 8px;
+}
 </style>

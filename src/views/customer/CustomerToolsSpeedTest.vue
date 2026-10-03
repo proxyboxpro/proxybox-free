@@ -123,7 +123,7 @@ onMounted(async () => {
                 :options="proxyOptions"
                 show-search
                 option-filter-prop="label"
-                class="mono"
+                class="mono-field"
               />
             </a-form-item>
           </a-col>
@@ -215,4 +215,5 @@ onMounted(async () => {
 .hint { margin-bottom: 0; font-size: 12px; }
 .loading-isps { font-size: 11px; margin-inline-start: 4px; }
 .gauge-wrap { padding: 12px 0; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

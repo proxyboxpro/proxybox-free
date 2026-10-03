@@ -1,12 +1,12 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Activity, AlertTriangle, Box, Check, ChevronDown, Cloud, Cpu, History, KeyRound, Plus, Power, PowerOff, RefreshCw, RotateCcw, Server, ShieldCheck, Stethoscope, Terminal, Trash2, UploadCloud, Zap } from 'lucide-vue-next'
+import { computed, h, onMounted, reactive, ref, watch } from 'vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message, confirmAsync, promptAsync } from '../../ui/feedback'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
 const tab = ref('config')
-const flash = ref('')
 const err = ref('')
 
 // ── Virtualizor instances (multi-zone) ───────────────────────────────────
@@ -15,6 +15,7 @@ const editingVz = ref(null)
 const vzDraft = ref({ label: '', zone: '', panelUrl: '', apiKey: '', apiPass: '', insecureTls: true, enabled: true })
 const vzTesting = ref('')
 const vzTestResult = ref(null)
+const vzSaving = ref(false)
 
 async function loadInstances() {
   try { vzInstances.value = await apiFetch('/api/admin/virtualizors') }
@@ -28,24 +29,24 @@ function startVzEdit(inst) {
 }
 function cancelVzEdit() { editingVz.value = null }
 async function saveVz() {
-  err.value = ''; flash.value = ''
+  vzSaving.value = true
   try {
     if (editingVz.value === 'new') {
       const r = await apiFetch('/api/admin/virtualizors', { method: 'POST', body: vzDraft.value })
-      flash.value = t('admin.hubs.vzAdded', { id: r.id })
+      message.success(t('admin.hubs.vzAdded', { id: r.id }))
     } else {
       await apiFetch(`/api/admin/virtualizors/${editingVz.value}`, { method: 'PATCH', body: vzDraft.value })
-      flash.value = t('admin.hubs.vzUpdated')
+      message.success(t('admin.hubs.vzUpdated'))
     }
-    setTimeout(() => flash.value = '', 3500)
     cancelVzEdit()
     await loadInstances()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
+  finally { vzSaving.value = false }
 }
 async function deleteVz(id) {
-  if (!confirm(t('admin.hubs.vzConfirmDel'))) return
+  if (!(await confirmAsync({ title: t('admin.hubs.vzConfirmDel'), danger: true }))) return
   try { await apiFetch(`/api/admin/virtualizors/${id}`, { method: 'DELETE' }); await loadInstances() }
-  catch (e) { err.value = e.message }
+  catch (e) { message.error(e.message) }
 }
 async function testVz(id) {
   vzTesting.value = id; vzTestResult.value = null
@@ -59,20 +60,12 @@ const vzServers = ref(null)
 const vzPlans = ref(null)
 const vzIpPools = ref(null)
 const vzTemplates = ref(null)
-async function loadVzData(kind) {
-  err.value = ''
-  try {
-    const r = await apiFetch(`/api/admin/virtualizor/${kind}`)
-    if (kind === 'servers') vzServers.value = r
-    if (kind === 'plans') vzPlans.value = r
-    if (kind === 'ip-pools') vzIpPools.value = r
-    if (kind === 'templates') vzTemplates.value = r
-  } catch (e) { err.value = `${kind}: ${e.message}` }
-}
+const vzDataBusy = ref('')             // `${instId}:${kind}` while in-flight
 
 // ── Hub plans CRUD ────────────────────────────────────────────────────────
 const hubPlans = ref([])
 const editingPlan = ref(null)
+const planSaving = ref(false)
 const draftPlan = reactive(newPlanDraft())
 function newPlanDraft() {
   return {
@@ -170,33 +163,41 @@ function startEdit(plan) {
   // operator opens an existing plan (watcher only fires on instanceId change).
   if (draftPlan.vz?.instanceId) loadVzCatalog(draftPlan.vz.instanceId)
 }
+function reloadVzCatalog() {
+  const instId = draftPlan.vz.instanceId
+  vzCatalogCache[instId] = { fetched: false }
+  loadVzCatalog(instId)
+}
 function cancelEdit() { editingPlan.value = null; Object.assign(draftPlan, newPlanDraft()) }
 async function savePlan() {
-  err.value = ''
+  planSaving.value = true
   try {
     if (editingPlan.value === 'new') {
       await apiFetch('/api/admin/hub-plans', { method: 'POST', body: draftPlan })
-      flash.value = t('admin.hubs.planCreated')
+      message.success(t('admin.hubs.planCreated'))
     } else {
       await apiFetch(`/api/admin/hub-plans/${editingPlan.value}`, { method: 'PATCH', body: draftPlan })
-      flash.value = t('admin.hubs.planUpdated')
+      message.success(t('admin.hubs.planUpdated'))
     }
-    setTimeout(() => flash.value = '', 3000)
     cancelEdit()
     await loadHubPlans()
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
+  finally { planSaving.value = false }
 }
 async function deletePlan(id) {
-  if (!confirm(t('admin.hubs.planConfirmDel'))) return
+  if (!(await confirmAsync({ title: t('admin.hubs.planConfirmDel'), danger: true }))) return
   try { await apiFetch(`/api/admin/hub-plans/${id}`, { method: 'DELETE' }); await loadHubPlans() }
-  catch (e) { err.value = e.message }
+  catch (e) { message.error(e.message) }
 }
 
 // ── Provisioned hubs (admin overview) ─────────────────────────────────────
 const provisionedHubs = ref([])
+const hubsLoading = ref(false)
 async function loadHubs() {
+  hubsLoading.value = true
   try { provisionedHubs.value = await apiFetch('/api/admin/hubs') }
   catch (e) { err.value = e.message }
+  finally { hubsLoading.value = false }
 }
 
 // ── Remote actions on a hub VM (reboot, diagnose, drain, …) ──────────────
@@ -206,53 +207,106 @@ const actionResult = ref(null)         // { node, action, output } shown in pane
 const cmdHistoryNode = ref(null)       // nodeId whose history dialog is open
 const cmdHistoryData = ref({ pending: [], history: [] })
 
-async function runAction(h, action, opts = {}) {
+const DANGER_ACTIONS = ['reboot', 'power-off']
+
+async function runAction(hub, action, opts = {}) {
   const { confirmMsg, body } = typeof opts === 'string' ? { confirmMsg: opts } : opts
-  if (confirmMsg && !confirm(confirmMsg)) return
-  const key = `${h.id}:${action}`
+  if (confirmMsg && !(await confirmAsync({ title: confirmMsg, danger: DANGER_ACTIONS.includes(action) }))) return
+  const key = `${hub.id}:${action}`
   if (actionBusy.value) return
-  actionBusy.value = key; err.value = ''; flash.value = ''
+  actionBusy.value = key
   try {
-    const r = await apiFetch(`/api/nodes/${h.id}/action/${action}`, { method: 'POST', body })
+    const r = await apiFetch(`/api/nodes/${hub.id}/action/${action}`, { method: 'POST', body })
     const verdict = r.ok === false ? 'FAILED' : (r.via === 'agent-channel' ? 'QUEUED' : 'OK')
-    flash.value = `[${h.name}] ${action} → ${verdict}${r.via ? ' (' + r.via + ')' : ''}`
-    setTimeout(() => flash.value = '', 4500)
-    if (r.output) actionResult.value = { node: h.name, action, output: r.output, ok: r.ok }
-    if (r.oneLiner) actionResult.value = { node: h.name, action, output: `Run this on the box:\n  ${r.oneLiner}\n\n${r.hint || ''}`, ok: true }
+    const text = `[${hub.name}] ${action} → ${verdict}${r.via ? ' (' + r.via + ')' : ''}`
+    if (r.ok === false) message.error(text)
+    else message.success(text)
+    if (r.output) actionResult.value = { node: hub.name, action, output: r.output, ok: r.ok }
+    if (r.oneLiner) actionResult.value = { node: hub.name, action, output: `Run this on the box:\n  ${r.oneLiner}\n\n${r.hint || ''}`, ok: true }
     if (!['diagnose', 'tail-logs'].includes(action)) await loadHubs()
-  } catch (e) { err.value = `${action} failed: ${e.message}` }
+  } catch (e) { message.error(`${action} failed: ${e.message}`) }
   finally { actionBusy.value = '' }
 }
 
-async function installPackage(h) {
-  const pkg = prompt(t('admin.hubs.actInstallPkgPrompt', { name: h.name, wl: PACKAGE_WHITELIST.join(', ') }), 'htop')
+async function installPackage(hub) {
+  const wl = PACKAGE_WHITELIST.join(', ')
+  const pkg = await promptAsync({
+    // The i18n string carries a line break before the whitelist.
+    title: h('span', { style: { whiteSpace: 'pre-line' } }, t('admin.hubs.actInstallPkgPrompt', { name: hub.name, wl })),
+    defaultValue: 'htop'
+  })
   if (!pkg) return
   if (!PACKAGE_WHITELIST.includes(pkg.trim())) {
-    err.value = t('admin.hubs.actInstallPkgNotWl', { pkg, wl: PACKAGE_WHITELIST.join(', ') })
+    message.error(t('admin.hubs.actInstallPkgNotWl', { pkg, wl }))
     return
   }
-  await runAction(h, 'install-package', { body: { package: pkg.trim() } })
+  await runAction(hub, 'install-package', { body: { package: pkg.trim() } })
 }
 
-async function openCmdHistory(h) {
-  cmdHistoryNode.value = h.id
-  try { cmdHistoryData.value = await apiFetch(`/api/nodes/${h.id}/commands`) }
-  catch (e) { err.value = e.message; cmdHistoryData.value = { pending: [], history: [] } }
+async function openCmdHistory(hub) {
+  cmdHistoryNode.value = hub.id
+  try { cmdHistoryData.value = await apiFetch(`/api/nodes/${hub.id}/commands`) }
+  catch (e) { message.error(e.message); cmdHistoryData.value = { pending: [], history: [] } }
 }
 function closeCmdHistory() { cmdHistoryNode.value = null }
 function closeActionResult() { actionResult.value = null }
 
 // Per-instance passthrough loader (replaces legacy single-instance versions)
 async function loadVzDataForInst(instId, kind) {
-  err.value = ''
+  vzDataBusy.value = `${instId}:${kind}`
   try {
     const r = await apiFetch(`/api/admin/virtualizors/${instId}/${kind}`)
     if (kind === 'servers') vzServers.value = r
     if (kind === 'plans') vzPlans.value = r
     if (kind === 'ip-pools') vzIpPools.value = r
     if (kind === 'templates') vzTemplates.value = r
-  } catch (e) { err.value = `${kind}: ${e.message}` }
+  } catch (e) { message.error(`${kind}: ${e.message}`) }
+  finally { vzDataBusy.value = '' }
 }
+
+// ── Table columns / select options ───────────────────────────────────────
+const vzColumns = computed(() => [
+  { title: t('admin.hubs.vzColInst'), key: 'inst' },
+  { title: t('admin.hubs.vzColZone'), key: 'zone', width: 120 },
+  { title: t('admin.hubs.vzColPanelUrl'), key: 'panelUrl', ellipsis: true },
+  { title: t('admin.hubs.vzColLastTest'), key: 'lastTest', width: 140 },
+  { title: t('admin.hubs.colStatus'), key: 'status', width: 100 },
+  { title: '', key: 'actions', width: 210, align: 'right' }
+])
+const planColumns = computed(() => [
+  { title: t('admin.hubs.colPlan'), key: 'plan' },
+  { title: t('admin.hubs.colRegionFam'), key: 'region', width: 150 },
+  { title: t('admin.hubs.colSpecs'), key: 'specs', width: 210 },
+  { title: t('admin.hubs.colHour'), key: 'price', width: 110, align: 'right' },
+  { title: t('admin.hubs.colStatus'), key: 'status', width: 110 },
+  { title: '', key: 'actions', width: 120, align: 'right' }
+])
+const familyOptions = computed(() => [
+  { value: 'ipv4', label: t('admin.hubs.planFamilyV4') },
+  { value: 'ipv6', label: t('admin.hubs.planFamilyV6') }
+])
+const virtOptions = [
+  { value: 'kvm', label: 'KVM' }, { value: 'openvz', label: 'OpenVZ' }, { value: 'lxc', label: 'LXC' }, { value: 'proxmox-k', label: 'Proxmox KVM' }
+]
+const instanceOptions = computed(() => [
+  { value: '', label: t('admin.hubs.planVzInstPh') },
+  ...vzInstances.value.map((v) => ({ value: v.id, label: `${v.label} — ${v.zone} (${v.panelUrl})` }))
+])
+// Live catalogue dropdowns; the first entry maps to null / '' like the old
+// "(chọn …)" placeholder <option>. Numeric ids stay numbers, pools stay strings.
+const catalogInst = computed(() => draftPlan.vz.instanceId)
+const serverOptions = computed(() => (catalogInst.value ? vzServerOptions(catalogInst.value) : []))
+const planOptions = computed(() => (catalogInst.value ? vzPlanOptions(catalogInst.value) : []))
+const osOptions = computed(() => (catalogInst.value ? vzOsOptions(catalogInst.value) : []))
+const ip4PoolOptions = computed(() => (catalogInst.value ? vzIpPoolOptions(catalogInst.value, 'v4') : []))
+const ip6PoolOptions = computed(() => (catalogInst.value ? vzIpPoolOptions(catalogInst.value, 'v6') : []))
+const numOpts = (list, ph) => [{ value: null, label: ph }, ...list.map((o) => ({ value: Number(o.id), label: o.label }))]
+const strOpts = (list, ph) => [{ value: '', label: ph }, ...list.map((o) => ({ value: String(o.id), label: o.label }))]
+
+function hubStatus(s) { return s === 'online' ? 'active' : (s === 'provisioning' ? 'pending' : 'expired') }
+function fmtStamp(s) { return s?.slice(0, 16).replace('T', ' ') }
+function prettyJson(v) { return JSON.stringify(v, null, 2) }
+const vzDataOutputs = computed(() => [vzServers.value, vzPlans.value, vzIpPools.value, vzTemplates.value].filter(Boolean))
 
 onMounted(async () => {
   await loadInstances()
@@ -260,474 +314,495 @@ onMounted(async () => {
   await loadHubs()
 })
 </script>
-
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">{{ t('admin.hubs.eyebrow') }}</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="loadHubs"><RefreshCw :size="13" /></button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.hubs.eyebrow') }}</a-typography-text>
+      <a-button shape="circle" :loading="hubsLoading" @click="loadHubs">
+        <template #icon><ReloadOutlined /></template>
+      </a-button>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color:var(--green); font-size:13px">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <div class="settings-tabs">
-      <button :class="{ active: tab === 'config' }" @click="tab = 'config'"><span class="t-name">{{ t('admin.hubs.tabVz') }}</span><small class="t-desc">{{ t('admin.hubs.tabVzDesc') }}</small></button>
-      <button :class="{ active: tab === 'plans' }" @click="tab = 'plans'"><span class="t-name">{{ t('admin.hubs.tabPlans') }}</span><small class="t-desc">{{ t('admin.hubs.tabPlansDesc') }}</small></button>
-      <button :class="{ active: tab === 'hubs' }" @click="tab = 'hubs'"><span class="t-name">{{ t('admin.hubs.tabVms') }}</span><small class="t-desc">{{ t('admin.hubs.tabVmsDesc', { n: provisionedHubs.length }) }}</small></button>
-      <button :class="{ active: tab === 'vzdata' }" @click="tab = 'vzdata'"><span class="t-name">{{ t('admin.hubs.tabData') }}</span><small class="t-desc">{{ t('admin.hubs.tabDataDesc') }}</small></button>
-    </div>
+    <a-tabs v-model:active-key="tab" class="hub-tabs">
+      <!-- ── Virtualizor instances (multi-zone) ─────────────────────────── -->
+      <a-tab-pane key="config">
+        <template #tab>
+          <span class="tab-label">{{ t('admin.hubs.tabVz') }}<small>{{ t('admin.hubs.tabVzDesc') }}</small></span>
+        </template>
+        <a-card :body-style="{ paddingTop: '12px' }">
+          <template #title><KeyOutlined /> {{ t('admin.hubs.vzTitle', { n: vzInstances.length }) }}</template>
+          <template #extra>
+            <a-button type="primary" @click="startVzEdit(null)">
+              <template #icon><PlusOutlined /></template>
+              {{ t('admin.hubs.vzAdd') }}
+            </a-button>
+          </template>
+          <a-typography-paragraph type="secondary" class="hint">
+            <span v-html="t('admin.hubs.vzHint')"></span>
+          </a-typography-paragraph>
 
-    <!-- ── Virtualizor instances (multi-zone) ─────────────────────────────── -->
-    <section v-if="tab === 'config'" class="surface" style="padding:16px">
-      <div class="section-head">
-        <h2><KeyRound :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.vzTitle', { n: vzInstances.length }) }}</h2>
-        <button class="primary-action" type="button" style="margin-left:auto" @click="startVzEdit(null)">
-          <Plus :size="13" /> {{ t('admin.hubs.vzAdd') }}
-        </button>
-      </div>
-      <p class="hint" v-html="t('admin.hubs.vzHint')"></p>
-
-      <div v-if="editingVz" class="surface" style="padding:14px; background:rgba(34,197,94,0.04); border-color:rgba(34,197,94,0.25); margin:10px 0">
-        <h3 style="margin:0 0 10px; font-size:14px">{{ editingVz === 'new' ? t('admin.hubs.vzEditNew') : t('admin.hubs.vzEditExisting', { id: editingVz }) }}</h3>
-        <div class="form-grid form-2col">
-          <label class="field"><span>{{ t('admin.hubs.vzLabel') }}</span><input v-model="vzDraft.label" type="text" :placeholder="t('admin.hubs.vzLabelPh')" /></label>
-          <label class="field"><span>{{ t('admin.hubs.vzZone') }}</span><input v-model="vzDraft.zone" type="text" :placeholder="t('admin.hubs.vzZonePh')" /></label>
-          <label class="field" style="grid-column:span 2"><span>{{ t('admin.hubs.vzPanelUrl') }}</span><input v-model="vzDraft.panelUrl" type="url" placeholder="https://10.10.10.2:4085" /></label>
-          <label class="field"><span>{{ t('admin.hubs.vzApiKey') }}</span><input v-model="vzDraft.apiKey" type="text" :placeholder="editingVz === 'new' ? t('admin.hubs.vzApiKeyPhNew') : t('admin.hubs.vzApiKeyPhKeep')" /></label>
-          <label class="field"><span>{{ t('admin.hubs.vzApiPass') }}</span><input v-model="vzDraft.apiPass" type="password" :placeholder="editingVz === 'new' ? t('admin.hubs.vzApiPassPhNew') : t('admin.hubs.vzApiKeyPhKeep')" /></label>
-          <label class="field-checkbox"><input v-model="vzDraft.insecureTls" type="checkbox" /><span>{{ t('admin.hubs.vzInsecureTls') }}</span></label>
-          <label class="field-checkbox"><input v-model="vzDraft.enabled" type="checkbox" /><span>{{ t('admin.hubs.vzEnabled') }}</span></label>
-        </div>
-        <div style="display:flex; gap:8px; margin-top:12px">
-          <button class="primary-action" type="button" @click="saveVz">{{ editingVz === 'new' ? t('admin.hubs.vzBtnAdd') : t('admin.hubs.vzBtnSave') }}</button>
-          <button class="ghost-button" type="button" @click="cancelVzEdit">{{ t('admin.hubs.vzBtnCancel') }}</button>
-        </div>
-      </div>
-
-      <div v-if="!vzInstances.length && !editingVz" class="empty-text" style="text-align:left; padding:18px 0" v-html="t('admin.hubs.vzEmpty')">
-      </div>
-
-      <div v-else class="data-table">
-        <div class="table-head" style="grid-template-columns: 1fr 1fr 1.4fr 0.8fr 0.8fr 200px">
-          <span>{{ t('admin.hubs.vzColInst') }}</span><span>{{ t('admin.hubs.vzColZone') }}</span><span>{{ t('admin.hubs.vzColPanelUrl') }}</span><span>{{ t('admin.hubs.vzColLastTest') }}</span><span>{{ t('admin.hubs.colStatus') }}</span><span></span>
-        </div>
-        <div v-for="v in vzInstances" :key="v.id" class="table-row" style="grid-template-columns: 1fr 1fr 1.4fr 0.8fr 0.8fr 200px">
-          <div>
-            <strong>{{ v.label }}</strong>
-            <small style="display:block; color:var(--muted)">{{ v.id }}</small>
-          </div>
-          <span class="cell-mono">{{ v.zone || '—' }}</span>
-          <span class="cell-mono" style="font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ v.panelUrl }}</span>
-          <span class="cell-mono" style="font-size:11px; color:var(--muted)">
-            <template v-if="v.lastTestedAt">
-              {{ v.lastTestedAt.slice(11, 19) }}
-              <span :style="{ color: v.lastTestOk ? 'var(--green)' : 'var(--red)' }">{{ v.lastTestOk ? 'OK' : 'FAIL' }}</span>
-            </template>
-            <template v-else>—</template>
-          </span>
-          <span :class="['status-pill', v.enabled ? 'active' : 'expired']">{{ v.enabled ? 'on' : 'off' }}</span>
-          <span style="display:inline-flex; gap:4px">
-            <button class="ghost-button" type="button" :disabled="vzTesting === v.id" @click="testVz(v.id)">
-              <ShieldCheck :size="11" /> {{ vzTesting === v.id ? t('admin.hubs.vzTesting') : t('admin.hubs.vzBtnTest') }}
-            </button>
-            <button class="ghost-button" type="button" @click="startVzEdit(v)">{{ t('admin.hubs.vzBtnEdit') }}</button>
-            <button class="ghost-button" type="button" @click="deleteVz(v.id)"><Trash2 :size="11" /></button>
-          </span>
-        </div>
-      </div>
-
-      <div v-if="vzTestResult" :class="['test-result', vzTestResult.ok ? 'ok' : 'err']" style="margin-top:12px">
-        <template v-if="vzTestResult.ok"><Check :size="14" /> {{ t('admin.hubs.vzTestOk') }}</template>
-        <template v-else><AlertTriangle :size="14" /> {{ vzTestResult.error || t('admin.hubs.vzTestErr') }}</template>
-      </div>
-    </section>
-
-    <!-- ── Plans tab ─────────────────────────────────────────────────────── -->
-    <section v-if="tab === 'plans'" class="surface" style="padding:16px">
-      <div class="section-head">
-        <h2><Cloud :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.plansTitle', { n: hubPlans.length }) }}</h2>
-        <button class="primary-action" type="button" style="margin-left:auto" @click="startEdit(null)">
-          <Plus :size="13" /> {{ t('admin.hubs.planNew') }}
-        </button>
-      </div>
-
-      <div v-if="editingPlan" class="surface" style="padding:14px; background:rgba(34,197,94,0.04); border-color:rgba(34,197,94,0.25); margin:10px 0">
-        <h3 style="margin:0 0 10px; font-size:14px">{{ editingPlan === 'new' ? t('admin.hubs.planEditNew') : t('admin.hubs.planEditExisting', { id: editingPlan }) }}</h3>
-        <div class="form-grid form-2col">
-          <label class="field"><span>{{ t('admin.hubs.planName') }}</span><input v-model="draftPlan.name" type="text" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planRegion') }}</span><input v-model="draftPlan.region" type="text" :placeholder="t('admin.hubs.planRegionPh')" /></label>
-          <label class="field" style="grid-column:span 2"><span>{{ t('admin.hubs.planDesc') }}</span><input v-model="draftPlan.description" type="text" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planFamily') }}</span>
-            <select v-model="draftPlan.family">
-              <option value="ipv4">{{ t('admin.hubs.planFamilyV4') }}</option>
-              <option value="ipv6">{{ t('admin.hubs.planFamilyV6') }}</option>
-            </select>
-          </label>
-          <label class="field"><span>{{ t('admin.hubs.planHourly', { currency: draftPlan.currency }) }}</span><input v-model.number="draftPlan.hourlyPrice" type="number" min="0" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planMinHours') }}</span><input v-model.number="draftPlan.minHours" type="number" min="1" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planMaxHours') }}</span><input v-model.number="draftPlan.maxHours" type="number" min="1" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planMaxQty') }}</span><input v-model.number="draftPlan.maxQuantity" type="number" min="0" /></label>
-          <label class="field-checkbox" style="grid-column:span 2"><input v-model="draftPlan.enabled" type="checkbox" /><span>{{ t('admin.hubs.planEnabled') }}</span></label>
-        </div>
-
-        <h4 class="section-h4">{{ t('admin.hubs.planSpecs') }}</h4>
-        <div class="form-grid form-3col">
-          <label class="field"><span>{{ t('admin.hubs.planVcpu') }}</span><input v-model.number="draftPlan.specs.cpu" type="number" min="1" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planRam') }}</span><input v-model.number="draftPlan.specs.ramGB" type="number" min="0" step="0.5" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planDisk') }}</span><input v-model.number="draftPlan.specs.diskGB" type="number" min="0" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planBw') }}</span><input v-model.number="draftPlan.specs.bandwidthGB" type="number" min="0" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planIpv4Count') }}</span><input v-model.number="draftPlan.specs.ipv4Count" type="number" min="0" /></label>
-          <label class="field"><span>{{ t('admin.hubs.planIpv6Range') }}</span><input v-model="draftPlan.specs.ipv6Range" type="text" :placeholder="t('admin.hubs.planIpv6RangePh')" /></label>
-        </div>
-
-        <h4 class="section-h4">
-          {{ t('admin.hubs.planVzMap') }}
-          <small style="color:var(--muted); font-weight:400">{{ t('admin.hubs.planVzMapNote') }}</small>
-          <button
-            v-if="draftPlan.vz.instanceId"
-            type="button" class="ghost-button"
-            style="margin-left:auto; padding:3px 10px; font-size:11.5px"
-            :disabled="vzCatalogLoading"
-            @click="vzCatalogCache[draftPlan.vz.instanceId] = { fetched: false }; loadVzCatalog(draftPlan.vz.instanceId)"
-            :title="t('admin.hubs.planVzReload')"
+          <a-table
+            :columns="vzColumns"
+            :data-source="vzInstances"
+            :pagination="false"
+            row-key="id"
+            size="middle"
+            :scroll="{ x: 860 }"
           >
-            <RefreshCw :size="11" /> {{ vzCatalogLoading ? t('admin.hubs.planVzReloading') : t('admin.hubs.planVzReloadBtn') }}
-          </button>
-        </h4>
-        <div class="form-grid form-3col">
-          <label class="field" style="grid-column: span 3">
-            <span>{{ t('admin.hubs.planVzInst') }}</span>
-            <select v-model="draftPlan.vz.instanceId">
-              <option value="">{{ t('admin.hubs.planVzInstPh') }}</option>
-              <option v-for="v in vzInstances" :key="v.id" :value="v.id">{{ v.label }} — {{ v.zone }} ({{ v.panelUrl }})</option>
-            </select>
-          </label>
-          <label class="field"><span>{{ t('admin.hubs.planVzVirt') }}</span>
-            <select v-model="draftPlan.vz.virt">
-              <option value="kvm">KVM</option><option value="openvz">OpenVZ</option><option value="lxc">LXC</option><option value="proxmox-k">Proxmox KVM</option>
-            </select>
-          </label>
+            <template #emptyText>
+              <a-empty>
+                <template #description><span v-html="t('admin.hubs.vzEmpty')"></span></template>
+              </a-empty>
+            </template>
+            <template #bodyCell="{ column, record: v }">
+              <template v-if="column.key === 'inst'">
+                <a-typography-text strong>{{ v.label }}</a-typography-text>
+                <div><a-typography-text type="secondary" class="mono small">{{ v.id }}</a-typography-text></div>
+              </template>
+              <template v-else-if="column.key === 'zone'"><span class="mono">{{ v.zone || '—' }}</span></template>
+              <template v-else-if="column.key === 'panelUrl'">
+                <a-tooltip :title="v.panelUrl"><span class="mono small">{{ v.panelUrl }}</span></a-tooltip>
+              </template>
+              <template v-else-if="column.key === 'lastTest'">
+                <template v-if="v.lastTestedAt">
+                  <a-typography-text type="secondary" class="mono small">{{ v.lastTestedAt.slice(11, 19) }}</a-typography-text>
+                  <a-tag :color="v.lastTestOk ? 'success' : 'error'" :bordered="false" class="test-tag">{{ v.lastTestOk ? 'OK' : 'FAIL' }}</a-tag>
+                </template>
+                <a-typography-text v-else type="secondary">—</a-typography-text>
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <StatusTag :status="v.enabled ? 'active' : 'expired'" :label="v.enabled ? 'on' : 'off'" />
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <a-space :size="4">
+                  <a-button size="small" :loading="vzTesting === v.id" @click="testVz(v.id)">
+                    <template #icon><SafetyCertificateOutlined /></template>
+                    {{ vzTesting === v.id ? t('admin.hubs.vzTesting') : t('admin.hubs.vzBtnTest') }}
+                  </a-button>
+                  <a-button size="small" @click="startVzEdit(v)">{{ t('admin.hubs.vzBtnEdit') }}</a-button>
+                  <a-button size="small" danger @click="deleteVz(v.id)">
+                    <template #icon><DeleteOutlined /></template>
+                  </a-button>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
+
+          <a-alert
+            v-if="vzTestResult"
+            class="test-result"
+            show-icon
+            closable
+            :type="vzTestResult.ok ? 'success' : 'error'"
+            :message="vzTestResult.ok ? t('admin.hubs.vzTestOk') : (vzTestResult.error || t('admin.hubs.vzTestErr'))"
+            @close="vzTestResult = null"
+          />
+        </a-card>
+      </a-tab-pane>
+
+      <!-- ── Plans tab ──────────────────────────────────────────────────── -->
+      <a-tab-pane key="plans">
+        <template #tab>
+          <span class="tab-label">{{ t('admin.hubs.tabPlans') }}<small>{{ t('admin.hubs.tabPlansDesc') }}</small></span>
+        </template>
+        <a-card :body-style="{ padding: 0 }">
+          <template #title><CloudOutlined /> {{ t('admin.hubs.plansTitle', { n: hubPlans.length }) }}</template>
+          <template #extra>
+            <a-button type="primary" @click="startEdit(null)">
+              <template #icon><PlusOutlined /></template>
+              {{ t('admin.hubs.planNew') }}
+            </a-button>
+          </template>
+          <a-table
+            :columns="planColumns"
+            :data-source="hubPlans"
+            :pagination="false"
+            row-key="id"
+            size="middle"
+            :scroll="{ x: 860 }"
+            :locale="{ emptyText: t('admin.hubs.plansEmpty') }"
+          >
+            <template #bodyCell="{ column, record: p }">
+              <template v-if="column.key === 'plan'">
+                <a-typography-text strong>{{ p.name }}</a-typography-text>
+                <div><a-typography-text type="secondary" class="mono small">{{ p.id }} · vz#{{ p.vz?.planId || '—' }}</a-typography-text></div>
+              </template>
+              <template v-else-if="column.key === 'region'">{{ p.region }} · {{ p.family }}</template>
+              <template v-else-if="column.key === 'specs'">
+                <span class="mono small">{{ p.specs.cpu }}vCPU · {{ p.specs.ramGB }}GB · {{ p.specs.diskGB }}GB</span>
+              </template>
+              <template v-else-if="column.key === 'price'">
+                <span class="mono">{{ Number(p.hourlyPrice).toLocaleString() }}</span>
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <StatusTag :status="p.enabled ? 'active' : 'expired'" :label="p.enabled ? t('admin.hubs.planEnabledTag') : t('admin.hubs.planDisabledTag')" />
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <a-space :size="4">
+                  <a-button size="small" @click="startEdit(p)">{{ t('admin.hubs.vzBtnEdit') }}</a-button>
+                  <a-button size="small" danger @click="deletePlan(p.id)">
+                    <template #icon><DeleteOutlined /></template>
+                  </a-button>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
+        </a-card>
+      </a-tab-pane>
+
+      <!-- ── Provisioned VMs ────────────────────────────────────────────── -->
+      <a-tab-pane key="hubs">
+        <template #tab>
+          <span class="tab-label">{{ t('admin.hubs.tabVms') }}<small>{{ t('admin.hubs.tabVmsDesc', { n: provisionedHubs.length }) }}</small></span>
+        </template>
+        <a-card>
+          <template #title><CloudServerOutlined /> {{ t('admin.hubs.vmsTitle', { n: provisionedHubs.length }) }}</template>
+          <template #extra>
+            <a-button :loading="hubsLoading" @click="loadHubs">
+              <template #icon><ReloadOutlined /></template>
+              {{ t('admin.hubs.vmsRefresh') }}
+            </a-button>
+          </template>
+          <a-empty v-if="!provisionedHubs.length" :description="t('admin.hubs.vmsEmpty')" />
+          <a-flex v-else vertical gap="middle">
+            <a-card v-for="hub in provisionedHubs" :key="hub.id" size="small" type="inner">
+              <template #title>
+                <span class="mono">{{ hub.name }}</span>
+                <div>
+                  <a-typography-text type="secondary" class="small">
+                    vpsid=<span class="mono">{{ hub.vpsid }}</span> ·
+                  </a-typography-text>
+                  <a-typography-text :copyable="{ text: hub.host }" class="mono small">{{ hub.host }}</a-typography-text>
+                </div>
+              </template>
+              <template #extra><StatusTag :status="hubStatus(hub.status)" :label="hub.status" /></template>
+
+              <a-descriptions size="small" :column="{ xs: 1, sm: 2, lg: 4 }">
+                <a-descriptions-item :label="t('admin.hubs.vmOwner')">{{ hub.ownerEmail }}</a-descriptions-item>
+                <a-descriptions-item :label="t('admin.hubs.vmPlan')">{{ hub.planName || hub.planId }}</a-descriptions-item>
+                <a-descriptions-item :label="t('admin.hubs.vmProvisioned')"><span class="mono">{{ fmtStamp(hub.provisionedAt) }}</span></a-descriptions-item>
+                <a-descriptions-item :label="t('admin.hubs.vmExpires')"><span class="mono">{{ fmtStamp(hub.expiresAt) }}</span></a-descriptions-item>
+              </a-descriptions>
+
+              <a-divider dashed class="act-divider" />
+              <a-space wrap :size="6">
+                <a-button size="small" :loading="actionBusy === hub.id + ':diagnose'" @click="runAction(hub, 'diagnose')">
+                  <template #icon><MedicineBoxOutlined /></template>{{ t('admin.hubs.actDiagnose') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':tail-logs'" @click="runAction(hub, 'tail-logs')">
+                  <template #icon><CodeOutlined /></template>{{ t('admin.hubs.actLogs') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':refresh-network'" @click="runAction(hub, 'refresh-network')">
+                  <template #icon><ReloadOutlined /></template>{{ t('admin.hubs.actRefreshIp') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':restart-agent'" @click="runAction(hub, 'restart-agent', t('admin.hubs.actRestartAgentConfirm', { name: hub.name }))">
+                  <template #icon><RedoOutlined /></template>{{ t('admin.hubs.actRestartAgent') }}
+                </a-button>
+                <a-button size="small" danger ghost :loading="actionBusy === hub.id + ':reboot'" @click="runAction(hub, 'reboot', t('admin.hubs.actRebootConfirm', { name: hub.name }))">
+                  <template #icon><ThunderboltOutlined /></template>{{ t('admin.hubs.actReboot') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':power-on'" @click="runAction(hub, 'power-on')">
+                  <template #icon><PoweroffOutlined /></template>{{ t('admin.hubs.actPowerOn') }}
+                </a-button>
+                <a-button size="small" danger :loading="actionBusy === hub.id + ':power-off'" @click="runAction(hub, 'power-off', t('admin.hubs.actPowerOffConfirm', { name: hub.name }))">
+                  <template #icon><PoweroffOutlined /></template>{{ t('admin.hubs.actPowerOff') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':drain'" @click="runAction(hub, 'drain', t('admin.hubs.actDrainConfirm', { name: hub.name }))">
+                  <template #icon><WarningOutlined /></template>{{ t('admin.hubs.actDrain') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':upgrade'" @click="runAction(hub, 'upgrade', t('admin.hubs.actUpgradeConfirm', { name: hub.name }))">
+                  <template #icon><CloudUploadOutlined /></template>{{ t('admin.hubs.actUpgrade') }}
+                </a-button>
+                <a-button size="small" :loading="actionBusy === hub.id + ':install-package'" @click="installPackage(hub)">
+                  <template #icon><AppstoreAddOutlined /></template>{{ t('admin.hubs.actInstallPkg') }}
+                </a-button>
+                <a-button size="small" @click="openCmdHistory(hub)">
+                  <template #icon><HistoryOutlined /></template>{{ t('admin.hubs.actCmdHistory') }}
+                </a-button>
+              </a-space>
+            </a-card>
+          </a-flex>
+        </a-card>
+      </a-tab-pane>
+
+      <!-- ── Virtualizor data tab ───────────────────────────────────────── -->
+      <a-tab-pane key="vzdata">
+        <template #tab>
+          <span class="tab-label">{{ t('admin.hubs.tabData') }}<small>{{ t('admin.hubs.tabDataDesc') }}</small></span>
+        </template>
+        <a-card :body-style="{ paddingTop: '12px' }">
+          <template #title><DatabaseOutlined /> {{ t('admin.hubs.vzDataTitle') }}</template>
+          <a-typography-paragraph type="secondary" class="hint">{{ t('admin.hubs.vzDataHint') }}</a-typography-paragraph>
+          <a-empty v-if="!vzInstances.length">
+            <template #description><span v-html="t('admin.hubs.vzDataEmpty')"></span></template>
+          </a-empty>
+          <a-flex vertical gap="small">
+            <a-card v-for="v in vzInstances" :key="v.id" size="small" type="inner">
+              <template #title>
+                {{ v.label }}
+                <a-typography-text type="secondary" class="mono small"> · {{ v.zone }} · {{ v.id }}</a-typography-text>
+              </template>
+              <a-space wrap :size="6">
+                <a-button size="small" :loading="vzDataBusy === `${v.id}:servers`" @click="loadVzDataForInst(v.id, 'servers')">{{ t('admin.hubs.vzListServers') }}</a-button>
+                <a-button size="small" :loading="vzDataBusy === `${v.id}:plans`" @click="loadVzDataForInst(v.id, 'plans')">{{ t('admin.hubs.vzListPlans') }}</a-button>
+                <a-button size="small" :loading="vzDataBusy === `${v.id}:ip-pools`" @click="loadVzDataForInst(v.id, 'ip-pools')">{{ t('admin.hubs.vzListIpPools') }}</a-button>
+                <a-button size="small" :loading="vzDataBusy === `${v.id}:templates`" @click="loadVzDataForInst(v.id, 'templates')">{{ t('admin.hubs.vzListOsTpl') }}</a-button>
+              </a-space>
+            </a-card>
+            <pre v-for="(out, i) in vzDataOutputs" :key="i" class="mono code-block">{{ prettyJson(out) }}</pre>
+          </a-flex>
+        </a-card>
+      </a-tab-pane>
+    </a-tabs>
+
+    <!-- Virtualizor instance editor -->
+    <a-modal
+      :open="!!editingVz"
+      :title="editingVz === 'new' ? t('admin.hubs.vzEditNew') : t('admin.hubs.vzEditExisting', { id: editingVz })"
+      :ok-text="editingVz === 'new' ? t('admin.hubs.vzBtnAdd') : t('admin.hubs.vzBtnSave')"
+      :cancel-text="t('admin.hubs.vzBtnCancel')"
+      :confirm-loading="vzSaving"
+      :width="640"
+      destroy-on-close
+      @ok="saveVz"
+      @cancel="cancelVzEdit"
+    >
+      <a-form :model="vzDraft" layout="vertical" class="modal-form">
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.vzLabel')">
+              <a-input v-model:value="vzDraft.label" :placeholder="t('admin.hubs.vzLabelPh')" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.vzZone')">
+              <a-input v-model:value="vzDraft.zone" class="mono" :placeholder="t('admin.hubs.vzZonePh')" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="24">
+            <a-form-item :label="t('admin.hubs.vzPanelUrl')">
+              <a-input v-model:value="vzDraft.panelUrl" type="url" class="mono" placeholder="https://10.10.10.2:4085" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.vzApiKey')">
+              <a-input v-model:value="vzDraft.apiKey" class="mono" :placeholder="editingVz === 'new' ? t('admin.hubs.vzApiKeyPhNew') : t('admin.hubs.vzApiKeyPhKeep')" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.vzApiPass')">
+              <a-input-password v-model:value="vzDraft.apiPass" class="mono" :placeholder="editingVz === 'new' ? t('admin.hubs.vzApiPassPhNew') : t('admin.hubs.vzApiKeyPhKeep')" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-checkbox v-model:checked="vzDraft.insecureTls">{{ t('admin.hubs.vzInsecureTls') }}</a-checkbox>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-checkbox v-model:checked="vzDraft.enabled">{{ t('admin.hubs.vzEnabled') }}</a-checkbox>
+          </a-col>
+        </a-row>
+      </a-form>
+    </a-modal>
+
+    <!-- Hub plan editor -->
+    <a-modal
+      :open="!!editingPlan"
+      :title="editingPlan === 'new' ? t('admin.hubs.planEditNew') : t('admin.hubs.planEditExisting', { id: editingPlan })"
+      :ok-text="editingPlan === 'new' ? t('admin.hubs.planBtnCreate') : t('admin.hubs.planBtnSave')"
+      :cancel-text="t('admin.hubs.vzBtnCancel')"
+      :confirm-loading="planSaving"
+      :width="880"
+      @ok="savePlan"
+      @cancel="cancelEdit"
+    >
+      <a-form :model="draftPlan" layout="vertical" class="modal-form">
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.planName')"><a-input v-model:value="draftPlan.name" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.planRegion')"><a-input v-model:value="draftPlan.region" :placeholder="t('admin.hubs.planRegionPh')" /></a-form-item>
+          </a-col>
+          <a-col :span="24">
+            <a-form-item :label="t('admin.hubs.planDesc')"><a-input v-model:value="draftPlan.description" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.planFamily')"><a-select v-model:value="draftPlan.family" :options="familyOptions" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('admin.hubs.planHourly', { currency: draftPlan.currency })">
+              <a-input-number v-model:value="draftPlan.hourlyPrice" :min="0" class="full-width" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planMinHours')"><a-input-number v-model:value="draftPlan.minHours" :min="1" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planMaxHours')"><a-input-number v-model:value="draftPlan.maxHours" :min="1" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planMaxQty')"><a-input-number v-model:value="draftPlan.maxQuantity" :min="0" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :span="24">
+            <a-checkbox v-model:checked="draftPlan.enabled">{{ t('admin.hubs.planEnabled') }}</a-checkbox>
+          </a-col>
+        </a-row>
+
+        <a-divider orientation="left" orientation-margin="0" class="form-divider">{{ t('admin.hubs.planSpecs') }}</a-divider>
+        <a-row :gutter="12">
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVcpu')"><a-input-number v-model:value="draftPlan.specs.cpu" :min="1" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planRam')"><a-input-number v-model:value="draftPlan.specs.ramGB" :min="0" :step="0.5" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planDisk')"><a-input-number v-model:value="draftPlan.specs.diskGB" :min="0" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planBw')"><a-input-number v-model:value="draftPlan.specs.bandwidthGB" :min="0" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planIpv4Count')"><a-input-number v-model:value="draftPlan.specs.ipv4Count" :min="0" class="full-width" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('admin.hubs.planIpv6Range')"><a-input v-model:value="draftPlan.specs.ipv6Range" class="mono" :placeholder="t('admin.hubs.planIpv6RangePh')" /></a-form-item>
+          </a-col>
+        </a-row>
+
+        <a-divider orientation="left" orientation-margin="0" class="form-divider">
+          {{ t('admin.hubs.planVzMap') }}
+          <a-typography-text type="secondary" class="small">{{ t('admin.hubs.planVzMapNote') }}</a-typography-text>
+        </a-divider>
+        <a-row :gutter="12">
+          <a-col :span="24">
+            <a-form-item :label="t('admin.hubs.planVzInst')">
+              <a-flex gap="small">
+                <a-select v-model:value="draftPlan.vz.instanceId" :options="instanceOptions" class="grow" />
+                <a-tooltip v-if="draftPlan.vz.instanceId" :title="t('admin.hubs.planVzReload')">
+                  <a-button :loading="vzCatalogLoading" @click="reloadVzCatalog">
+                    <template #icon><ReloadOutlined /></template>
+                    {{ vzCatalogLoading ? t('admin.hubs.planVzReloading') : t('admin.hubs.planVzReloadBtn') }}
+                  </a-button>
+                </a-tooltip>
+              </a-flex>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVzVirt')"><a-select v-model:value="draftPlan.vz.virt" :options="virtOptions" /></a-form-item>
+          </a-col>
 
           <!-- Server: dropdown live-fetched từ /api/admin/virtualizors/:id/servers,
                fallback raw input nếu instance chưa pick hoặc fetch fail. -->
-          <label class="field">
-            <span>{{ t('admin.hubs.planVzServer') }}</span>
-            <select
-              v-if="draftPlan.vz.instanceId && vzServerOptions(draftPlan.vz.instanceId).length"
-              v-model="draftPlan.vz.serverId"
-              @change="draftPlan.vz.serverId = Number(draftPlan.vz.serverId)"
-            >
-              <option :value="null">{{ t('admin.hubs.planVzServerPh') }}</option>
-              <option v-for="s in vzServerOptions(draftPlan.vz.instanceId)" :key="s.id" :value="Number(s.id)">{{ s.label }}</option>
-            </select>
-            <input v-else v-model.number="draftPlan.vz.serverId" type="number" placeholder="0" />
-          </label>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVzServer')">
+              <a-select v-if="serverOptions.length" v-model:value="draftPlan.vz.serverId" :options="numOpts(serverOptions, t('admin.hubs.planVzServerPh'))" />
+              <a-input-number v-else v-model:value="draftPlan.vz.serverId" placeholder="0" class="full-width" />
+            </a-form-item>
+          </a-col>
 
-          <label class="field">
-            <span>{{ t('admin.hubs.planVzPlan') }}</span>
-            <select
-              v-if="draftPlan.vz.instanceId && vzPlanOptions(draftPlan.vz.instanceId).length"
-              v-model="draftPlan.vz.planId"
-              @change="draftPlan.vz.planId = Number(draftPlan.vz.planId)"
-            >
-              <option :value="null">{{ t('admin.hubs.planVzPlanPh') }}</option>
-              <option v-for="p in vzPlanOptions(draftPlan.vz.instanceId)" :key="p.id" :value="Number(p.id)">{{ p.label }}</option>
-            </select>
-            <input v-else v-model.number="draftPlan.vz.planId" type="number" placeholder="1" />
-          </label>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVzPlan')">
+              <a-select v-if="planOptions.length" v-model:value="draftPlan.vz.planId" :options="numOpts(planOptions, t('admin.hubs.planVzPlanPh'))" />
+              <a-input-number v-else v-model:value="draftPlan.vz.planId" placeholder="1" class="full-width" />
+            </a-form-item>
+          </a-col>
 
-          <label class="field">
-            <span>{{ t('admin.hubs.planVzOs') }}</span>
-            <select
-              v-if="draftPlan.vz.instanceId && vzOsOptions(draftPlan.vz.instanceId).length"
-              v-model="draftPlan.vz.osId"
-              @change="draftPlan.vz.osId = Number(draftPlan.vz.osId)"
-            >
-              <option :value="null">{{ t('admin.hubs.planVzOsPh') }}</option>
-              <option v-for="o in vzOsOptions(draftPlan.vz.instanceId)" :key="o.id" :value="Number(o.id)">{{ o.label }}</option>
-            </select>
-            <input v-else v-model.number="draftPlan.vz.osId" type="number" placeholder="1197" />
-          </label>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVzOs')">
+              <a-select v-if="osOptions.length" v-model:value="draftPlan.vz.osId" :options="numOpts(osOptions, t('admin.hubs.planVzOsPh'))" />
+              <a-input-number v-else v-model:value="draftPlan.vz.osId" placeholder="1197" class="full-width" />
+            </a-form-item>
+          </a-col>
 
           <!-- IPv4 pool — REQUIRED. For ipv4-family plans this is the egress
                subnet sold to customer. For ipv6-family hubs this is the
                connect-host IP (proxy listens here, egress goes via IPv6). -->
-          <label class="field">
-            <span>{{ t('admin.hubs.planVzIpPool') }} {{ draftPlan.family === 'ipv6' ? t('admin.hubs.planVzIpPoolHost') : t('admin.hubs.planVzIpPoolSell') }}</span>
-            <select
-              v-if="draftPlan.vz.instanceId && vzIpPoolOptions(draftPlan.vz.instanceId, 'v4').length"
-              v-model="draftPlan.vz.ipPool"
-            >
-              <option value="">{{ t('admin.hubs.planVzIpPoolPh') }}</option>
-              <option v-for="p in vzIpPoolOptions(draftPlan.vz.instanceId, 'v4')" :key="p.id" :value="String(p.id)">{{ p.label }}</option>
-            </select>
-            <input v-else v-model="draftPlan.vz.ipPool" type="text" placeholder="7" />
-          </label>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="`${t('admin.hubs.planVzIpPool')} ${draftPlan.family === 'ipv6' ? t('admin.hubs.planVzIpPoolHost') : t('admin.hubs.planVzIpPoolSell')}`">
+              <a-select v-if="ip4PoolOptions.length" v-model:value="draftPlan.vz.ipPool" :options="strOpts(ip4PoolOptions, t('admin.hubs.planVzIpPoolPh'))" />
+              <a-input v-else v-model:value="draftPlan.vz.ipPool" class="mono" placeholder="7" />
+            </a-form-item>
+          </a-col>
 
           <!-- IPv6 pool — only relevant when selling IPv6 hubs. Hidden for
                pure ipv4-family plans (no IPv6 subnet attached to VPS). -->
-          <label v-if="draftPlan.family === 'ipv6'" class="field">
-            <span>{{ t('admin.hubs.planVzIp6Pool') }}</span>
-            <select
-              v-if="draftPlan.vz.instanceId && vzIpPoolOptions(draftPlan.vz.instanceId, 'v6').length"
-              v-model="draftPlan.vz.ip6Pool"
-            >
-              <option value="">{{ t('admin.hubs.planVzIp6PoolPh') }}</option>
-              <option v-for="p in vzIpPoolOptions(draftPlan.vz.instanceId, 'v6')" :key="p.id" :value="String(p.id)">{{ p.label }}</option>
-            </select>
-            <input v-else v-model="draftPlan.vz.ip6Pool" type="text" placeholder="5" />
-          </label>
+          <a-col v-if="draftPlan.family === 'ipv6'" :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVzIp6Pool')">
+              <a-select v-if="ip6PoolOptions.length" v-model:value="draftPlan.vz.ip6Pool" :options="strOpts(ip6PoolOptions, t('admin.hubs.planVzIp6PoolPh'))" />
+              <a-input v-else v-model:value="draftPlan.vz.ip6Pool" class="mono" placeholder="5" />
+            </a-form-item>
+          </a-col>
 
-          <label class="field"><span>{{ t('admin.hubs.planVzDiskTpl') }}</span><input v-model.number="draftPlan.vz.diskTemplate" type="number" /></label>
-        </div>
-        <p v-if="vzCatalogLoading" class="hint" style="margin-top:6px">{{ t('admin.hubs.planVzLoading') }}</p>
-        <p v-else-if="draftPlan.vz.instanceId && !vzCatalogCache[draftPlan.vz.instanceId]?.fetched" class="hint" style="margin-top:6px; color:#f59e0b">
-          {{ t('admin.hubs.planVzNotLoaded') }}
-        </p>
-        <p v-else-if="draftPlan.vz.instanceId" class="hint" style="margin-top:6px">
-          {{ t('admin.hubs.planVzAutoLoaded') }}
-        </p>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('admin.hubs.planVzDiskTpl')"><a-input-number v-model:value="draftPlan.vz.diskTemplate" class="full-width" /></a-form-item>
+          </a-col>
+        </a-row>
+        <a-alert v-if="vzCatalogLoading" type="info" show-icon :message="t('admin.hubs.planVzLoading')" />
+        <a-alert v-else-if="draftPlan.vz.instanceId && !vzCatalogCache[draftPlan.vz.instanceId]?.fetched" type="warning" show-icon :message="t('admin.hubs.planVzNotLoaded')" />
+        <a-typography-text v-else-if="draftPlan.vz.instanceId" type="secondary" class="small">{{ t('admin.hubs.planVzAutoLoaded') }}</a-typography-text>
+      </a-form>
+    </a-modal>
 
-        <div style="display:flex; gap:8px; margin-top:12px">
-          <button class="primary-action" type="button" @click="savePlan">{{ editingPlan === 'new' ? t('admin.hubs.planBtnCreate') : t('admin.hubs.planBtnSave') }}</button>
-          <button class="ghost-button" type="button" @click="cancelEdit">{{ t('admin.hubs.vzBtnCancel') }}</button>
-        </div>
-      </div>
+    <!-- Result dialog (diagnose / logs output) -->
+    <a-modal :open="!!actionResult" :title="actionResult ? `${actionResult.node} · ${actionResult.action}` : ''" :width="820" @cancel="closeActionResult">
+      <pre v-if="actionResult" class="mono code-block tall">{{ actionResult.output }}</pre>
+      <template #footer>
+        <a-button @click="closeActionResult">{{ t('admin.hubs.actClose') }}</a-button>
+      </template>
+    </a-modal>
 
-      <div v-if="!hubPlans.length && !editingPlan" class="empty-text" style="text-align:left; padding:18px 0">
-        {{ t('admin.hubs.plansEmpty') }}
-      </div>
+    <!-- Command history (queue + completed) -->
+    <a-modal :open="!!cmdHistoryNode" :title="t('admin.hubs.cmdHistTitle', { node: cmdHistoryNode })" :width="760" @cancel="closeCmdHistory">
+      <a-typography-text type="warning" strong>{{ t('admin.hubs.cmdHistPending', { n: cmdHistoryData.pending.length }) }}</a-typography-text>
+      <a-list size="small" :data-source="cmdHistoryData.pending" :locale="{ emptyText: t('admin.hubs.cmdHistPendingEmpty') }" class="hist-list">
+        <template #renderItem="{ item: c }">
+          <a-list-item>
+            <a-tag :bordered="false" class="mono">{{ c.action }}</a-tag>
+            <a-typography-text type="secondary" class="mono small">id={{ c.id.slice(0, 8) }} · {{ c.queuedAt?.slice(11, 19) }}</a-typography-text>
+          </a-list-item>
+        </template>
+      </a-list>
 
-      <div v-else class="data-table">
-        <div class="table-head" style="grid-template-columns: 1.5fr 1fr 1fr 80px 100px 120px">
-          <span>{{ t('admin.hubs.colPlan') }}</span><span>{{ t('admin.hubs.colRegionFam') }}</span><span>{{ t('admin.hubs.colSpecs') }}</span><span>{{ t('admin.hubs.colHour') }}</span><span>{{ t('admin.hubs.colStatus') }}</span><span></span>
-        </div>
-        <div v-for="p in hubPlans" :key="p.id" class="table-row" style="grid-template-columns: 1.5fr 1fr 1fr 80px 100px 120px">
-          <div>
-            <strong>{{ p.name }}</strong>
-            <small style="display:block; color:var(--muted)">{{ p.id }} · vz#{{ p.vz?.planId || '—' }}</small>
-          </div>
-          <span>{{ p.region }} · {{ p.family }}</span>
-          <span class="cell-mono" style="font-size:11px">{{ p.specs.cpu }}vCPU · {{ p.specs.ramGB }}GB · {{ p.specs.diskGB }}GB</span>
-          <span class="cell-mono">{{ Number(p.hourlyPrice).toLocaleString() }}</span>
-          <span :class="['status-pill', p.enabled ? 'active' : 'expired']">{{ p.enabled ? t('admin.hubs.planEnabledTag') : t('admin.hubs.planDisabledTag') }}</span>
-          <span style="display:inline-flex; gap:4px">
-            <button class="ghost-button" type="button" @click="startEdit(p)">{{ t('admin.hubs.vzBtnEdit') }}</button>
-            <button class="ghost-button" type="button" @click="deletePlan(p.id)"><Trash2 :size="11" /></button>
-          </span>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Provisioned VMs ───────────────────────────────────────────────── -->
-    <section v-if="tab === 'hubs'" class="surface" style="padding:16px">
-      <div class="section-head" style="display:flex; align-items:center; gap:8px">
-        <h2 style="margin:0"><Server :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.vmsTitle', { n: provisionedHubs.length }) }}</h2>
-        <button class="ghost-button" type="button" style="margin-left:auto" @click="loadHubs"><RefreshCw :size="12" /> {{ t('admin.hubs.vmsRefresh') }}</button>
-      </div>
-      <p v-if="!provisionedHubs.length" class="empty-text" style="text-align:left; padding:18px 0">{{ t('admin.hubs.vmsEmpty') }}</p>
-      <ul v-else class="hub-cards">
-        <li v-for="h in provisionedHubs" :key="h.id" class="hub-card">
-          <header>
-            <div>
-              <strong class="cell-mono">{{ h.name }}</strong>
-              <small>vpsid={{ h.vpsid }} · <code>{{ h.host }}</code></small>
+      <a-typography-text strong>{{ t('admin.hubs.cmdHistDone', { n: cmdHistoryData.history.length }) }}</a-typography-text>
+      <a-list size="small" :data-source="cmdHistoryData.history" :locale="{ emptyText: t('admin.hubs.cmdHistDoneEmpty') }" class="hist-list">
+        <template #renderItem="{ item: c }">
+          <a-list-item>
+            <div class="full-width">
+              <a-tag :color="c.code === 0 ? 'success' : 'error'" :bordered="false" class="mono">{{ c.action }}</a-tag>
+              <a-typography-text type="secondary" class="mono small">code={{ c.code }} · {{ c.completedAt?.slice(11, 19) }}</a-typography-text>
+              <pre v-if="c.output" class="mono code-block short">{{ c.output }}</pre>
             </div>
-            <span :class="['status-pill', h.status === 'online' ? 'active' : (h.status === 'provisioning' ? 'pending' : 'expired')]">{{ h.status }}</span>
-          </header>
-          <dl class="hub-meta">
-            <div><dt>{{ t('admin.hubs.vmOwner') }}</dt><dd>{{ h.ownerEmail }}</dd></div>
-            <div><dt>{{ t('admin.hubs.vmPlan') }}</dt><dd>{{ h.planName || h.planId }}</dd></div>
-            <div><dt>{{ t('admin.hubs.vmProvisioned') }}</dt><dd class="cell-mono">{{ h.provisionedAt?.slice(0,16).replace('T',' ') }}</dd></div>
-            <div><dt>{{ t('admin.hubs.vmExpires') }}</dt><dd class="cell-mono">{{ h.expiresAt?.slice(0,16).replace('T',' ') }}</dd></div>
-          </dl>
-          <div class="hub-actions">
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':diagnose'" @click="runAction(h, 'diagnose')">
-              <Stethoscope :size="12" /> {{ t('admin.hubs.actDiagnose') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':tail-logs'" @click="runAction(h, 'tail-logs')">
-              <Terminal :size="12" /> {{ t('admin.hubs.actLogs') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':refresh-network'" @click="runAction(h, 'refresh-network')">
-              <RefreshCw :size="12" /> {{ t('admin.hubs.actRefreshIp') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':restart-agent'" @click="runAction(h, 'restart-agent', t('admin.hubs.actRestartAgentConfirm', { name: h.name }))">
-              <RotateCcw :size="12" /> {{ t('admin.hubs.actRestartAgent') }}
-            </button>
-            <button class="act ghost-button warn" :disabled="actionBusy === h.id + ':reboot'" @click="runAction(h, 'reboot', t('admin.hubs.actRebootConfirm', { name: h.name }))">
-              <Zap :size="12" /> {{ t('admin.hubs.actReboot') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':power-on'" @click="runAction(h, 'power-on')">
-              <Power :size="12" /> {{ t('admin.hubs.actPowerOn') }}
-            </button>
-            <button class="act ghost-button danger" :disabled="actionBusy === h.id + ':power-off'" @click="runAction(h, 'power-off', t('admin.hubs.actPowerOffConfirm', { name: h.name }))">
-              <PowerOff :size="12" /> {{ t('admin.hubs.actPowerOff') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':drain'" @click="runAction(h, 'drain', t('admin.hubs.actDrainConfirm', { name: h.name }))">
-              <AlertTriangle :size="12" /> {{ t('admin.hubs.actDrain') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':upgrade'" @click="runAction(h, 'upgrade', t('admin.hubs.actUpgradeConfirm', { name: h.name }))">
-              <UploadCloud :size="12" /> {{ t('admin.hubs.actUpgrade') }}
-            </button>
-            <button class="act ghost-button" :disabled="actionBusy === h.id + ':install-package'" @click="installPackage(h)">
-              <Box :size="12" /> {{ t('admin.hubs.actInstallPkg') }}
-            </button>
-            <button class="act ghost-button" @click="openCmdHistory(h)">
-              <History :size="12" /> {{ t('admin.hubs.actCmdHistory') }}
-            </button>
-          </div>
-        </li>
-      </ul>
-
-      <!-- Result dialog (diagnose / logs output) -->
-      <div v-if="actionResult" class="action-result">
-        <header>
-          <strong>{{ actionResult.node }} · {{ actionResult.action }}</strong>
-          <button class="ghost-button" @click="closeActionResult">{{ t('admin.hubs.actClose') }}</button>
-        </header>
-        <pre>{{ actionResult.output }}</pre>
-      </div>
-
-      <!-- Command history (queue + completed) -->
-      <div v-if="cmdHistoryNode" class="action-result">
-        <header>
-          <strong>{{ t('admin.hubs.cmdHistTitle', { node: cmdHistoryNode }) }}</strong>
-          <button class="ghost-button" @click="closeCmdHistory">{{ t('admin.hubs.actClose') }}</button>
-        </header>
-        <div style="padding:10px 14px; font-size:12px">
-          <strong style="color:#fbbf24">{{ t('admin.hubs.cmdHistPending', { n: cmdHistoryData.pending.length }) }}</strong>
-          <ul v-if="cmdHistoryData.pending.length" style="margin:6px 0 14px; padding-left:18px">
-            <li v-for="c in cmdHistoryData.pending" :key="c.id">
-              <code style="color:var(--text)">{{ c.action }}</code>
-              <small style="color:var(--muted)"> · id={{ c.id.slice(0,8) }} · {{ c.queuedAt?.slice(11,19) }}</small>
-            </li>
-          </ul>
-          <p v-else style="color:var(--muted); margin:6px 0 14px">{{ t('admin.hubs.cmdHistPendingEmpty') }}</p>
-
-          <strong>{{ t('admin.hubs.cmdHistDone', { n: cmdHistoryData.history.length }) }}</strong>
-          <ul v-if="cmdHistoryData.history.length" style="margin:6px 0 0; padding-left:18px">
-            <li v-for="c in cmdHistoryData.history" :key="c.id" style="margin-bottom:6px">
-              <code :style="{ color: c.code === 0 ? '#4ade80' : '#ef4444' }">{{ c.action }}</code>
-              <small style="color:var(--muted)"> · code={{ c.code }} · {{ c.completedAt?.slice(11,19) }}</small>
-              <pre v-if="c.output" style="margin:4px 0 0; padding:6px 8px; background:rgba(0,0,0,0.3); border-radius:4px; max-height:160px; overflow:auto; white-space:pre-wrap; font-size:10.5px">{{ c.output }}</pre>
-            </li>
-          </ul>
-          <p v-else style="color:var(--muted); margin:6px 0 0">{{ t('admin.hubs.cmdHistDoneEmpty') }}</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ── Virtualizor data tab ──────────────────────────────────────────── -->
-    <section v-if="tab === 'vzdata'" class="surface" style="padding:16px">
-      <div class="section-head"><h2><Cpu :size="14" style="vertical-align:-2px" /> {{ t('admin.hubs.vzDataTitle') }}</h2></div>
-      <p class="hint">{{ t('admin.hubs.vzDataHint') }}</p>
-      <div v-if="!vzInstances.length" class="empty-text" style="text-align:left; padding:14px" v-html="t('admin.hubs.vzDataEmpty')">
-      </div>
-      <div v-for="v in vzInstances" :key="v.id" class="inst-row">
-        <header>
-          <strong>{{ v.label }}</strong> <span class="cell-mono" style="color:var(--muted); font-size:11px">· {{ v.zone }} · {{ v.id }}</span>
-        </header>
-        <div style="display:flex; gap:6px; flex-wrap:wrap; margin:8px 0">
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'servers')">{{ t('admin.hubs.vzListServers') }}</button>
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'plans')">{{ t('admin.hubs.vzListPlans') }}</button>
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'ip-pools')">{{ t('admin.hubs.vzListIpPools') }}</button>
-          <button class="ghost-button" @click="loadVzDataForInst(v.id, 'templates')">{{ t('admin.hubs.vzListOsTpl') }}</button>
-        </div>
-      </div>
-      <pre v-if="vzServers" class="json-out">{{ JSON.stringify(vzServers, null, 2) }}</pre>
-      <pre v-if="vzPlans" class="json-out">{{ JSON.stringify(vzPlans, null, 2) }}</pre>
-      <pre v-if="vzIpPools" class="json-out">{{ JSON.stringify(vzIpPools, null, 2) }}</pre>
-      <pre v-if="vzTemplates" class="json-out">{{ JSON.stringify(vzTemplates, null, 2) }}</pre>
-    </section>
-  </section>
+          </a-list-item>
+        </template>
+      </a-list>
+      <template #footer>
+        <a-button @click="closeCmdHistory">{{ t('admin.hubs.actClose') }}</a-button>
+      </template>
+    </a-modal>
+  </div>
 </template>
 
 <style scoped>
-.hint { font-size: 12px; color: var(--muted); line-height: 1.5; margin: 8px 0 14px; }
-.hint code { font-family: var(--mono); background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 3px; color: #d6c060; font-size: 11px; }
-
-.settings-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
-.settings-tabs button { flex: 1 1 auto; min-width: 130px; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 10px; background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--text); cursor: pointer; font-size: 12.5px; text-align: left; }
-.settings-tabs button:hover { background: rgba(255,255,255,0.04); }
-.settings-tabs button.active { background: rgba(34,197,94,0.08); border-color: rgba(34,197,94,0.35); color: var(--green); }
-.settings-tabs button .t-name { font-weight: 600; }
-.settings-tabs button .t-desc { font-size: 10.5px; color: var(--muted); }
-.settings-tabs button.active .t-desc { color: rgba(34,197,94,0.7); }
-
-.form-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
-.form-2col { grid-template-columns: 1fr 1fr; }
-.form-3col { grid-template-columns: repeat(3, 1fr); }
-@media (max-width: 800px) { .form-3col, .form-2col { grid-template-columns: 1fr 1fr; } }
-.field { display: flex; flex-direction: column; gap: 4px; }
-.field > span { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
-.field input, .field select { height: 36px; padding: 0 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: 13px / 1.3 inherit; outline: none; }
-.field input:focus, .field select:focus { border-color: var(--green); }
-.field-checkbox { display: inline-flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 12.5px; color: var(--text); cursor: pointer; }
-.section-h4 { margin: 16px 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-
-.test-result { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 8px 12px; border-radius: 6px; font-size: 12.5px; }
-.test-result.ok  { background: rgba(34,197,94,0.08);  color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
-.test-result.err { background: rgba(239,68,68,0.08); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
-
-.json-out { font-family: var(--mono); font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; max-height: 400px; overflow: auto; margin: 8px 0; color: #9bb8b1; }
-.inst-row { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; }
-.inst-row > header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.inst-row strong { font-size: 12.5px; color: var(--text); }
-
-/* ── Active VMs card grid + admin remote-action buttons ─────────────────── */
-.hub-cards { list-style: none; padding: 0; margin: 8px 0 0; display: grid; grid-template-columns: 1fr; gap: 10px; }
-.hub-card {
-  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
-  padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+.hub-tabs :deep(.ant-tabs-nav) { margin-bottom: 12px; }
+.tab-label { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 1.3; }
+.tab-label small { font-size: 11px; color: var(--pb-text-3); font-weight: 400; }
+.hint { margin-bottom: 12px; }
+.small { font-size: 11.5px; }
+.grow { flex: 1; min-width: 0; }
+.test-tag { margin-inline: 6px 0; }
+.test-result { margin-top: 12px; }
+.act-divider { margin: 10px 0; }
+.form-divider { margin: 8px 0 12px; font-size: 13px; }
+.modal-form { margin-top: 12px; }
+.hist-list { margin: 4px 0 14px; }
+.code-block {
+  margin: 0; padding: 10px 12px; max-height: 400px; overflow: auto;
+  font-size: 11px; white-space: pre-wrap; word-break: break-word;
+  background: var(--pb-surface-2); border: 1px solid var(--pb-border); border-radius: 6px;
 }
-.hub-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.hub-card > header > div { min-width: 0; flex: 1; }
-.hub-card > header strong { font-size: 13px; color: var(--text); display: block; }
-.hub-card > header small { font-size: 11px; color: var(--muted); }
-.hub-card > header small code { font-family: var(--mono); color: var(--text); background: rgba(255,255,255,0.04); padding: 1px 5px; border-radius: 3px; }
-.hub-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 14px; margin: 0; }
-.hub-meta > div { min-width: 0; }
-.hub-meta dt { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.hub-meta dd { margin: 2px 0 0; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hub-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
-.act { font-size: 11.5px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; }
-.act.warn  { border-color: rgba(245,158,11,0.4); color: #f59e0b; }
-.act.danger{ border-color: rgba(239,68,68,0.4);  color: #ef4444; }
-.act:disabled { opacity: 0.5; cursor: wait; }
-.action-result {
-  margin-top: 12px; background: #0a0e14; border: 1px solid var(--border); border-radius: 8px;
-  overflow: hidden;
-}
-.action-result > header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border);
-}
-.action-result > header strong { font-size: 12.5px; color: var(--text); }
-.action-result pre {
-  margin: 0; padding: 12px 14px;
-  font-family: var(--mono); font-size: 11px; color: #9bb8b1;
-  white-space: pre-wrap; word-break: break-word;
-  max-height: 480px; overflow: auto;
-}
-@media (max-width: 700px) {
-  .hub-meta { grid-template-columns: 1fr 1fr; }
-  .hub-card > header { flex-direction: column; align-items: stretch; }
-  .act { flex: 1 1 calc(50% - 3px); justify-content: center; }
-}
-
-/* Mobile: collapse settings-tabs to wrap, tables to card-style rows */
-@media (max-width: 800px) {
-  .settings-tabs { flex-direction: column; }
-  .settings-tabs button { min-width: 0; }
-  .form-2col, .form-3col { grid-template-columns: 1fr !important; }
-  .data-table .table-head { display: none; }
-  .data-table .table-row {
-    display: flex !important; flex-direction: column; align-items: stretch !important;
-    gap: 6px !important; padding: 10px !important;
-    border-bottom: 1px solid var(--border) !important;
-  }
-  .data-table .table-row > * { width: 100%; }
-}
+.code-block.tall { max-height: 480px; }
+.code-block.short { max-height: 160px; margin-top: 6px; font-size: 10.5px; }
 </style>

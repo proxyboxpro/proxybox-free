@@ -190,7 +190,7 @@ function copyWorkingLines() {
 
       <a-flex wrap="wrap" gap="small" class="below">
         <a-select v-model:value="filterStatus" :options="filterOptions" style="width: 180px" />
-        <a-input v-model:value="search" allow-clear class="mono search" :placeholder="t('cust.tools.bulk.searchPh')">
+        <a-input v-model:value="search" allow-clear class="search mono-field" :placeholder="t('cust.tools.bulk.searchPh')">
           <template #prefix><SearchOutlined /></template>
         </a-input>
       </a-flex>
@@ -238,4 +238,5 @@ function copyWorkingLines() {
 .below { margin-top: 12px; }
 .hint { margin-bottom: 0; font-size: 12px; }
 .search { flex: 1 1 220px; min-width: 0; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

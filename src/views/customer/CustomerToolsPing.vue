@@ -82,7 +82,7 @@ const sampleColumns = [
           <a-input
             v-model:value="input"
             size="large"
-            class="mono ip-input"
+            class="ip-input mono-field"
             :placeholder="t('cust.tools.ping.placeholder')"
             :status="trimmed && !detectedFamily ? 'error' : undefined"
             autocomplete="off"
@@ -104,7 +104,7 @@ const sampleColumns = [
 
           <a-space :size="8">
             <a-typography-text type="secondary">{{ t('cust.tools.ping.count') }}</a-typography-text>
-            <a-select v-model:value="count" size="large" :options="COUNT_OPTIONS" class="mono" style="width: 80px" />
+            <a-select v-model:value="count" size="large" :options="COUNT_OPTIONS" class="mono-field" style="width: 80px" />
           </a-space>
 
           <a-space :size="8">
@@ -207,4 +207,5 @@ const sampleColumns = [
 .hint { margin-bottom: 0; font-size: 12px; }
 .raw { margin-bottom: 0; }
 .raw pre { white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; margin: 0; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

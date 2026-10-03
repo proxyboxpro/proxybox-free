@@ -1,11 +1,11 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeftRight, Server } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { loadNodes, nodesState } from '../../store/nodes'
 import { formatBytes } from '../../utils/format'
 import { useI18n } from '../../i18n'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -17,9 +17,11 @@ const result = ref(null)
 const loading = ref(false)
 const errorText = ref('')
 
+// nodesState.nodes (from /api/nodes) also carries the control plane as id
+// "local" — it is listed once, first, under its own label.
 const nodeOpts = computed(() => {
-  const opts = [{ id: 'local', name: t('admin.nodesCmp.localCtrlPlane') }]
-  for (const n of nodesState.list) opts.push({ id: n.id, name: `${n.name} — ${n.host}` })
+  const opts = [{ value: '', label: t('admin.nodesCmp.pick') }, { value: 'local', label: t('admin.nodesCmp.localCtrlPlane') }]
+  for (const n of nodesState.nodes) if (n.id !== 'local') opts.push({ value: n.id, label: `${n.name} — ${n.host}` })
   return opts
 })
 
@@ -37,73 +39,120 @@ function diffClass(av, bv, lowerIsBetter = false) {
   const aIsBetter = lowerIsBetter ? Number(av) < Number(bv) : Number(av) > Number(bv)
   return aIsBetter ? 'better' : 'worse'
 }
+const DIFF_TYPE = { better: 'success', worse: 'danger' }
+
+// One row per metric. `diff` → highlight better/worse; `fixed` → constant colour.
+const rows = computed(() => {
+  const r = result.value
+  if (!r || !r.a || !r.b) return []
+  const A = r.a, B = r.b
+  const out = [
+    { key: 'host', label: t('admin.nodesCmp.host'), a: A.host || '—', b: B.host || '—', mono: true },
+    { key: 'status', label: t('admin.nodesCmp.status'), a: A.status, b: B.status, status: true },
+    { key: 'family', label: t('admin.nodesCmp.family'), a: A.family, b: B.family, mono: true },
+    { key: 'version', label: t('admin.nodesCmp.version'), a: A.version || '—', b: B.version || '—', mono: true },
+    { key: 'total', label: t('admin.nodesCmp.totalProxy'), a: A.proxies.total, b: B.proxies.total, mono: true, diff: [A.proxies.total, B.proxies.total] },
+    { key: 'active', label: t('admin.nodesCmp.proxyActive'), a: A.proxies.active, b: B.proxies.active, mono: true, fixed: 'success' },
+    { key: 'failing', label: t('admin.nodesCmp.proxyFailing'), a: A.proxies.failing, b: B.proxies.failing, mono: true, fixed: 'danger' },
+    { key: 'owners', label: t('admin.nodesCmp.owners'), a: A.owners, b: B.owners, mono: true },
+    { key: 'bwUp', label: t('admin.nodesCmp.bw30dUp'), a: formatBytes(A.bandwidth30d.up), b: formatBytes(B.bandwidth30d.up), mono: true },
+    { key: 'bwDown', label: t('admin.nodesCmp.bw30dDown'), a: formatBytes(A.bandwidth30d.down), b: formatBytes(B.bandwidth30d.down), mono: true }
+  ]
+  if (A.metrics && B.metrics) {
+    out.push(
+      { key: 'cpu', label: t('admin.nodesCmp.cpu'), a: `${A.metrics.cpuPct}%`, b: `${B.metrics.cpuPct}%`, mono: true, diff: [A.metrics.cpuPct, B.metrics.cpuPct], lower: true },
+      { key: 'ram', label: t('admin.nodesCmp.ram'), a: `${A.metrics.ramPct}%`, b: `${B.metrics.ramPct}%`, mono: true, diff: [A.metrics.ramPct, B.metrics.ramPct], lower: true },
+      { key: 'load1', label: t('admin.nodesCmp.load1'), a: Number(A.metrics.load1).toFixed(2), b: Number(B.metrics.load1).toFixed(2), mono: true, diff: [A.metrics.load1, B.metrics.load1], lower: true }
+    )
+  }
+  return out
+})
+function cellType(row, side) {
+  if (row.fixed) return row.fixed
+  if (!row.diff) return undefined
+  const [av, bv] = side === 'a' ? row.diff : [row.diff[1], row.diff[0]]
+  return DIFF_TYPE[diffClass(av, bv, row.lower)]
+}
+
+const columns = computed(() => [
+  { title: t('admin.nodesCmp.metric'), key: 'label', dataIndex: 'label', width: 180 },
+  { key: 'a', side: 'a' },
+  { key: 'b', side: 'b' }
+])
+
+function openDetail(id) { router.push({ name: 'admin-node-detail', params: { nodeId: id } }) }
 
 watch(() => [a.value, b.value], runCompare)
 onMounted(async () => { await loadNodes(); if (a.value && b.value) runCompare() })
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <h1 style="margin:0; font-size:18px"><ArrowLeftRight :size="16" style="vertical-align:-3px" /> {{ t('admin.nodesCmp.title') }}</h1>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="router.push({ name: 'admin-nodes' })">{{ t('admin.nodesCmp.back') }}</button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.nodesCmp.pickTitle') }}</a-typography-text>
+      <a-button @click="router.push({ name: 'admin-nodes' })">{{ t('admin.nodesCmp.back') }}</a-button>
+    </a-flex>
 
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.nodesCmp.pickTitle') }}</h2></div>
-      <div class="detail-grid">
-        <div>
-          <span>{{ t('admin.nodesCmp.nodeA') }}</span>
-          <select v-model="a" style="width:100%; padding:6px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px">
-            <option value="">{{ t('admin.nodesCmp.pick') }}</option>
-            <option v-for="o in nodeOpts" :key="o.id" :value="o.id">{{ o.name }}</option>
-          </select>
-        </div>
-        <div>
-          <span>{{ t('admin.nodesCmp.nodeB') }}</span>
-          <select v-model="b" style="width:100%; padding:6px 8px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); border-radius:var(--radius); font-family:var(--mono); font-size:12px">
-            <option value="">{{ t('admin.nodesCmp.pick') }}</option>
-            <option v-for="o in nodeOpts" :key="o.id" :value="o.id">{{ o.name }}</option>
-          </select>
-        </div>
-      </div>
-    </section>
+    <a-card size="small">
+      <a-form layout="vertical">
+        <a-row :gutter="16">
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('admin.nodesCmp.nodeA')">
+              <a-select v-model:value="a" :options="nodeOpts" show-search option-filter-prop="label" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('admin.nodesCmp.nodeB')">
+              <a-select v-model:value="b" :options="nodeOpts" show-search option-filter-prop="label" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+      </a-form>
+    </a-card>
 
-    <p v-if="errorText" class="error-text">{{ errorText }}</p>
-    <p v-if="loading" class="empty-text">{{ t('admin.nodesCmp.loading') }}</p>
+    <a-alert v-if="errorText" type="error" show-icon :message="errorText" />
+    <a-card v-if="loading && !result"><a-spin :tip="t('admin.nodesCmp.loading')"><div class="spin-box" /></a-spin></a-card>
 
-    <section v-if="result && result.a && result.b" class="surface">
-      <div class="section-head"><h2><Server :size="16" style="vertical-align:-3px" /> {{ t('admin.nodesCmp.compareTitle') }}</h2></div>
-      <div class="data-table compare-table">
-        <div class="table-head" style="grid-template-columns: 1.2fr 1fr 1fr">
-          <span>{{ t('admin.nodesCmp.metric') }}</span>
-          <span>{{ result.a.name }} <small style="color:var(--muted); font-size:11px">({{ result.a.id }})</small></span>
-          <span>{{ result.b.name }} <small style="color:var(--muted); font-size:11px">({{ result.b.id }})</small></span>
-        </div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.host') }}</span><span class="cell-mono">{{ result.a.host || '—' }}</span><span class="cell-mono">{{ result.b.host || '—' }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.status') }}</span><span><span :class="['status-pill', result.a.status === 'online' ? 'active' : 'pending']">{{ result.a.status }}</span></span><span><span :class="['status-pill', result.b.status === 'online' ? 'active' : 'pending']">{{ result.b.status }}</span></span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.family') }}</span><span class="cell-mono">{{ result.a.family }}</span><span class="cell-mono">{{ result.b.family }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.version') }}</span><span class="cell-mono">{{ result.a.version || '—' }}</span><span class="cell-mono">{{ result.b.version || '—' }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.totalProxy') }}</span><span class="cell-mono" :class="diffClass(result.a.proxies.total, result.b.proxies.total)">{{ result.a.proxies.total }}</span><span class="cell-mono" :class="diffClass(result.b.proxies.total, result.a.proxies.total)">{{ result.b.proxies.total }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.proxyActive') }}</span><span class="cell-mono" :class="diffClass(result.a.proxies.active, result.b.proxies.active)" style="color:var(--green)">{{ result.a.proxies.active }}</span><span class="cell-mono" :class="diffClass(result.b.proxies.active, result.a.proxies.active)" style="color:var(--green)">{{ result.b.proxies.active }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.proxyFailing') }}</span><span class="cell-mono" :class="diffClass(result.a.proxies.failing, result.b.proxies.failing, true)" style="color:var(--red)">{{ result.a.proxies.failing }}</span><span class="cell-mono" :class="diffClass(result.b.proxies.failing, result.a.proxies.failing, true)" style="color:var(--red)">{{ result.b.proxies.failing }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.owners') }}</span><span class="cell-mono">{{ result.a.owners }}</span><span class="cell-mono">{{ result.b.owners }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.bw30dUp') }}</span><span class="cell-mono">{{ formatBytes(result.a.bandwidth30d.up) }}</span><span class="cell-mono">{{ formatBytes(result.b.bandwidth30d.up) }}</span></div>
-        <div class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.bw30dDown') }}</span><span class="cell-mono">{{ formatBytes(result.a.bandwidth30d.down) }}</span><span class="cell-mono">{{ formatBytes(result.b.bandwidth30d.down) }}</span></div>
-        <div v-if="result.a.metrics && result.b.metrics" class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.cpu') }}</span><span class="cell-mono" :class="diffClass(result.a.metrics.cpuPct, result.b.metrics.cpuPct, true)">{{ result.a.metrics.cpuPct }}%</span><span class="cell-mono" :class="diffClass(result.b.metrics.cpuPct, result.a.metrics.cpuPct, true)">{{ result.b.metrics.cpuPct }}%</span></div>
-        <div v-if="result.a.metrics && result.b.metrics" class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.ram') }}</span><span class="cell-mono" :class="diffClass(result.a.metrics.ramPct, result.b.metrics.ramPct, true)">{{ result.a.metrics.ramPct }}%</span><span class="cell-mono" :class="diffClass(result.b.metrics.ramPct, result.a.metrics.ramPct, true)">{{ result.b.metrics.ramPct }}%</span></div>
-        <div v-if="result.a.metrics && result.b.metrics" class="table-row" style="grid-template-columns: 1.2fr 1fr 1fr"><span>{{ t('admin.nodesCmp.load1') }}</span><span class="cell-mono" :class="diffClass(result.a.metrics.load1, result.b.metrics.load1, true)">{{ Number(result.a.metrics.load1).toFixed(2) }}</span><span class="cell-mono" :class="diffClass(result.b.metrics.load1, result.a.metrics.load1, true)">{{ Number(result.b.metrics.load1).toFixed(2) }}</span></div>
-      </div>
-      <div class="action-row" style="margin-top:14px; display:flex; gap:8px">
-        <button class="ghost-button" type="button" @click="router.push({ name: 'admin-node-detail', params: { nodeId: result.a.id } })">{{ t('admin.nodesCmp.openDetail', { name: result.a.name }) }}</button>
-        <button class="ghost-button" type="button" @click="router.push({ name: 'admin-node-detail', params: { nodeId: result.b.id } })">{{ t('admin.nodesCmp.openDetail', { name: result.b.name }) }}</button>
-      </div>
-    </section>
-  </section>
+    <a-card v-if="result && result.a && result.b" :body-style="{ padding: 0 }">
+      <template #title><CloudServerOutlined /> {{ t('admin.nodesCmp.compareTitle') }}</template>
+      <a-table
+        :columns="columns"
+        :data-source="rows"
+        :loading="loading"
+        row-key="key"
+        size="middle"
+        :pagination="false"
+        :scroll="{ x: 560 }"
+      >
+        <template #headerCell="{ column }">
+          <template v-if="column.side">
+            <a-space :size="6" wrap>
+              <span>{{ result[column.side].name }}</span>
+              <a-typography-text type="secondary" class="mono small">({{ result[column.side].id }})</a-typography-text>
+            </a-space>
+          </template>
+        </template>
+        <template #bodyCell="{ column, record: row }">
+          <template v-if="column.side">
+            <StatusTag
+              v-if="row.status"
+              :status="row[column.side]"
+              :color="row[column.side] === 'online' ? 'success' : 'warning'"
+            />
+            <a-typography-text v-else :type="cellType(row, column.side)" :class="{ mono: row.mono }">{{ row[column.side] }}</a-typography-text>
+          </template>
+        </template>
+      </a-table>
+      <a-flex wrap="wrap" gap="small" class="detail-links">
+        <a-button @click="openDetail(result.a.id)">{{ t('admin.nodesCmp.openDetail', { name: result.a.name }) }}</a-button>
+        <a-button @click="openDetail(result.b.id)">{{ t('admin.nodesCmp.openDetail', { name: result.b.name }) }}</a-button>
+      </a-flex>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.compare-table .better { color:var(--green) }
-.compare-table .worse  { color:var(--red) }
+.small { font-size: 12px; }
+.spin-box { min-height: 80px; }
+.detail-links { padding: 16px; }
 </style>

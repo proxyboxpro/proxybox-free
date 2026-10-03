@@ -144,7 +144,7 @@ const archAscii = `┌───────────────────�
             </a-space>
           </a-col>
 
-          <a-col :xs="{ span: 24, order: -1 }" :lg="{ span: 11, order: 0 }">
+          <a-col :xs="24" :lg="11">
             <a-card size="small" class="term-card">
               <template #title>
                 <a-flex align="center" gap="small">
@@ -453,7 +453,8 @@ const archAscii = `┌───────────────────�
                   </RouterLink>
                   <RouterLink v-slot="{ href, navigate }" to="/faq#self-host-trust" custom>
                     <a-button size="large" block :href="href" @click="navigate">
-                      {{ t('landing.host.cta2') }} <ExportOutlined />
+                      <template #icon><ExportOutlined /></template>
+                      {{ t('landing.host.cta2') }}
                     </a-button>
                   </RouterLink>
                   <RouterLink v-slot="{ href, navigate }" to="/api-docs" custom>
@@ -565,7 +566,7 @@ const archAscii = `┌───────────────────�
 .term-code {
   margin: 0;
   padding: 18px 16px;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre;

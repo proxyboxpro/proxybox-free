@@ -232,7 +232,7 @@ const totals = computed(() => nodes.value.reduce((acc, n) => {
             <a-flex vertical gap="small">
               <a-flex align="center" gap="small">
                 <a-tag :color="n.family === 'ipv6' ? 'purple' : 'blue'" :bordered="false" class="mono fam">{{ (n.family || 'dual').toUpperCase() }}</a-tag>
-                <a-typography-text strong ellipsis class="node-name">{{ n.name }}</a-typography-text>
+                <a-typography-text strong :ellipsis="{ tooltip: n.name }" :content="n.name" class="node-name" />
                 <StatusTag :status="n.status" />
               </a-flex>
               <a-typography-text type="secondary" class="mono small">{{ n.host }}</a-typography-text>
