@@ -652,7 +652,9 @@ onMounted(async () => {
             <a-form-item :label="t('admin.hubs.planMaxQty')"><a-input-number v-model:value="draftPlan.maxQuantity" :min="0" class="full-width" /></a-form-item>
           </a-col>
           <a-col :span="24">
-            <a-checkbox v-model:checked="draftPlan.enabled">{{ t('admin.hubs.planEnabled') }}</a-checkbox>
+            <a-form-item>
+              <a-checkbox v-model:checked="draftPlan.enabled">{{ t('admin.hubs.planEnabled') }}</a-checkbox>
+            </a-form-item>
           </a-col>
         </a-row>
 
@@ -802,7 +804,7 @@ onMounted(async () => {
 .test-tag { margin-inline: 6px 0; }
 .test-result { margin-top: 12px; }
 .act-divider { margin: 10px 0; }
-.form-divider { margin: 8px 0 12px; font-size: 13px; }
+.form-divider { margin: 0 0 12px; font-size: 13px; }
 .modal-form { margin-top: 12px; }
 .hist-list { margin: 4px 0 14px; }
 .code-block {

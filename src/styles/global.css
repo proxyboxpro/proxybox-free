@@ -53,7 +53,7 @@ body {
 
 /* ── Utilities ─────────────────────────────────────────────── */
 /* Any technical string (IP, port, hash, host, id, command) → .mono */
-.mono { font-family: var(--pb-mono); font-size: 0.93em; word-break: break-all; }
+.mono { font-family: var(--pb-mono); font-size: 0.93em; overflow-wrap: anywhere; }
 .nowrap { white-space: nowrap; }
 .text-muted { color: var(--pb-text-3); }
 .text-secondary { color: var(--pb-text-2); }

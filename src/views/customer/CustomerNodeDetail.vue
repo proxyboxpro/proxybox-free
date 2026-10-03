@@ -159,7 +159,7 @@ const proxyColumns = [
   { key: 'id', width: 170 },
   { key: 'endpoint' },
   { key: 'stats', width: 140 },
-  { key: 'actions', width: 120, align: 'right' }
+  { key: 'actions', width: 120, align: 'right', fixed: 'right' }
 ]
 const proxyPagination = { pageSize: 20, hideOnSinglePage: true, size: 'small' }
 function proxyRowClass(p) { return p.status === 'expired' || p.status === 'error' ? 'row-dim' : '' }

@@ -1469,7 +1469,7 @@ onBeforeUnmount(() => {
                   </a-space-compact>
                   <a-space v-else :size="2">
                     <a-typography-text v-if="p.label" strong>{{ p.label }}</a-typography-text>
-                    <a-button type="link" size="small" class="label-add" @click="openLabelEdit(p)">
+                    <a-button type="text" size="small" class="label-add" @click="openLabelEdit(p)">
                       <template #icon><EditOutlined /></template>
                       {{ p.label ? '' : t('cust.proxies.labelEmpty') }}
                     </a-button>
@@ -1920,22 +1920,20 @@ onBeforeUnmount(() => {
 
         <!-- Sessions / connection caps -->
         <a-card size="small">
-          <template #title>
+          <a-flex justify="space-between" align="center" gap="small" wrap="wrap" class="session-head">
             <a-space :size="6" wrap>
               <SafetyCertificateOutlined />
               <a-typography-text strong class="mono" :type="(drawerProxy.session?.active || 0) >= (drawerProxy.session?.max || 100) ? 'danger' : undefined">
                 {{ drawerProxy.session?.active ?? 0 }}/{{ drawerProxy.session?.max ?? 100 }}
               </a-typography-text>
-              <span>{{ t('cust.proxies.activeConns') }}</span>
+              <a-typography-text strong>{{ t('cust.proxies.activeConns') }}</a-typography-text>
             </a-space>
-          </template>
-          <template #extra>
             <a-tooltip :title="t('cust.proxies.tipDisconnect')">
               <a-button size="small" danger @click="disconnectAllSessions(drawerProxy)">
                 <template #icon><DisconnectOutlined /></template>{{ t('cust.proxies.disconnectAll') }}
               </a-button>
             </a-tooltip>
-          </template>
+          </a-flex>
           <a-typography-text type="secondary" class="small-text">
             max <strong>{{ drawerProxy.session?.max ?? 100 }}/proxy</strong> · <strong>{{ drawerProxy.session?.maxPerIp ?? 60 }}/IP</strong> · burst <strong>{{ drawerProxy.session?.rateLimit ?? 30 }}/s/IP</strong>. {{ t('cust.proxies.overCapNote') }}
           </a-typography-text>
@@ -2228,6 +2226,7 @@ onBeforeUnmount(() => {
 .bulk-tag-input { margin-top: 12px; max-width: 420px; }
 
 .proto-item { width: 100%; min-width: 0; }
+.session-head { margin-bottom: 8px; }
 .byip-row { margin-top: 8px; }
 .wl-list { margin-bottom: 12px; min-height: 24px; }
 .qr-url { max-width: 100%; text-align: center; margin-bottom: 0; }

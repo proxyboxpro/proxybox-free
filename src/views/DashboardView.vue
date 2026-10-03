@@ -131,9 +131,9 @@ function statusType(s) { return s >= 400 ? 'danger' : s >= 300 ? 'warning' : 'su
 const topColumns = [
   { title: '#', key: 'rank', width: 44, align: 'right' },
   { title: 'Host', key: 'host', dataIndex: 'host', ellipsis: true },
-  { title: '', key: 'share', width: 110 },
+  { title: '', key: 'share', width: 100 },
   { title: 'Bytes', key: 'bytes', width: 100, align: 'right' },
-  { title: 'Req', key: 'count', width: 90, align: 'right' }
+  { title: 'Req', key: 'count', width: 120, align: 'right' }
 ]
 const auditColumns = [
   { title: 'Method', key: 'method', width: 84 },
@@ -272,7 +272,7 @@ onBeforeUnmount(() => {
             <template #renderItem="{ item: s }">
               <a-list-item class="clickable" @click="goConn(s.id)">
                 <a-flex align="center" gap="small" class="full-width">
-                  <a-typography-text class="mono sat-id" :ellipsis="{ tooltip: s.id }" :content="s.id" />
+                  <a-tooltip :title="s.id"><span class="mono sat-id">{{ s.id }}</span></a-tooltip>
                   <a-progress
                     :percent="s.pct"
                     :show-info="false"
@@ -301,7 +301,7 @@ onBeforeUnmount(() => {
           <a-card size="small" :class="{ 'node-offline': n.status !== 'online' }">
             <a-flex align="center" gap="small">
               <a-tag :color="FAMILY_COLOR[n.family || 'dual'] || 'cyan'" :bordered="false" class="mono">{{ (n.family || 'dual').toUpperCase() }}</a-tag>
-              <a-typography-text strong :ellipsis="{ tooltip: n.name }" :content="n.name" class="node-name" />
+              <a-tooltip :title="n.name"><strong class="node-name">{{ n.name }}</strong></a-tooltip>
               <StatusTag :status="n.status" :color="n.status === 'online' ? 'success' : 'error'" />
             </a-flex>
             <a-typography-text type="secondary" class="mono node-host">{{ n.host }}</a-typography-text>
@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
             row-key="host"
             size="small"
             :pagination="false"
-            :scroll="{ x: 480 }"
+            :scroll="{ x: 500 }"
             :locale="{ emptyText: 'Chưa có traffic.' }"
           >
             <template #bodyCell="{ column, record, index }">
@@ -400,11 +400,11 @@ onBeforeUnmount(() => {
 .chart-body { min-height: 280px; display: flex; flex-direction: column; justify-content: center; }
 .full-height { height: 100%; }
 .clickable { cursor: pointer; }
-.sat-id { width: 110px; flex-shrink: 0; }
+.sat-id { width: 110px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
 .sat-bar { flex: 1; margin: 0; }
 .sat-num { width: 70px; flex-shrink: 0; text-align: right; }
 .node-offline { opacity: 0.6; }
-.node-name { flex: 1; min-width: 0; }
+.node-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-host { display: block; margin: 4px 0 8px; font-size: 12px; }
 .node-metrics { margin-bottom: 6px; }
 .node-metrics :deep(.ant-statistic-title) { font-size: 11px; margin-bottom: 0; }
