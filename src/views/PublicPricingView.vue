@@ -628,7 +628,7 @@ onMounted(refresh)
             </a-typography-paragraph>
             <a-row :gutter="[24, 16]" align="middle" class="oss-row">
               <a-col :xs="24" :md="7">
-                <a-statistic :value="0" prefix="$" :value-style="{ fontSize: '44px', fontWeight: 800 }">
+                <a-statistic :value="0" prefix="$" class="oss-price" :value-style="{ fontSize: '44px', fontWeight: 800 }">
                   <template #suffix><a-typography-text type="secondary" class="oss-forever">/ {{ locale === 'vi' ? 'mãi mãi' : 'forever' }}</a-typography-text></template>
                 </a-statistic>
               </a-col>
@@ -820,6 +820,7 @@ onMounted(refresh)
 .oss-h.ant-typography { margin: 0 0 6px; font-size: 28px; }
 .oss-p.ant-typography { max-width: 720px; font-size: 14.5px; line-height: 1.6; }
 .oss-row { margin-bottom: 20px; }
+.oss-price :deep(.ant-statistic-content-prefix) { margin-inline-end: 2px; }
 .oss-forever { font-size: 14px; }
 .term-card :deep(.ant-card-body) { padding: 0; }
 .term-title { font-size: 12px; }

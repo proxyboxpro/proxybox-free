@@ -23,6 +23,7 @@ const fullUrl = computed(() => {
   const base = typeof location !== 'undefined' ? location.origin : ''
   return `${base}${data.value.shareUrl || `/register?ref=${data.value.referralCode || ''}`}`
 })
+const shareBlock = computed(() => `${data.value?.shareText || ''}\n${fullUrl.value}`)
 function copy(text, label) {
   navigator.clipboard?.writeText(text)
   message.success(label || t('cust.detail.copied'))
@@ -128,8 +129,9 @@ onMounted(refresh)
 
                 <div>
                   <a-typography-text strong>{{ t('cust.aff.textLabel') }}</a-typography-text>
-                  <a-typography-paragraph class="field-gap share-text"><pre>{{ data.shareText || '' }}
-{{ fullUrl }}</pre></a-typography-paragraph>
+                  <a-typography-paragraph class="field-gap share-text">
+                    <pre>{{ shareBlock }}</pre>
+                  </a-typography-paragraph>
                 </div>
 
                 <a-space wrap>

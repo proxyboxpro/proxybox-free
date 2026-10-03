@@ -75,7 +75,7 @@ function cellType(row, side) {
 }
 
 const columns = computed(() => [
-  { title: t('admin.nodesCmp.metric'), key: 'label', dataIndex: 'label', width: 180 },
+  { title: t('admin.nodesCmp.metric'), key: 'label', dataIndex: 'label', width: 150, fixed: 'left' },
   { key: 'a', side: 'a' },
   { key: 'b', side: 'b' }
 ])
@@ -122,7 +122,7 @@ onMounted(async () => { await loadNodes(); if (a.value && b.value) runCompare() 
         row-key="key"
         size="middle"
         :pagination="false"
-        :scroll="{ x: 560 }"
+        :scroll="{ x: 520 }"
       >
         <template #headerCell="{ column }">
           <template v-if="column.side">
