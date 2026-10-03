@@ -34,7 +34,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': {
+      // Regex key: match /api/... only, so the SPA route /api-docs isn't proxied.
+      '^/api/': {
         target: 'http://127.0.0.1:8787',
         changeOrigin: true
       }

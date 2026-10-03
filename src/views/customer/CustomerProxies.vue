@@ -801,7 +801,7 @@ const proxyColumns = computed(() => [
   { title: t('cust.proxies.creds'), key: 'creds', width: 230 },
   { title: t('cust.proxies.status'), key: 'status', width: 100 },
   { title: t('cust.proxies.spark24h'), key: 'spark', width: 110 },
-  { title: t('cust.proxies.actions'), key: 'actions', width: 330 }
+  { title: t('cust.proxies.actions'), key: 'actions', width: 340 }
 ])
 const credsColumns = computed(() => [
   { title: t('cust.proxies.host'), key: 'endpoint' },
@@ -1522,10 +1522,9 @@ onBeforeUnmount(() => {
                       </a-button>
                     </a-tooltip>
                     <a-tooltip v-if="p.type === 'IPv6' && p.rotateUrl">
-                      <template #title>{{ t('cust.proxies.tipCopyRotate') }}<br /><span class="mono">{{ p.rotateUrl }}</span></template>
-                      <a-button size="small" @click="copyRotateUrl(p)">
+                      <template #title><strong>{{ t('cust.proxies.copyRotateUrl') }}</strong> — {{ t('cust.proxies.tipCopyRotate') }}<br /><span class="mono">{{ p.rotateUrl }}</span></template>
+                      <a-button size="small" :aria-label="t('cust.proxies.copyRotateUrl')" @click="copyRotateUrl(p)">
                         <template #icon><LinkOutlined /></template>
-                        {{ t('cust.proxies.copyRotateUrl') }}
                       </a-button>
                     </a-tooltip>
                     <a-tooltip :title="t('cust.proxies.tipCheck')">

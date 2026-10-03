@@ -46,7 +46,13 @@ const router = createRouter({
   history: createWebHistory(),
   scrollBehavior(to) {
     // Support hash anchors (e.g. /account#security) — scroll to the element.
-    if (to.hash) return { el: to.hash, behavior: 'smooth', top: 70 }
+    // Views that render their sections after data loads (FAQ, API docs,
+    // account) handle the hash themselves, so only scroll when it exists now.
+    if (to.hash) {
+      const id = decodeURIComponent(to.hash.slice(1))
+      if (document.getElementById(id)) return { el: `#${CSS.escape(id)}`, behavior: 'smooth', top: 70 }
+      return false
+    }
     return { top: 0 }
   },
   routes: [
@@ -55,10 +61,7 @@ const router = createRouter({
       name: 'landing',
       component: () => import('./views/LandingView.vue'),
       meta: { public: true },
-      beforeEnter: (to, from, next) => {
-        if (token.value) next(roleRedirect())
-        else next()
-      }
+      beforeEnter: () => (token.value ? roleRedirect() : true)
     },
     // meta.anonOnly = redirect logged-in users away (login, register, forgot-password).
     // meta.public   = accessible to anyone (logged in or out, no redirect).
