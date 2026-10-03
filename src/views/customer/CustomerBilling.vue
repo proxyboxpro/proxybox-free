@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { BankOutlined, CreditCardOutlined, DollarOutlined, WalletOutlined } from '@ant-design/icons-vue'
-import { apiFetch } from '../../api'
+import { apiFetch, apiBlob } from '../../api'
 import { useI18n } from '../../i18n'
 import { message } from '../../ui/feedback'
 import { isDark } from '../../theme'
@@ -385,7 +385,28 @@ async function removeCard() {
 const kvContent = { justifyContent: 'flex-end', textAlign: 'right' }
 function fmtTs(s) { return s ? String(s).slice(0, 16).replace('T', ' ') : '—' }
 function viewOrder(id) { router.push({ name: 'proxies', query: { order: id } }) }
-function invoiceUrl(id) { return `/api/v1/user/orders/${id}/invoice` }
+// A plain link can't carry the bearer token (→ 401): fetch the HTML invoice with
+// auth and show it from a blob. The tab is opened synchronously inside the click
+// so popup blockers allow it; without one, the invoice is downloaded instead.
+// SECURITY: a blob: document lives in the SPA's origin and loses the server's
+// per-response CSP header → re-apply it as a <meta> (no script can run there),
+// and cut window.opener.
+const INVOICE_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">`
+async function openInvoice(id) {
+  const win = window.open('', '_blank')
+  if (win) win.opener = null
+  try {
+    const html = await (await apiBlob(`/api/v1/user/orders/${encodeURIComponent(id)}/invoice`)).text()
+    const url = URL.createObjectURL(new Blob([html.replace(/^(<!doctype[^>]*>)?/i, (m) => m + INVOICE_CSP)], { type: 'text/html' }))
+    if (win) win.location.href = url   // not revoked: reloading the tab must keep working (freed with the SPA page)
+    else {
+      const a = document.createElement('a')
+      a.href = url; a.download = `invoice-${id}.html`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    }
+  } catch (e) { win?.close(); fail(e.message) }
+}
 
 // Sign-based filter — backend may use multiple tx.type strings (topup/stripe-deposit/
 // bonus/refund/order/cancel-refund/manual-credit). Treat positive amounts as money
@@ -938,7 +959,7 @@ onMounted(async () => {
                     <template #description><span class="one-line small-text">{{ o.item }}</span></template>
                   </a-list-item-meta>
                   <template #actions>
-                    <a-button type="text" size="small" :href="invoiceUrl(o.id)" target="_blank" @click.stop>
+                    <a-button type="text" size="small" @click.stop="openInvoice(o.id)">
                       <template #icon><FileTextOutlined /></template>
                     </a-button>
                     <RightOutlined class="muted" />

@@ -60,6 +60,27 @@ export async function apiFetch(path, options = {}) {
   return data
 }
 
+// Authenticated fetch for non-JSON responses (invoice HTML, GDPR export): plain
+// links / window.open can't carry the bearer token. Resolves to the Blob.
+export async function apiBlob(path) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: token.value ? { Authorization: `Bearer ${token.value}` } : {}
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    if (response.status === 401) { setToken(''); currentUser.value = null }
+    throw new ApiError(data?.error || `API ${response.status}`, response.status, data)
+  }
+  return response.blob()
+}
+
+// EventSource can't send the bearer token either: mint a one-time (60 s) admin
+// stream ticket and return the URL to open. Call again for every (re)connect.
+export async function adminConnectionsStreamUrl() {
+  const { ticket } = await apiFetch('/api/admin/connections/stream-ticket', { method: 'POST' })
+  return `${API_BASE}/api/admin/connections/stream?ticket=${encodeURIComponent(ticket)}`
+}
+
 export async function login(email, password, totpCode) {
   const body = { email, password }
   if (totpCode) body.totpCode = totpCode
@@ -78,7 +99,9 @@ export async function register(name, email, password, acceptedTos = true, referr
 
 export async function logout() {
   try {
-    await apiFetch('/api/auth/logout', { method: 'POST' })
+    // v1 logout revokes any session (admin or customer). /api/auth/logout is
+    // behind the admin-only gate, so a customer's token was never revoked there.
+    await apiFetch('/api/v1/user/auth/logout', { method: 'POST' })
   } catch {
     // ignore — clearing the local token is enough
   }
@@ -88,13 +111,10 @@ export async function logout() {
 
 export async function fetchMe() {
   if (!token.value) return null
-  // Admin sessions resolve via /api/auth/me. Customer sessions are blocked there
-  // by the admin-only gate, so fall back to the v1 user namespace — this also
-  // populates currentUser (with role) while an admin is impersonating a customer.
-  try {
-    const me = await apiFetch('/api/auth/me')
-    if (me?.email) { currentUser.value = me; return currentUser.value }
-  } catch { /* fall through to the customer namespace */ }
+  // Every session (admin or customer, incl. impersonation) resolves via the v1
+  // user namespace, which also returns the role. Don't probe the admin-only
+  // /api/auth/me first: for customers it 403s and logs a "denied" audit row on
+  // every page load.
   try {
     const me = await apiFetch('/api/v1/user/auth/me')
     currentUser.value = me?.email ? me : null

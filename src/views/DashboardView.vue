@@ -115,8 +115,8 @@ function donutOptions(labels, colors, totalLabel) {
   }
 }
 
-// Status donut
-const statusDonutSeries = computed(() => [px.value.active, px.value.expiringSoon, px.value.grace, px.value.expired, px.value.error])
+// Status donut — the server's `active` count includes the expiring-soon ones
+const statusDonutSeries = computed(() => [Math.max(0, px.value.active - px.value.expiringSoon), px.value.expiringSoon, px.value.grace, px.value.expired, px.value.error])
 const statusDonutOptions = computed(() => donutOptions(['Active', 'Sắp hết hạn', 'Grace', 'Hết hạn', 'Lỗi'], [COLORS.green, COLORS.yellow, COLORS.cyan, COLORS.red, COLORS.grey], 'Tổng'))
 
 // Family donut

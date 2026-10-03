@@ -21,7 +21,7 @@ let pollHandle = null
 let giveUpHandle = null
 
 async function loadVersion() {
-  try { systemInfo.value = await apiFetch('/api/admin/system/version') }
+  try { systemInfo.value = await apiFetch('/api/admin/system/version'); upgradeErr.value = '' }
   catch (e) { upgradeErr.value = e.message }
 }
 async function refreshLog() {
@@ -84,11 +84,12 @@ onBeforeUnmount(() => {
       </a-descriptions>
 
       <a-space wrap class="actions">
-        <a-button type="primary" :loading="upgrading" @click="startUpgrade">
+        <!-- Upgrade + its log are hidden when the server reports no self-upgrade endpoint (selfUpgrade: false). -->
+        <a-button v-if="systemInfo.selfUpgrade !== false" type="primary" :loading="upgrading" @click="startUpgrade">
           <template #icon><CloudDownloadOutlined /></template>
           {{ upgrading ? 'Đang nâng cấp…' : 'Nâng cấp lên phiên bản mới' }}
         </a-button>
-        <a-button @click="refreshLog">
+        <a-button v-if="systemInfo.selfUpgrade !== false" @click="refreshLog">
           <template #icon><CodeOutlined /></template>
           Xem log
         </a-button>

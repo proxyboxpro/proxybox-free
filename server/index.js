@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
-import { exec as execChild, spawn as spawnChild } from 'node:child_process'
+import { exec as execChild, execFile, spawn as spawnChild } from 'node:child_process'
 import dns from 'node:dns/promises'
 import fs from 'node:fs/promises'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
@@ -28,9 +29,10 @@ process.on('unhandledRejection', (reason) => {
 
 // node:sqlite is stable in Node 22.22+; fallback gracefully if missing.
 let sqliteDb = null
+const sqliteDbPath = process.env.PROXY_SQLITE || path.join(path.dirname(fileURLToPath(import.meta.url)), 'data.db')
 try {
   const sqlite = await import('node:sqlite')
-  sqliteDb = new sqlite.DatabaseSync(process.env.PROXY_SQLITE || path.join(path.dirname(fileURLToPath(import.meta.url)), 'data.db'))
+  sqliteDb = new sqlite.DatabaseSync(sqliteDbPath)
   // WAL = readers never block the writer and vice-versa. Critical here: every
   // closed connection inserts a conn_events row while dashboards run big read
   // queries — under the default rollback journal those serialize (the writer
@@ -140,6 +142,9 @@ try {
     CREATE INDEX IF NOT EXISTS errors_last_ts ON errors(last_ts DESC);
     CREATE INDEX IF NOT EXISTS errors_unresolved ON errors(resolved, last_ts DESC);
     CREATE INDEX IF NOT EXISTS errors_dedup ON errors(source, code, resolved);
+    -- SePay webhook dedup + match log. Created here (not only lazily in the
+    -- webhook) so /billing/sepay/latest can read it on a fresh install.
+    CREATE TABLE IF NOT EXISTS sepay_seen (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, amount INTEGER, ref TEXT, user_id TEXT, order_id TEXT);
   `)
   // Versioned migrations. v1: the `history` table used to store a cumulative
   // snapshot per hour bucket (running total), which made every hourly chart
@@ -156,7 +161,7 @@ try {
       console.log('[sqlite] migration v1: cleared legacy cumulative history rows')
     }
   } catch (e) { console.warn(`[sqlite] history migration skipped: ${e.message}`) }
-  console.log(`[sqlite] data store opened at ${process.env.PROXY_SQLITE || path.join(path.dirname(fileURLToPath(import.meta.url)), 'data.db')}`)
+  console.log(`[sqlite] data store opened at ${sqliteDbPath}`)
 } catch (e) {
   console.warn(`[sqlite] disabled (${e.message}); audit + history will use in-memory + JSONL`)
   sqliteDb = null
@@ -168,6 +173,9 @@ const distDir = path.join(rootDir, 'dist')
 const configPath = process.env.PROXY_CONFIG || path.join(__dirname, 'config.json')
 const ordersPath = process.env.PROXY_ORDERS || path.join(__dirname, 'orders.json')
 const auditPath = process.env.PROXY_AUDIT || path.join(__dirname, 'audit.log')
+// Log tail served to Settings → System by GET /api/admin/system/upgrade/log.
+// Reserved for a self-upgrade routine; nothing in this server writes it yet.
+const upgradeLogPath = process.env.PROXY_UPGRADE_LOG || path.join(__dirname, 'upgrade.log')
 
 const WEAK_API_KEYS = new Set(['', 'dev', 'change-me', 'change-me-in-production', 'REPLACE_WITH_RANDOM_SECRET'])
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -183,6 +191,15 @@ const contentTypes = {
   '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon'
 }
+
+// Declared before the first startup save: the orphan cleanup below (and other
+// boot-time passes) call saveConfig()/saveOrders() while the module is still
+// evaluating, which reach writeFileAtomic (writeChains) and bumpConfigRev
+// (configRev, agentWaiters). Declared further down they were still in their
+// TDZ, so those boot writes failed silently until the next save.
+const writeChains = new Map() // per-file write queue — see writeFileAtomic()
+let configRev = 1 // see bumpConfigRev()
+const agentWaiters = new Map() // nodeId -> Set<{ res, timeout }>
 
 const config = await loadConfig()
 let orders = await loadOrders()
@@ -200,6 +217,9 @@ let orders = await loadOrders()
   const removedProxies = []
   for (let i = config.proxies.length - 1; i >= 0; i--) {
     const p = config.proxies[i]
+    // BYON proxies are free and never have an order (orderId=null) — keep
+    // them as long as their owner still owns the node they run on.
+    if (p.byon && !p.orderId && p.ownerId && config.nodes.some((n) => n.id === p.nodeId && n.ownerId === p.ownerId)) continue
     const ord = p.orderId ? orderById.get(p.orderId) : null
     const orderAlive = ord && (ord.status === 'paid' || ord.status === 'active')
     const hasOwner = !!(ord && ord.ownerId)
@@ -349,7 +369,10 @@ for (const proxy of config.proxies) {
   if ((proxy.nodeId || 'local') === 'local') startProxy(proxy)
 }
 
-sweepExpired().catch((e) => console.warn('[sweep-expired]', e.message))
+// Deferred one tick: the sweep reaches top-level consts declared further down
+// (lastAlertAt via pushAlert, _checkoutLocks, writeChains via saveConfig) —
+// calling it synchronously here threw a TDZ ReferenceError and aborted it.
+setImmediate(() => sweepExpired().catch((e) => console.warn('[sweep-expired]', e.message)))
 // Hub expiry sweeper — runs every 5 min. Hubs past expiresAt with no auto-
 // extend get destroyed: Virtualizor deletes the VM, then the node row is
 // removed. Resolves the VZ instance PER-HUB (each hub may live on a
@@ -916,7 +939,31 @@ async function loadConfig() {
   return parsed
 }
 
-const APP_VERSION = '1.3.0'
+// Single source of truth = package.json (vite.config.js reads the same file
+// for the SPA's __APP_VERSION__). Read synchronously, once, at startup — a
+// top-level await here would let requests/sweeps run while the consts below
+// (lastAlertAt…) are still in their TDZ.
+const APP_VERSION = (() => {
+  try { return JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8')).version || '0.0.0' } catch { return '0.0.0' }
+})()
+// git rev/branch of the checkout, looked up at startup next to APP_VERSION (a
+// later `git pull` without a restart must not show a newer rev than what runs).
+// execFile, no shell; only when rootDir is itself the repo top level, so a
+// tarball install inside another working tree ($HOME dotfiles) reports nothing.
+function readGitInfo() {
+  const git = (...args) => new Promise((resolve) => {
+    execFile('git', ['-C', rootDir, ...args], { timeout: 3000, windowsHide: true }, (err, out) => resolve(err ? null : String(out).trim() || null))
+  })
+  return Promise.all([git('rev-parse', '--show-toplevel'), git('rev-parse', '--short', 'HEAD'), git('rev-parse', '--abbrev-ref', 'HEAD')])
+    .then(([top, rev, branch]) => {
+      let own = false
+      try { own = Boolean(top) && realpathSync(top) === realpathSync(rootDir) } catch { /* not ours */ }
+      return own ? { rev, branch: branch && branch !== 'HEAD' ? branch : null } : { rev: null, branch: null }
+    })
+    .catch(() => ({ rev: null, branch: null })) // execFile can throw synchronously (ENOMEM, --permission)
+}
+let systemGitInfo = readGitInfo() // { rev, branch } promise for GET /api/admin/system/version
+let systemGitInfoAt = Date.now()
 // Canonical agent version expected by this control plane. Bumped whenever the
 // heartbeat protocol or persisted-stat shape changes — the heartbeat response
 // reports `updateAvailable` to any agent reporting a different string so the
@@ -927,8 +974,7 @@ const LATEST_AGENT_VERSION = '1.9.1'
 // wake up immediately when their target config drifts (rotation, expiry, port
 // changes). Without this, a /rotate hit took up to POLL_INTERVAL (~10s) before
 // the egress IP actually changed on the remote agent.
-let configRev = 1
-const agentWaiters = new Map() // nodeId -> Set<{ res, timeout }>
+// (configRev + agentWaiters are declared near the top — used during startup.)
 
 // Force the agent on `nodeId` to reconcile to an empty list right now —
 // even if it's between long-polls, we wake any active waiter with []. Used
@@ -1001,7 +1047,7 @@ async function saveOrders() {
 // the real one. The tmp name carries a random suffix so even unqueued writers
 // can't clash, and a try/finally unlinks the tmp on any failure so a full disk
 // or a crashed write never leaves an orphan tmp behind.
-const writeChains = new Map()
+// (writeChains is declared near the top — used during startup.)
 
 function writeFileAtomic(file, data) {
   const prev = writeChains.get(file) || Promise.resolve()
@@ -1463,6 +1509,48 @@ function pushSseEvent(kind, payload) {
   for (const res of sseClients) {
     try { res.write(line) } catch { /* drop on next tick */ }
   }
+}
+function openSseStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  })
+  res.write(`event: hello\ndata: ${JSON.stringify({ ts: Date.now(), subscribers: sseClients.size + 1 })}\n\n`)
+  sseClients.add(res)
+  const ka = setInterval(() => { try { res.write(': keepalive\n\n') } catch { /* noop */ } }, 25_000)
+  req.on('close', () => { sseClients.delete(res); clearInterval(ka) })
+}
+// EventSource can't send the Authorization header, so the admin UI first mints
+// a one-time ticket (POST /api/admin/connections/stream-ticket, admin-gated) and
+// opens the stream with ?ticket=. Single-use, 60 s TTL, bound to the minting
+// client IP and re-checked against the minting session (logout / demotion
+// revokes it) — the long-lived session token never travels in a URL.
+const SSE_TICKET_TTL_MS = 60_000
+const sseTickets = new Map() // ticket -> { token, userId, ip, expiresAt }
+function mintSseTicket(req) {
+  const now = Date.now()
+  for (const [k, v] of sseTickets) if (v.expiresAt <= now) sseTickets.delete(k)
+  const ticket = crypto.randomBytes(24).toString('hex')
+  const session = sessionFromRequest(req)
+  sseTickets.set(ticket, { token: session?.token || '', userId: session?.userId || '', ip: clientIp(req), expiresAt: now + SSE_TICKET_TTL_MS })
+  return ticket
+}
+function redeemSseTicket(ticket, req) {
+  const t = sseTickets.get(ticket)
+  if (!t) return false
+  sseTickets.delete(ticket) // single-use, even when a check below fails
+  if (t.expiresAt <= Date.now() || t.ip !== clientIp(req)) return false
+  if (!t.token) return true // minted with the master X-API-Key
+  // X-Customer-Key "sessions" carry the placeholder token '__customer_key__',
+  // which is never in `sessions` → only the user's role is re-checked for those.
+  if (t.token !== '__customer_key__') {
+    const session = sessions.get(t.token)
+    if (!session || session.expiresAt <= Date.now()) return false
+  }
+  const user = config.users.find((u) => u.id === t.userId)
+  return Boolean(user && (user.role || 'admin') !== 'customer')
 }
 function recordHistorySample(id, s, ownerId) {
   const now = new Date()
@@ -6029,7 +6117,10 @@ function isAdminRequest(req) {
 async function handleHttp(req, res) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return sendJson(res, 204, null)
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+  // A malformed Host header / request-target (`Host: [`, `//x:abc/…`) makes new URL()
+  // throw — answer 400 instead of leaving the request hanging (unhandled rejection).
+  let url
+  try { url = new URL(req.url, `http://${req.headers.host || 'localhost'}`) } catch { return sendJson(res, 400, { error: 'bad request' }) }
   if (url.pathname === '/api' || url.pathname.startsWith('/api/')) return handleApi(req, res, url)
   // Public landing: `curl https://proxybox.pro/install-panel.sh | sudo bash` —
   // serve the canonical Hubfree installer so end-users can stand up their
@@ -6057,9 +6148,10 @@ async function handleMtls(req, res) {
     if (!url.pathname.startsWith('/api/agent/')) return sendJson(res, 404, { error: 'not found' })
     const node = nodeFromClientCert(req.socket)
     if (!node) return sendJson(res, 401, { error: 'client certificate required' })
-    return handleAgentRequest(req, res, url, node)
+    return await handleAgentRequest(req, res, url, node)
   } catch (error) {
     console.error(`[mtls] ${error.stack || error.message}`)
+    if (res.headersSent) { if (!res.writableEnded) res.destroy(); return }
     return sendJson(res, 500, { error: error.message })
   }
 }
@@ -6396,18 +6488,18 @@ async function handleApi(req, res, url) {
           if (sqliteDb) { try { sqliteDb.prepare('UPDATE sepay_seen SET user_id = ? WHERE id = ?').run(matched.userId, Number(event.id)) } catch {} }
           audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `topup user=${matched.userId} +${amount} -> ${next}` })
         } else if (matched.kind === 'order') {
+          // Orders are created already paid from the wallet — there is no pay-later
+          // provisioning step. (This branch used to call a provisionOrder() that never
+          // existed: a cancelled order was flipped to 'paid' with nothing provisioned,
+          // and for an already-paid order the money was dropped silently.) Credit the
+          // transfer to the order owner's wallet instead.
           const ord = orders.find((o) => o.id === matched.orderId)
-          if (ord && ord.status !== 'paid' && ord.status !== 'active') {
-            ord.status = 'paid'
-            ord.paidAt = new Date().toISOString()
-            ord.paymentMethod = 'sepay'
-            ord.sepayTxnId = Number(event.id)
-            await saveOrders()
-            if (typeof provisionOrder === 'function') {
-              try { await provisionOrder(ord) } catch (e) { logError({ source: 'sepay', level: 'error', code: 'sepay:provision-fail', message: e.message, context: { orderId: ord.id } }) }
-            }
-            if (sqliteDb) { try { sqliteDb.prepare('UPDATE sepay_seen SET order_id = ?, user_id = ? WHERE id = ?').run(ord.id, ord.ownerId || '', Number(event.id)) } catch {} }
-            audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `order paid ${ord.id} ${amount}` })
+          if (ord && ord.ownerId) {
+            const next = recordBillingTx(ord.ownerId, 'topup', amount, `sepay ${event.id} ref=${event.referenceCode || ''} memo=${ord.id}`)
+            if (sqliteDb) { try { sqliteDb.prepare('UPDATE sepay_seen SET order_id = ?, user_id = ? WHERE id = ?').run(ord.id, ord.ownerId, Number(event.id)) } catch {} }
+            audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `topup user=${ord.ownerId} +${amount} -> ${next} (memo ${ord.id})` })
+          } else {
+            audit({ actor: 'sepay', ip: clientIp(req), method: 'POST', path: '/api/webhooks/sepay', note: `no owner for order memo=${memo} amount=${amount}` })
           }
         }
       } catch (e) {
@@ -6664,7 +6756,7 @@ async function handleApi(req, res, url) {
     if (url.pathname.startsWith('/api/agent/')) {
       const node = nodeFromRequest(req)
       if (!node) return sendJson(res, 401, { error: 'invalid agent token' })
-      return handleAgentRequest(req, res, url, node)
+      return await handleAgentRequest(req, res, url, node)
     }
 
     // â”€â”€ v1 user-facing API (auth via session; never the master apiKey) â”€â”€â”€â”€â”€â”€â”€â”€
@@ -6672,14 +6764,35 @@ async function handleApi(req, res, url) {
     // so customers can only see proxies/orders they own. Public sub-paths: auth/login,
     // auth/register, auth/me. Everything else requires a session.
     if (url.pathname.startsWith('/api/v1/user/')) {
-      return handleUserV1(req, res, url)
+      return await handleUserV1(req, res, url)
     }
     // â”€â”€ v1 admin API (alias namespace; same handlers as /api/* under isAdminRequest) â”€â”€
     if (url.pathname.startsWith('/api/v1/admin/')) {
       if (!isAdminRequest(req)) return sendJson(res, 401, { error: 'admin auth required' })
-      // Rewrite to legacy /api/* and recurse so all existing admin endpoints work unchanged.
-      const rewritten = new URL(req.url.replace('/api/v1/admin/', '/api/'), `http://${req.headers.host || 'localhost'}`)
+      // Rewrite and recurse so all existing admin endpoints work unchanged: the
+      // legacy top-level resources (/api/proxies, /api/nodes, …) keep mapping to
+      // /api/X; everything else lives under /api/admin/X (system/version, users…),
+      // which the old blanket /api/X rewrite always sent to a 404.
+      // Collapse nested /api/v1/admin/v1/admin/… prefixes up front: recursing once
+      // per level overflowed the stack (and hung the request) at ~200 levels.
+      let aliasPath = url.pathname
+      while (aliasPath.startsWith('/api/v1/admin/v1/admin/')) aliasPath = aliasPath.replace('/api/v1/admin/v1/admin/', '/api/v1/admin/')
+      const legacy = /^\/api\/v1\/admin\/(admin|auth|v1|nodes|proxies|orders|rotate|sub|health|network|metrics|config|public|agent|webhooks)(\/|$)/.test(aliasPath)
+      // Rewrite the current `url`, not req.url: re-rewriting the original on every
+      // recursion turned /api/v1/admin/v1/admin/X into endless recursion (stack overflow).
+      const rewritten = new URL(url)
+      rewritten.pathname = aliasPath.replace('/api/v1/admin/', legacy ? '/api/' : '/api/admin/')
       return handleApi(req, res, rewritten)
+    }
+
+    // ── admin: SSE live connection stream, ticket auth ──
+    // EventSource can't send the bearer header, so the admin SPA passes a
+    // one-time ?ticket= (see mintSseTicket) and skips the header-based gate
+    // below. Without ?ticket= the request falls through to the normal route, and
+    // so does a bad ticket sent with header credentials (scripts): the gate decides.
+    if (req.method === 'GET' && url.pathname === '/api/admin/connections/stream' && url.searchParams.has('ticket')) {
+      if (redeemSseTicket(url.searchParams.get('ticket'), req)) return openSseStream(req, res)
+      if (!isApiAuthorized(req)) return sendJson(res, 401, { error: 'invalid or expired stream ticket' })
     }
 
     if (!isPublicEndpoint(req, url) && !isApiAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' })
@@ -6693,10 +6806,10 @@ async function handleApi(req, res, url) {
       audit({ actor: actorOf(req), ip: clientIp(req), method: req.method, path: url.pathname, status: 403, note: 'denied' })
       return sendJson(res, 403, { error: 'admin role required' })
     }
-    if (!isPublicEndpoint(req, url) && req.method !== 'GET' && req.method !== 'HEAD') {
-      audit({ actor: actorOf(req), ip: clientIp(req), method: req.method, path: url.pathname })
-    }
-    if (!isPublicEndpoint(req, url) && req.method !== 'GET' && req.method !== 'HEAD') {
+    // (one row per mutation — this block used to be duplicated → 2 rows each).
+    // The SSE stream-ticket mint is a read in disguise (the header-auth GET of the
+    // stream isn't audited either) and runs on every Connections visit/reconnect.
+    if (!isPublicEndpoint(req, url) && req.method !== 'GET' && req.method !== 'HEAD' && url.pathname !== '/api/admin/connections/stream-ticket') {
       audit({ actor: actorOf(req), ip: clientIp(req), method: req.method, path: url.pathname })
     }
 
@@ -6842,7 +6955,7 @@ async function handleApi(req, res, url) {
     // Public service health â€” exposed at /status. No PII; just node count + uptime.
     if (req.method === 'GET' && url.pathname === '/api/public/status') {
       const allNodes = [localNode(), ...config.nodes.map(publicNode)]
-      const online = allNodes.filter((n) => n.online !== false).length
+      const online = allNodes.filter((n) => n.status === 'online').length
       const offline = allNodes.length - online
       return sendJson(res, 200, {
         uptimeSeconds: Math.round(process.uptime()),
@@ -6884,23 +6997,23 @@ async function handleApi(req, res, url) {
       }
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/auth/login') return handleLogin(req, res)
+    if (req.method === 'POST' && url.pathname === '/api/auth/login') return await handleLogin(req, res)
     if (req.method === 'POST' && url.pathname === '/api/auth/register') {
       if (!isFeatureEnabled('registration')) return sendJson(res, 403, { error: 'registration disabled by admin' })
-      return handleRegister(req, res)
+      return await handleRegister(req, res)
     }
     if (req.method === 'POST' && url.pathname === '/api/auth/logout') return handleLogout(req, res)
-    if (req.method === 'POST' && url.pathname === '/api/auth/forgot-password') return handleForgotPassword(req, res)
-    if (req.method === 'POST' && url.pathname === '/api/auth/reset-password')  return handleResetPassword(req, res)
-    if (req.method === 'GET'  && url.pathname === '/api/auth/verify-email')    return handleVerifyEmail(req, res, url)
-    if (req.method === 'POST' && url.pathname === '/api/auth/resend-verify')   return handleResendVerify(req, res)
+    if (req.method === 'POST' && url.pathname === '/api/auth/forgot-password') return await handleForgotPassword(req, res)
+    if (req.method === 'POST' && url.pathname === '/api/auth/reset-password')  return await handleResetPassword(req, res)
+    if (req.method === 'GET'  && url.pathname === '/api/auth/verify-email')    return await handleVerifyEmail(req, res, url)
+    if (req.method === 'POST' && url.pathname === '/api/auth/resend-verify')   return await handleResendVerify(req, res)
 
     // â”€â”€ OAuth (Google + GitHub) â€” public, feature-flagged â”€â”€
     const oauthMatch = url.pathname.match(/^\/api\/auth\/oauth\/([a-z]+)\/(start|callback)$/)
     if (oauthMatch && req.method === 'GET') {
       const [, provider, phase] = oauthMatch
-      if (phase === 'start') return oauthRoutes.handleStart(req, res, url, provider)
-      return oauthRoutes.handleCallback(req, res, url, provider)
+      if (phase === 'start') return await oauthRoutes.handleStart(req, res, url, provider)
+      return await oauthRoutes.handleCallback(req, res, url, provider)
     }
     // What OAuth providers are configured (frontend shows the right buttons)
     if (req.method === 'GET' && url.pathname === '/api/auth/oauth/providers') {
@@ -7645,21 +7758,17 @@ async function handleApi(req, res, url) {
     }
     // ── admin: SSE live connection stream ──
     // Long-lived response. Each closed relay pushes a "connection" event.
-    // No auth via x-api-key header since EventSource can't set headers — the
-    // route relies on session cookie / admin token via the standard gate.
+    // EventSource can't set headers: the SPA first mints a one-time ticket here
+    // (admin-gated like every /api/admin/* route) and opens the stream with
+    // ?ticket= (handled before the gate). Header auth (X-API-Key / admin bearer)
+    // keeps working on the route below for scripts.
+    if (req.method === 'POST' && url.pathname === '/api/admin/connections/stream-ticket') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      return sendJson(res, 200, { ticket: mintSseTicket(req), expiresInMs: SSE_TICKET_TTL_MS })
+    }
     if (req.method === 'GET' && url.pathname === '/api/admin/connections/stream') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no'
-      })
-      res.write(`event: hello\ndata: ${JSON.stringify({ ts: Date.now(), subscribers: sseClients.size + 1 })}\n\n`)
-      sseClients.add(res)
-      const ka = setInterval(() => { try { res.write(': keepalive\n\n') } catch { /* noop */ } }, 25_000)
-      req.on('close', () => { sseClients.delete(res); clearInterval(ka) })
-      return
+      return openSseStream(req, res)
     }
     // ── admin: live connection insights ──
     // For each proxy belonging to a live (paid) order, return its current stats
@@ -8422,16 +8531,33 @@ async function handleApi(req, res, url) {
     if (req.method === 'GET' && url.pathname === '/api/admin/revenue/breakdown') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
       const since = Date.now() - 30 * 86400_000
-      // By proxy type â€” totals from in-memory orders (config.orders)
+      // By proxy type â€” totals from orders.json (module-level `orders`; config.orders is never written)
       let ipv4Total = 0, ipv6Total = 0
       const hourly = new Array(24).fill(0)
-      for (const o of config.orders || []) {
-        const t = new Date(o.createdAt).getTime()
+      // Cancel refunds paid back to the wallet ("cancel <orderId> …" / "admin cancel
+      // <orderId>") are netted out, so a cancelled order only counts what was kept.
+      // Keyed by owner + order id (both cancel paths refund order.ownerId): order ids
+      // are short and older ones may repeat across users.
+      const refundedBy = new Map()
+      if (sqliteDb) {
+        try {
+          for (const r of sqliteDb.prepare("SELECT user_id, amount, note FROM billing_tx WHERE type = 'refund' AND note LIKE '%cancel %'").all()) {
+            const m = /\bcancel (\S+)/.exec(r.note || '')
+            const key = m && `${r.user_id} ${m[1]}`
+            if (m) refundedBy.set(key, (refundedBy.get(key) || 0) + Math.abs(Number(r.amount) || 0))
+          }
+        } catch { /* no refunds → gross order value */ }
+      }
+      for (const o of orders) {
+        // Older admin-created orders (POST /api/orders) only carry the date-only `date` and no `type`
+        const t = new Date(o.createdAt || o.date).getTime()
         if (!Number.isFinite(t) || t < since) continue
-        const amount = Number(o.totalCost || 0)
-        if (String(o.type || 'IPv4').toLowerCase() === 'ipv6') ipv6Total += amount
+        const refunded = o.status === 'cancelled' || o.status === 'refunded' ? (refundedBy.get(`${o.ownerId} ${o.id}`) || 0) : 0
+        const amount = Math.max(0, Number(o.amount || 0) - refunded) // order records store the price as `amount`
+        const type = o.type || (/^ipv6/i.test(String(o.item || '')) ? 'IPv6' : 'IPv4')
+        if (String(type).toLowerCase() === 'ipv6') ipv6Total += amount
         else ipv4Total += amount
-        hourly[new Date(t).getUTCHours()] += amount
+        if (o.createdAt) hourly[new Date(t).getUTCHours()] += amount // a date-only order has no hour
       }
       return sendJson(res, 200, {
         byType: { ipv4: ipv4Total, ipv6: ipv6Total },
@@ -8986,7 +9112,7 @@ async function handleApi(req, res, url) {
           id: target.id,
           name: target.name,
           email: target.email,
-          role: target.role || 'customer',
+          role: target.role || 'admin', // role-less = admin, as in login / isAdminRequest / v1 auth/me
           totpEnabled: !!target.totp,
           emailVerified: !!target.emailVerified
         }
@@ -9092,9 +9218,10 @@ async function handleApi(req, res, url) {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
       const mem = process.memoryUsage()
       let dbSize = 0
-      try { dbSize = sqliteDb ? require('node:fs').statSync(sqliteDbPath || '').size : 0 } catch {}
+      try { dbSize = sqliteDb ? statSync(sqliteDbPath || '').size : 0 } catch {}
       const allNodes = [localNode(), ...config.nodes.map(publicNode)]
-      const nodeOnline = allNodes.filter((n) => n.online !== false).length
+      // publicNode().status = nodeIsOnline() (heartbeat < 90 s); local is always 'online'
+      const nodeOnline = allNodes.filter((n) => n.status === 'online').length
       // Status distribution
       const statusCount = { active: 0, expired: 0, grace: 0, error: 0, pending: 0 }
       for (const p of config.proxies) statusCount[p.status || 'active'] = (statusCount[p.status || 'active'] || 0) + 1
@@ -9111,11 +9238,12 @@ async function handleApi(req, res, url) {
       // Top destination hosts (across all proxies' insights)
       const targetTally = new Map()
       for (const p of config.proxies) {
+        // topTargets is a Map(host -> { count, bytesUp, bytesDown, lastTs }) — see ensureStats()
         const tops = stats.get(p.id)?.topTargets || []
-        for (const t of tops) {
-          const cur = targetTally.get(t.host) || { host: t.host, count: 0, bytes: 0 }
-          cur.count += Number(t.count || 0); cur.bytes += Number(t.bytes || 0)
-          targetTally.set(t.host, cur)
+        for (const [host, t] of tops) {
+          const cur = targetTally.get(host) || { host, count: 0, bytes: 0 }
+          cur.count += Number(t.count || 0); cur.bytes += Number(t.bytesUp || 0) + Number(t.bytesDown || 0)
+          targetTally.set(host, cur)
         }
       }
       const topTargets = [...targetTally.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 10)
@@ -9136,8 +9264,9 @@ async function handleApi(req, res, url) {
         monthBytes += s.monthBytes || 0
       }
       const expiringSoon = config.proxies.filter((p) => {
-        if (p.status !== 'active' || !p.expires) return false
-        const e = new Date(p.expires).getTime()
+        if (p.status !== 'active') return false
+        // Same rule as sweepExpired(): precise expiresAt, legacy date-only `expires` = end of that UTC day.
+        const e = p.expiresAt ? new Date(p.expiresAt).getTime() : (p.expires ? new Date(p.expires + 'T23:59:59Z').getTime() : 0)
         return e > Date.now() && e < Date.now() + 7 * 86400_000
       }).length
       // Connection cap saturation: how many proxies are >= 80% of cap A
@@ -9184,10 +9313,10 @@ async function handleApi(req, res, url) {
     if (req.method === 'GET' && url.pathname === '/api/admin/system/status') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
       const allNodes = [localNode(), ...config.nodes.map(publicNode)]
-      const online = allNodes.filter((n) => n.online !== false).length
+      const online = allNodes.filter((n) => n.status === 'online').length
       const mem = process.memoryUsage()
       let dbSize = 0
-      try { dbSize = sqliteDb ? require('node:fs').statSync(sqliteDbPath || '').size : 0 } catch {}
+      try { dbSize = sqliteDb ? statSync(sqliteDbPath || '').size : 0 } catch {}
       return sendJson(res, 200, {
         uptimeSeconds: Math.round(process.uptime()),
         memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal },
@@ -9199,12 +9328,42 @@ async function handleApi(req, res, url) {
         dbSize
       })
     }
+    // ── admin: version info for Settings → System (read-only). git rev/branch
+    // are best-effort (null when not a git checkout, git missing, or "dubious
+    // ownership"); no "latest available" lookup — it would need outbound network
+    // and the page doesn't render it.
+    if (req.method === 'GET' && url.pathname === '/api/admin/system/version') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      const git = await systemGitInfo
+      // failed / timed out (or not a checkout): retry, at most once a minute (3 git spawns each)
+      if (!git.rev && Date.now() - systemGitInfoAt > 60_000) { systemGitInfoAt = Date.now(); systemGitInfo = readGitInfo() }
+      return sendJson(res, 200, {
+        version: APP_VERSION,
+        gitRev: git.rev,
+        gitBranch: git.branch,
+        node: process.version,
+        uptimeSec: Math.round(process.uptime()),
+        // POST /api/admin/system/upgrade is not implemented here — the page
+        // hides its Upgrade button while this is false.
+        selfUpgrade: false
+      })
+    }
+    // Tail of the upgrade log (empty until a self-upgrade routine writes it).
+    if (req.method === 'GET' && url.pathname === '/api/admin/system/upgrade/log') {
+      if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
+      try {
+        return sendJson(res, 200, { log: (await fs.readFile(upgradeLogPath, 'utf8')).slice(-16_000) })
+      } catch (e) {
+        if (e.code === 'ENOENT') return sendJson(res, 200, { log: '' })
+        return sendJson(res, 500, { error: e.message })
+      }
+    }
     // â”€â”€ admin: analytics â€” order heatmap (day-of-week Ã— hour-of-day) â”€â”€â”€â”€â”€â”€
     if (req.method === 'GET' && url.pathname === '/api/admin/analytics/heatmap') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
       const grid = Array.from({ length: 7 }, () => new Array(24).fill(0))
       const since = Date.now() - 30 * 86400_000
-      for (const o of config.orders || []) {
+      for (const o of orders) {
         const t = new Date(o.createdAt).getTime()
         if (!Number.isFinite(t) || t < since) continue
         const d = new Date(t)
@@ -9216,8 +9375,8 @@ async function handleApi(req, res, url) {
     if (req.method === 'GET' && url.pathname === '/api/admin/analytics/churn') {
       if (!isAdminRequest(req)) return sendJson(res, 403, { error: 'admin only' })
       const lastOrderByUser = new Map()
-      for (const o of config.orders || []) {
-        const t = new Date(o.createdAt).getTime()
+      for (const o of orders) {
+        const t = new Date(o.createdAt || o.date).getTime() // older admin-created orders: date-only `date`
         if (!Number.isFinite(t)) continue
         const prev = lastOrderByUser.get(o.ownerId) || 0
         if (t > prev) lastOrderByUser.set(o.ownerId, t)
@@ -9746,7 +9905,7 @@ async function handleApi(req, res, url) {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/orders') {
-      return handleCreateOrder(req, res)
+      return await handleCreateOrder(req, res)
     }
 
     if (req.method === 'GET' && url.pathname === '/api/orders') {
@@ -9798,7 +9957,9 @@ async function handleApi(req, res, url) {
           if (body.bytesPerSec !== undefined) proxy.bytesPerSec = nonNegInt(body.bytesPerSec)
           if (body.monthlyQuotaBytes !== undefined) proxy.monthlyQuotaBytes = nonNegInt(body.monthlyQuotaBytes)
           if (body.perSrcMax !== undefined) proxy.perSrcMax = nonNegInt(body.perSrcMax)
-          if (Number.isFinite(Number(body.durationDays))) proxy.expires = addDays(Number(body.durationDays))
+          // Set expiresAt too: it takes precedence over `expires` everywhere (sweepExpired, dashboard).
+          // null / blank mean "unchanged" (Number() would turn them into 0 = expire now).
+          if (String(body.durationDays ?? '').trim() !== '' && Number.isFinite(Number(body.durationDays))) Object.assign(proxy, addHours(Number(body.durationDays) * 24))
           if (typeof body.listenHost === 'string' && body.listenHost.trim()) proxy.listenHost = body.listenHost.trim()
           touched += 1
         }
@@ -9851,7 +10012,9 @@ async function handleApi(req, res, url) {
       if (action === 'renew' && req.method === 'POST') {
         const body = await readJson(req)
         proxy.status = 'active'
-        proxy.expires = addDays(Number(body.days || 30))
+        // expires + expiresAt: a stale expiresAt would win and re-expire the renewed proxy
+        const days = Number(body.days || 30)
+        Object.assign(proxy, addHours((Number.isFinite(days) ? days : 30) * 24))
         await saveConfig()
         return sendJson(res, 200, publicProxy(proxy))
       }
@@ -9932,7 +10095,8 @@ async function handleApi(req, res, url) {
         const body = await readJson(req)
         if (typeof body.name === 'string' && body.name.trim()) proxy.name = body.name.trim()
         if (typeof body.rotate === 'boolean') proxy.rotate = proxy.type === 'IPv6' && body.rotate
-        if (Number.isFinite(Number(body.durationDays))) proxy.expires = addDays(Number(body.durationDays))
+        // expires + expiresAt; null / blank = unchanged (Number() would make them 0 = expire now)
+        if (String(body.durationDays ?? '').trim() !== '' && Number.isFinite(Number(body.durationDays))) Object.assign(proxy, addHours(Number(body.durationDays) * 24))
         if (body.maxConnections !== undefined) proxy.maxConnections = nonNegInt(body.maxConnections)
         if (body.bytesPerSec !== undefined) proxy.bytesPerSec = nonNegInt(body.bytesPerSec)
         if (body.monthlyQuotaBytes !== undefined) proxy.monthlyQuotaBytes = nonNegInt(body.monthlyQuotaBytes)
@@ -9948,6 +10112,10 @@ async function handleApi(req, res, url) {
     return sendJson(res, 404, { error: 'not found' })
   } catch (error) {
     console.error(`[api] ${error.stack || error.message}`)
+    // Failed mid-response (stream / file already started): can't send a 500 anymore.
+    // Only tear down a response still in flight, never one that finished and is
+    // flushing (large downloads).
+    if (res.headersSent) { if (!res.writableEnded) res.destroy(); return }
     return sendJson(res, 500, { error: error.message })
   }
 }
@@ -9960,7 +10128,12 @@ async function handleUserV1(req, res, url) {
   // public sub-paths
   if (req.method === 'POST' && sub === 'auth/login') return handleLogin(req, res)
   if (req.method === 'POST' && sub === 'auth/register') return handleRegister(req, res)
-  if (req.method === 'POST' && sub === 'auth/logout') return handleLogout(req, res)
+  if (req.method === 'POST' && sub === 'auth/logout') {
+    // The SPA logs every session out here; admins keep the audit row their
+    // logout used to leave via /api/auth/logout (admin-gate mutation audit).
+    if (sessionFromRequest(req) && isAdminRequest(req)) audit({ actor: actorOf(req), ip: clientIp(req), method: 'POST', path: url.pathname })
+    return handleLogout(req, res)
+  }
 
   // everything else needs a valid session
   const session = sessionFromRequest(req)
@@ -9973,8 +10146,10 @@ async function handleUserV1(req, res, url) {
   if (user.suspended) return sendJson(res, 403, { error: 'account suspended â€” contact support' })
 
   if (req.method === 'GET' && sub === 'auth/me') {
+    // Role-less (legacy) users are admins everywhere else (login, isAdminRequest);
+    // the SPA resolves every session's role here, so report them the same way.
     return sendJson(res, 200, {
-      id: user.id, name: user.name, email: user.email, role: user.role || 'customer',
+      id: user.id, name: user.name, email: user.email, role: user.role || 'admin',
       emailVerified: !!user.emailVerified, forcePasswordChange: !!user.forcePasswordChange,
       require2FA: !!user.require2FA, totpEnabled: !!(user.totp && user.totp.confirmed)
     })
@@ -10943,7 +11118,10 @@ async function handleUserV1(req, res, url) {
     // Zone-aware node picking: filter candidates to nodes whose `zone` field
     // matches the customer's requested zone (or any zone if blank). Local control
     // plane node has zone = config.api.region by default.
-    const orderId = `ORD-${Date.now().toString().slice(-6)}`
+    let orderId = `ORD-${Date.now().toString().slice(-6)}`
+    // The 6 ms digits wrap every ~16 min: never reuse a live id (cancel, invoice and
+    // refund netting look orders up by it). Same ORD-NNNNNN shape for SePay memos.
+    while (orders.some((o) => o.id === orderId)) orderId = `ORD-${String(crypto.randomInt(1_000_000)).padStart(6, '0')}`
     const created = []
     const expTimes = addHours(hours)
     for (let i = 0; i < quantity; i++) {
@@ -10998,7 +11176,7 @@ async function handleUserV1(req, res, url) {
     sendMail({
       to: user.email,
       subject: `ProxyBox: ${quantity} ${type} proxy provisioned (Order ${orderId})`,
-      html: `<h2>Your order is ready</h2><p>Order <code>${orderId}</code>: <strong>${quantity} Ã— ${type}</strong> for ${hours} hours.</p><p>Total: <strong>${totalCost.toLocaleString()}</strong> ${(config.pricing.currency || 'vnd').toUpperCase()}${credit.applied ? ` — free credit -${credit.applied.toLocaleString()}, charged from wallet ${walletCharge.toLocaleString()}` : ''}</p><p>Proxies:</p><pre>${created.map((p) => `${customerFacingHost(p)}:${p.port}:${p.username}:${p.password}`).join('\n')}</pre><p>Invoice: <a href="/api/v1/user/orders/${orderId}/invoice">download</a></p>`
+      html: `<h2>Your order is ready</h2><p>Order <code>${orderId}</code>: <strong>${quantity} Ã— ${type}</strong> for ${hours} hours.</p><p>Total: <strong>${totalCost.toLocaleString()}</strong> ${(config.pricing.currency || 'vnd').toUpperCase()}${credit.applied ? ` — free credit -${credit.applied.toLocaleString()}, charged from wallet ${walletCharge.toLocaleString()}` : ''}</p><p>Proxies:</p><pre>${created.map((p) => `${customerFacingHost(p)}:${p.port}:${p.username}:${p.password}`).join('\n')}</pre><p>Invoice: <a href="${publicBaseUrl(req)}/billing">open Billing in the panel</a></p>`
     }).catch(() => {})
     if (user.webhookUrl) sendCustomerWebhook(user.webhookUrl, { event: 'order.created', orderId, amount: totalCost, quantity, type, hours }).catch(() => {})
     return sendJson(res, 201, { order, proxies: created, balance: newBalance })
@@ -11734,7 +11912,9 @@ th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left} th{backg
   if (req.method === 'GET' && sub === 'billing/sepay/latest') {
     if (!config.billing?.sepayEnabled) return sendJson(res, 503, { error: 'SePay not enabled' })
     if (!sqliteDb) return sendJson(res, 200, { hits: [] })
-    const since = Number(url.searchParams.get('sinceMs')) || (Date.now() - 30 * 60_000)
+    let since = Number(url.searchParams.get('sinceMs')) || (Date.now() - 30 * 60_000)
+    // Values outside the Date range (e.g. sinceMs=1e20) would make toISOString() throw → 500
+    if (Number.isNaN(new Date(since).getTime())) since = Date.now() - 30 * 60_000
     const rows = sqliteDb.prepare('SELECT id, ts, amount, ref, user_id, order_id FROM sepay_seen WHERE user_id = ? AND ts >= ? ORDER BY id DESC LIMIT 10')
       .all(user.id, new Date(since).toISOString())
     return sendJson(res, 200, { hits: rows.map((r) => ({ id: r.id, ts: r.ts, amount: r.amount, ref: r.ref, orderId: r.order_id || null })) })
@@ -12559,7 +12739,8 @@ async function handleCreateOrder(req, res) {
   const zone = typeof body.zone === 'string' && body.zone.trim() ? body.zone.trim() : ''
   const limits = { maxConnections: body.maxConnections, bytesPerSec: body.bytesPerSec, monthlyQuotaBytes: body.monthlyQuotaBytes }
   const listenHost = typeof body.listenHost === 'string' && body.listenHost.trim() ? body.listenHost.trim() : undefined
-  const orderId = `ORD-${Date.now().toString().slice(-6)}`
+  let orderId = `ORD-${Date.now().toString().slice(-6)}`
+  while (orders.some((o) => o.id === orderId)) orderId = `ORD-${String(crypto.randomInt(1_000_000)).padStart(6, '0')}` // ids wrap every ~16 min
   const created = []
   for (let index = 0; index < quantity; index += 1) {
     const targetNodeId = autoBalance ? pickBalancedNode(type) : nodeId
@@ -12579,8 +12760,10 @@ async function handleCreateOrder(req, res) {
     ownerId: ownerId || null,
     item: `${type} x ${quantity}${zone ? ` · ${zone}` : ''}`,
     amount: Number(body.amount || 0),
+    type,
     status: 'paid',
     date: new Date().toISOString().slice(0, 10),
+    createdAt: new Date().toISOString(),   // revenue breakdown / heatmap / churn key on it
     zone: zone || undefined,
     bytesPerSec: orderBytesPerSec,
     proxyIds: created.map((proxy) => proxy.id)
@@ -13147,7 +13330,7 @@ function localSelfMetrics() {
 
 function readCpuPct() {
   try {
-    const line = require('node:fs').readFileSync('/proc/stat', 'utf8').split('\n')[0]
+    const line = readFileSync('/proc/stat', 'utf8').split('\n')[0]
     const parts = line.trim().split(/\s+/).slice(1).map((x) => Number(x))
     const idle = parts[3] + (parts[4] || 0)
     const total = parts.reduce((a, b) => a + b, 0)
@@ -13164,7 +13347,7 @@ function readCpuPct() {
 
 function readMem() {
   try {
-    const txt = require('node:fs').readFileSync('/proc/meminfo', 'utf8')
+    const txt = readFileSync('/proc/meminfo', 'utf8')
     const m = {}
     for (const line of txt.split('\n')) {
       const mm = line.match(/^(\S+):\s+(\d+)/)
@@ -13180,14 +13363,14 @@ function readMem() {
 
 function readLoad() {
   try {
-    const txt = require('node:fs').readFileSync('/proc/loadavg', 'utf8').trim().split(/\s+/)
+    const txt = readFileSync('/proc/loadavg', 'utf8').trim().split(/\s+/)
     return { load1: Number(txt[0]) || 0, load5: Number(txt[1]) || 0 }
   } catch { return { load1: 0, load5: 0 } }
 }
 
 function readNetBps() {
   try {
-    const txt = require('node:fs').readFileSync('/proc/net/dev', 'utf8')
+    const txt = readFileSync('/proc/net/dev', 'utf8')
     let rx = 0, tx = 0
     for (const line of txt.split('\n')) {
       const m = line.match(/^\s*([^:\s]+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/)
