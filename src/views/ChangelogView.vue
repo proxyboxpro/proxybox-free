@@ -20,6 +20,25 @@ const year = new Date().getFullYear()
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.7.1', date: '2026-10-03', tag: 'fix',
+    titleEn: 'Server fixes: SePay polling, BYON proxies on restart, dashboard numbers, live connections, downloads',
+    titleVi: 'Sửa lỗi server: poll SePay, proxy BYON khi restart, số liệu dashboard, kết nối live, tải file',
+    items: [
+      { en: 'Fresh installs no longer hang the SePay top-up poll (missing table); handler errors and malformed requests now always get a response (400/500) instead of hanging.',
+        vi: 'Bản cài mới không còn treo khi poll nạp tiền SePay (thiếu bảng); lỗi trong handler và request sai định dạng luôn được phản hồi (400/500) thay vì treo.' },
+      { en: 'Proxies created on a customer-owned node (BYON) are no longer deleted at every restart; the first expiry sweep after boot no longer aborts when an alert webhook is set.',
+        vi: 'Proxy tạo trên node riêng của khách (BYON) không còn bị xoá mỗi lần restart; vòng quét hết hạn đầu tiên sau khi khởi động không còn bị dừng khi có cấu hình webhook cảnh báo.' },
+      { en: 'Admin dashboard: real CPU/RAM/network for the control-plane node and DB size, offline nodes no longer counted online, "expiring in 7 days" uses the precise expiry, top targets fixed, version read from package.json. Admin expiry edits and renewals now move the precise expiry too.',
+        vi: 'Dashboard admin: CPU/RAM/mạng thật cho node điều khiển và dung lượng DB, không còn đếm node offline là online, "sắp hết hạn 7 ngày" dùng thời điểm hết hạn chính xác, sửa top targets, version đọc từ package.json. Sửa hạn/gia hạn từ admin giờ cập nhật cả thời điểm hết hạn chính xác.' },
+      { en: 'Revenue breakdown, order heatmap and churn read the real order store (refunds netted); new order ids are always unique; a SePay transfer quoting an order id credits that order owner\'s wallet.',
+        vi: 'Phân tích doanh thu, heatmap đơn hàng và churn đọc đúng kho đơn hàng (đã trừ hoàn tiền); mã đơn mới luôn duy nhất; chuyển khoản SePay ghi mã đơn sẽ cộng vào ví của chủ đơn.' },
+      { en: 'Live connections stream works in the browser (one-time stream tickets); invoice and GDPR export downloads work from the UI; Settings shows the running version and upgrade log; customer pages no longer write 403 rows to the audit log.',
+        vi: 'Luồng kết nối live chạy được trên trình duyệt (ticket dùng một lần); tải hoá đơn và xuất dữ liệu GDPR từ giao diện hoạt động; Settings hiện version đang chạy và log nâng cấp; trang khách hàng không còn ghi dòng 403 vào audit log.' },
+      { en: 'Node.js fallback agent: IPv6 default-route detection now actually runs, so hosts with a default v6 route may report a /64 (or PROXYHUB_IPV6_PREFIX_LEN) prefix after upgrading — check IPv6 pools on such nodes.',
+        vi: 'Agent Node.js dự phòng: việc dò default route IPv6 giờ thực sự chạy, nên host có default route v6 có thể báo prefix /64 (hoặc PROXYHUB_IPV6_PREFIX_LEN) sau khi nâng cấp — hãy kiểm tra pool IPv6 trên các node đó.' },
+    ],
+  },
+  {
     version: '1.7.0', date: '2026-10-03', tag: 'release',
     titleEn: 'New UI on Ant Design (ant-design-vue 4) — every page rebuilt, dark + light themes',
     titleVi: 'Giao diện mới trên Ant Design (ant-design-vue 4) — dựng lại toàn bộ trang, theme tối + sáng',

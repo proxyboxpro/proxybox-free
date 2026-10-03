@@ -6151,6 +6151,7 @@ async function handleMtls(req, res) {
     return await handleAgentRequest(req, res, url, node)
   } catch (error) {
     console.error(`[mtls] ${error.stack || error.message}`)
+    if (res.headersSent) { if (!res.writableEnded) res.destroy(); return }
     return sendJson(res, 500, { error: error.message })
   }
 }
@@ -6772,11 +6773,15 @@ async function handleApi(req, res, url) {
       // legacy top-level resources (/api/proxies, /api/nodes, …) keep mapping to
       // /api/X; everything else lives under /api/admin/X (system/version, users…),
       // which the old blanket /api/X rewrite always sent to a 404.
-      const legacy = /^\/api\/v1\/admin\/(admin|auth|v1|nodes|proxies|orders|rotate|sub|health|network|metrics|config|public|agent|webhooks)(\/|$)/.test(url.pathname)
+      // Collapse nested /api/v1/admin/v1/admin/… prefixes up front: recursing once
+      // per level overflowed the stack (and hung the request) at ~200 levels.
+      let aliasPath = url.pathname
+      while (aliasPath.startsWith('/api/v1/admin/v1/admin/')) aliasPath = aliasPath.replace('/api/v1/admin/v1/admin/', '/api/v1/admin/')
+      const legacy = /^\/api\/v1\/admin\/(admin|auth|v1|nodes|proxies|orders|rotate|sub|health|network|metrics|config|public|agent|webhooks)(\/|$)/.test(aliasPath)
       // Rewrite the current `url`, not req.url: re-rewriting the original on every
       // recursion turned /api/v1/admin/v1/admin/X into endless recursion (stack overflow).
       const rewritten = new URL(url)
-      rewritten.pathname = url.pathname.replace('/api/v1/admin/', legacy ? '/api/' : '/api/admin/')
+      rewritten.pathname = aliasPath.replace('/api/v1/admin/', legacy ? '/api/' : '/api/admin/')
       return handleApi(req, res, rewritten)
     }
 
@@ -10107,8 +10112,10 @@ async function handleApi(req, res, url) {
     return sendJson(res, 404, { error: 'not found' })
   } catch (error) {
     console.error(`[api] ${error.stack || error.message}`)
-    // Failed mid-response (stream / file already started): can't send a 500 anymore
-    if (res.headersSent) return res.destroy()
+    // Failed mid-response (stream / file already started): can't send a 500 anymore.
+    // Only tear down a response still in flight, never one that finished and is
+    // flushing (large downloads).
+    if (res.headersSent) { if (!res.writableEnded) res.destroy(); return }
     return sendJson(res, 500, { error: error.message })
   }
 }
