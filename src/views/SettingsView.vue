@@ -84,7 +84,8 @@ onBeforeUnmount(() => {
       </a-descriptions>
 
       <a-space wrap class="actions">
-        <a-button type="primary" :loading="upgrading" @click="startUpgrade">
+        <!-- Hidden when the server reports it has no self-upgrade endpoint (selfUpgrade: false). -->
+        <a-button v-if="systemInfo.selfUpgrade !== false" type="primary" :loading="upgrading" @click="startUpgrade">
           <template #icon><CloudDownloadOutlined /></template>
           {{ upgrading ? 'Đang nâng cấp…' : 'Nâng cấp lên phiên bản mới' }}
         </a-button>
@@ -104,7 +105,6 @@ onBeforeUnmount(() => {
         <pre class="mono log">{{ upgradeLog }}</pre>
       </a-typography-paragraph>
     </a-card>
-    <a-alert v-else-if="upgradeErr" type="error" show-icon :message="upgradeErr" />
 
     <!-- ── Existing security toggles ──────────────────────────────────── -->
     <a-card :title="t('settings.security')">

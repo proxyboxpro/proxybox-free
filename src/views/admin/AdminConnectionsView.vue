@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { apiFetch } from '../../api'
+import { apiFetch, adminConnectionsStreamUrl } from '../../api'
 import { formatBytes, formatNumber, formatRate } from '../../utils/format'
 import { useI18n } from '../../i18n'
 import { message, confirmAsync } from '../../ui/feedback'
@@ -34,6 +34,9 @@ const sseConnected = ref(false)
 const liveDelta = ref(0) // count of live events received since last refresh
 let timer = null
 let sse = null
+let sseRetry = null      // pending reconnect timeout
+let sseDelay = 5_000     // reconnect backoff, doubles up to 60 s, reset on "hello"
+let unmounted = false
 
 async function refresh() {
   loading.value = true; err.value = ''
@@ -134,10 +137,17 @@ function fmtAgo(ts) {
   return `${Math.floor(s / 86400)}d`
 }
 
-function openSse() {
+// EventSource can't send the bearer token: each (re)connect mints a fresh
+// one-time stream ticket first. Polling (timer below) stays as the fallback.
+async function openSse() {
+  closeSse()
+  let url
+  try { url = await adminConnectionsStreamUrl() }
+  catch (e) { if (e?.status !== 401 && e?.status !== 403) scheduleSseReconnect(); return } // logged out / not admin: stay on polling
+  if (unmounted) return
   try {
-    sse = new EventSource('/api/admin/connections/stream', { withCredentials: true })
-    sse.addEventListener('hello', () => { sseConnected.value = true })
+    sse = new EventSource(url)
+    sse.addEventListener('hello', () => { sseConnected.value = true; sseDelay = 5_000 })
     sse.addEventListener('connection', (ev) => {
       try {
         const c = JSON.parse(ev.data)
@@ -179,8 +189,15 @@ function openSse() {
         }
       } catch { /* noop */ }
     })
-    sse.onerror = () => { sseConnected.value = false }
-  } catch { sse = null; sseConnected.value = false }
+    // The browser's built-in retry would reuse the spent ticket and get a 401
+    // (fatal for EventSource), so close and reconnect with a new ticket instead.
+    sse.onerror = () => { closeSse(); scheduleSseReconnect() }
+  } catch { sse = null; sseConnected.value = false; scheduleSseReconnect() }
+}
+function scheduleSseReconnect() {
+  if (unmounted || sseRetry) return
+  sseRetry = setTimeout(() => { sseRetry = null; openSse() }, sseDelay)
+  sseDelay = Math.min(sseDelay * 2, 60_000)
 }
 function closeSse() { try { sse?.close() } catch { /* noop */ } sse = null; sseConnected.value = false }
 
@@ -255,7 +272,7 @@ onMounted(() => {
   // Slower poll fallback (every 30s) since SSE handles incremental updates.
   timer = setInterval(() => { if (autoRefresh.value) refresh() }, 30_000)
 })
-onBeforeUnmount(() => { if (timer) clearInterval(timer); closeSse() })
+onBeforeUnmount(() => { unmounted = true; if (timer) clearInterval(timer); if (sseRetry) clearTimeout(sseRetry); closeSse() })
 </script>
 <template>
   <div class="page">

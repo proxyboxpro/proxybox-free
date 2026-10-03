@@ -6,6 +6,7 @@
 //   { "controlUrl": "http://CONTROL:8787", "token": "<agentToken>", "enrollToken": "<enrollToken>" }
 // env: PROXYBOX_CONTROL / PROXYBOX_TOKEN / PROXYBOX_ENROLL (legacy PROXYHUB_* still accepted).
 
+import { execSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
 import fs from 'node:fs'
@@ -116,14 +117,12 @@ function envPrefixLen() {
 function hasDefaultIpv6Route() {
   if (process.platform === 'win32') {
     try {
-      const { execSync } = require('node:child_process')
       const out = execSync('route -6 print', { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).toString()
       // "::/0" appears in destinations when a default IPv6 route exists.
       return /\s::\/0\s/.test(out) || /\sDefault\s/i.test(out)
     } catch { return false }
   }
   try {
-    const fs = require('node:fs')
     const lines = fs.readFileSync('/proc/net/ipv6_route', 'utf8').split('\n')
     for (const line of lines) {
       const f = line.split(/\s+/)

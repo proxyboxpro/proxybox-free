@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { apiFetch } from '../../api'
+import { apiFetch, apiBlob } from '../../api'
 import { useI18n } from '../../i18n'
 import { message, confirmAsync, promptAsync } from '../../ui/feedback'
 
@@ -102,7 +102,19 @@ async function changePwd() {
 function copy(text, label) {
   navigator.clipboard?.writeText(text); message.success(label || t('cust.detail.copied'))
 }
-function gdpr() { window.open('/api/v1/user/gdpr/export', '_blank') }
+// window.open can't carry the bearer token (→ 401): fetch with auth, save the blob.
+async function gdpr() {
+  busy.value = 'gdpr'
+  try {
+    const url = URL.createObjectURL(await apiBlob('/api/v1/user/gdpr/export'))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `proxyhub-data-${account.value?.id || 'export'}.json`
+    document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (e) { message.error(e.message) }
+  finally { busy.value = '' }
+}
 
 const totpOn = computed(() => Boolean(account.value?.totpEnabled))
 
@@ -304,7 +316,7 @@ onMounted(async () => {
             <a-typography-text strong>{{ t('cust.account.gdprTitle') }}</a-typography-text>
             <a-typography-text type="secondary" class="small">{{ t('cust.account.gdprDesc') }}</a-typography-text>
           </a-flex>
-          <a-button @click="gdpr">
+          <a-button :loading="busy === 'gdpr'" @click="gdpr">
             <template #icon><DownloadOutlined /></template>
             {{ t('cust.account.gdprBtn') }}
           </a-button>
