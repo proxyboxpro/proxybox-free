@@ -674,6 +674,8 @@ const archAscii = `┌───────────────────�
   .term-code { font-size: 11.5px; padding: 14px; }
   .section { padding-block: 40px; }
   .section-head :deep(h2.ant-typography) { font-size: 24px; }
+  .tile :deep(.ant-card-body) { padding: 16px; }
+  .tile-ico { margin-bottom: 10px; }
   .arch-ascii pre { font-size: 9.5px; line-height: 1.4; }
   .code-block { font-size: 10.5px; }
 }

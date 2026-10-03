@@ -18,7 +18,6 @@ const docs = ref([])
 const loading = ref(true)
 const search = ref('')
 const activeCategory = ref('')
-const activeDocId = ref('')
 // Expanded collapse panels (doc ids).
 const openKeys = ref([])
 
@@ -103,7 +102,6 @@ function applyHash(initial = false) {
   const found = docs.value.find((d) => d.slug === slug || d.id === slug)
   if (found) {
     activeCategory.value = found.category
-    activeDocId.value = found.id
     if (!openKeys.value.includes(found.id)) openKeys.value = [...openKeys.value, found.id]
     // Wait for the topic to render and the panel's expand animation to finish,
     // otherwise the page is not tall enough yet and the scroll stops short.
