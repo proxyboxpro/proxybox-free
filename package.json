@@ -15,6 +15,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "ant-design-vue": "^4.2.6",
     "apexcharts": "^5.11.0",
     "lucide-vue-next": "^0.561.0",
     "node-forge": "^1.4.0",
@@ -29,6 +31,7 @@
     "eslint": "^9.13.0",
     "eslint-plugin-vue": "^9.30.0",
     "globals": "^15.12.0",
+    "unplugin-vue-components": "^32.1.0",
     "vite": "^7.2.7"
   }
 }

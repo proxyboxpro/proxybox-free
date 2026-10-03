@@ -1,6 +1,16 @@
 <script setup>
-import { onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
+import dayjs from 'dayjs'
+import 'dayjs/locale/vi'
+import viVN from 'ant-design-vue/es/locale/vi_VN'
+import enUS from 'ant-design-vue/es/locale/en_US'
 import { fetchMe, adminBackup, currentUser, stopImpersonation } from './api'
+import { locale } from './i18n'
+import { antdTheme } from './theme'
+import { FeedbackBinder } from './ui/feedback'
+
+const antLocale = computed(() => (locale.value === 'vi' ? viVN : enUS))
+watch(locale, (l) => dayjs.locale(l === 'vi' ? 'vi' : 'en'), { immediate: true })
 
 onMounted(() => {
   fetchMe()
@@ -14,50 +24,29 @@ function returnToAdmin() {
 </script>
 
 <template>
-  <div v-if="adminBackup" class="impersonation-bar">
-    <span class="imp-text">
-      Đang đăng nhập với tư cách
-      <strong>{{ currentUser?.email || 'khách hàng' }}</strong>
-      <span v-if="adminBackup.user?.email" class="imp-admin">· admin: {{ adminBackup.user.email }}</span>
-    </span>
-    <button type="button" class="imp-return" @click="returnToAdmin">↩ Thoát &amp; quay lại admin</button>
-  </div>
-  <div :class="{ 'has-impersonation-bar': adminBackup }">
-    <RouterView />
-  </div>
+  <a-config-provider :theme="antdTheme" :locale="antLocale">
+    <a-app>
+      <FeedbackBinder />
+      <a-alert v-if="adminBackup" type="warning" banner class="impersonation-bar">
+        <template #message>
+          <a-flex align="center" justify="center" gap="small" wrap="wrap">
+            <span>
+              Đang đăng nhập với tư cách
+              <strong>{{ currentUser?.email || 'khách hàng' }}</strong>
+              <a-typography-text v-if="adminBackup.user?.email" type="secondary"> · admin: {{ adminBackup.user.email }}</a-typography-text>
+            </span>
+            <a-button size="small" type="primary" danger @click="returnToAdmin">
+              <template #icon><RollbackOutlined /></template>
+              Thoát &amp; quay lại admin
+            </a-button>
+          </a-flex>
+        </template>
+      </a-alert>
+      <RouterView />
+    </a-app>
+  </a-config-provider>
 </template>
 
 <style>
-.impersonation-bar {
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  z-index: 9999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  height: 40px;
-  padding: 0 16px;
-  background: #f59e0b;
-  color: #1a1205;
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-.impersonation-bar .imp-text { display: inline-flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.impersonation-bar .imp-admin { font-weight: 500; opacity: 0.8; font-size: 12px; }
-.impersonation-bar .imp-return {
-  background: #1a1205;
-  color: #fbbf24;
-  border: none;
-  border-radius: 7px;
-  padding: 5px 12px;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.impersonation-bar .imp-return:hover { background: #000; }
-/* Push the app down so the fixed bar never overlaps the layout chrome. */
-.has-impersonation-bar { padding-top: 40px; }
+.impersonation-bar { position: sticky; top: 0; z-index: 1001; }
 </style>

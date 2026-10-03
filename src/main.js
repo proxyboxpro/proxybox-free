@@ -3,7 +3,8 @@ import App from './App.vue'
 import router from './router'
 import { fetchMe, token } from './api'
 import { initTheme } from './theme'
-import './styles.css'
+import 'ant-design-vue/dist/reset.css'
+import './styles/global.css'
 
 // Apply saved theme synchronously to avoid flash-of-wrong-theme.
 initTheme()
