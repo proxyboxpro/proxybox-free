@@ -20,6 +20,19 @@ const year = new Date().getFullYear()
 // Items use { vi, en } pairs so a single source covers both locales.
 const releases = [
   {
+    version: '1.7.0', date: '2026-10-03', tag: 'release',
+    titleEn: 'New UI on Ant Design (ant-design-vue 4) — every page rebuilt, dark + light themes',
+    titleVi: 'Giao diện mới trên Ant Design (ant-design-vue 4) — dựng lại toàn bộ trang, theme tối + sáng',
+    items: [
+      { en: 'The whole SPA (customer portal, admin console, public pages) now uses Ant Design components with a token-based dark/light theme and VI/EN component locales; the old hand-written stylesheet is gone.',
+        vi: 'Toàn bộ SPA (cổng khách hàng, trang quản trị, trang public) chuyển sang component Ant Design với theme tối/sáng theo design token và locale VI/EN; bỏ hẳn stylesheet tự viết cũ.' },
+      { en: 'New app shells: collapsible grouped side menu, mobile drawer navigation, notification popover, theme/language switch; browser confirm/prompt dialogs replaced by in-app modals; tables gain paging, sorting and sticky actions.',
+        vi: 'Khung ứng dụng mới: menu bên thu gọn được theo nhóm, menu drawer trên mobile, popover thông báo, nút đổi theme/ngôn ngữ; hộp thoại confirm/prompt của trình duyệt được thay bằng modal trong app; bảng có phân trang, sắp xếp và cột thao tác cố định.' },
+      { en: 'Fixes: admin Features settings groups now load, Nodes compare lists every node, the Trojan QR download works without opening the QR first, /api-docs loads directly in dev.',
+        vi: 'Sửa lỗi: nhóm cài đặt Features trong admin đã tải được, So sánh node liệt kê đủ node, tải QR Trojan không cần mở QR trước, /api-docs mở trực tiếp được ở môi trường dev.' },
+    ],
+  },
+  {
     version: '1.6.41', date: '2026-08-22', tag: 'fix',
     titleEn: 'Redesigned the wallet top-up panel — method tiles + a single pay button',
     titleVi: 'Thiết kế lại ô nạp tiền — thẻ chọn phương thức + một nút thanh toán',
