@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import Components from 'unplugin-vue-components/vite'
+import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -11,14 +13,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8'))
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // On-demand auto-import for <a-*> components (ant-design-vue 4) and
+    // <XxxOutlined/> icons used in templates. ant-design-vue 4 ships CSS-in-JS,
+    // so no per-component style import is needed. JS APIs (message, Modal,
+    // theme…) are still imported explicitly from 'ant-design-vue'.
+    Components({
+      dts: false,
+      dirs: [],
+      resolvers: [AntDesignVueResolver({ importStyle: false, resolveIcons: true })]
+    })
+  ],
+  resolve: {
+    alias: { '@': join(__dirname, 'src') }
+  },
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10))
   },
   server: {
     proxy: {
-      '/api': {
+      // Regex key: match /api/... only, so the SPA route /api-docs isn't proxied.
+      '^/api/': {
         target: 'http://127.0.0.1:8787',
         changeOrigin: true
       }
@@ -33,9 +50,10 @@ export default defineConfig({
           if (id.includes('node_modules')) {
             if (id.includes('apexcharts')) return 'vendor-apexcharts'
             if (id.includes('vue3-apexcharts')) return 'vendor-apexcharts'
-            if (id.includes('lucide-vue-next')) return 'vendor-icons'
             if (id.includes('vue-router')) return 'vendor-vue'
             if (id.includes('@vue') || /\/vue\//.test(id)) return 'vendor-vue'
+            // ant-design-vue, its icons and helper deps (lodash-es, dayjs, cssinjs…)
+            // stay together in `vendor`: splitting them creates circular chunks.
             return 'vendor'
           }
           // App splits — admin vs customer

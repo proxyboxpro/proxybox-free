@@ -1,9 +1,12 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { Grid } from 'ant-design-vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 
 const { t } = useI18n()
+const screens = Grid.useBreakpoint()
 
 // 8 tabbed settings groups + legacy feature-flag toggles.
 // Labels/descriptions resolved via t() in template — we store descKey here.
@@ -126,171 +129,149 @@ const FIELD_META = {
 
 const activeTab = ref('features')
 const err = ref('')
-const flash = ref('')
+const loading = ref(false)
+const saving = ref('') // tab id currently being saved
 
 // State per tab
 const features = ref({})
 const groups = reactive({}) // groupId -> values object
 
 async function refresh() {
-  err.value = ''; flash.value = ''
+  err.value = ''
+  loading.value = true
   try {
     features.value = await apiFetch('/api/admin/features')
-    for (const tab of TABS.filter(t => t.id !== 'features')) {
+    for (const tab of TABS.value.filter((tt) => tt.id !== 'features')) {
       groups[tab.id] = await apiFetch(`/api/admin/settings/${tab.id}`)
     }
   } catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 
 async function saveFeatures() {
+  saving.value = 'features'
   try {
     features.value = await apiFetch('/api/admin/features', { method: 'PATCH', body: features.value })
-    flash.value = t('admin.feat.flashFeatures')
-    setTimeout(() => flash.value = '', 3000)
-  } catch (e) { err.value = e.message }
+    message.success(t('admin.feat.flashFeatures'))
+  } catch (e) { message.error(e.message) }
+  finally { saving.value = '' }
 }
 
 async function saveGroup(groupId) {
+  saving.value = groupId
   try {
     groups[groupId] = await apiFetch(`/api/admin/settings/${groupId}`, { method: 'PATCH', body: groups[groupId] })
-    const tab = TABS.value.find(tt => tt.id === groupId)
-    flash.value = t('admin.feat.flashGroup', { label: tab.label })
-    setTimeout(() => flash.value = '', 3500)
-  } catch (e) { err.value = e.message }
+    const tab = TABS.value.find((tt) => tt.id === groupId)
+    message.success(t('admin.feat.flashGroup', { label: tab.label }), 3.5)
+  } catch (e) { message.error(e.message) }
+  finally { saving.value = '' }
 }
 
-function parseSelect(kind) {
-  return kind.startsWith('select:') ? kind.slice(7).split('|') : null
+function selectOptions(kind) {
+  return kind.slice(7).split('|').map((v) => ({ label: v, value: v }))
 }
 
 onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">{{ t('admin.feat.eyebrow') }}</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh">{{ t('admin.common.refresh') }}</button>
-    </div>
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" class="success-text">{{ flash }}</p>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.feat.eyebrow') }}</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+        {{ t('admin.common.refresh') }}
+      </a-button>
+    </a-flex>
 
-    <!-- Tab strip -->
-    <div class="settings-tabs">
-      <button
-        v-for="tab in TABS" :key="tab.id"
-        type="button"
-        class="settings-tab"
-        :class="{ active: activeTab === tab.id }"
-        @click="activeTab = tab.id"
-      >
-        <span class="t-name">{{ tab.label }}</span>
-        <small class="t-desc">{{ tab.desc }}</small>
-      </button>
-    </div>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <!-- Features tab -->
-    <section v-if="activeTab === 'features'" class="surface">
-      <div class="section-head"><h2>{{ t('admin.feat.flagsTitle') }}</h2></div>
-      <p class="hint">{{ t('admin.feat.flagsHint') }}</p>
-      <div class="data-table">
-        <div class="table-head" style="grid-template-columns: 1.4fr 3fr auto">
-          <span>{{ t('admin.feat.colFlag') }}</span><span>{{ t('admin.feat.colDesc') }}</span><span></span>
-        </div>
-        <div v-for="(_, name) in features" :key="name" class="table-row" style="grid-template-columns: 1.4fr 3fr auto">
-          <span class="cell-mono">{{ name }}</span>
-          <span class="muted">{{ FEATURE_DESCRIPTIONS[name] || '—' }}</span>
-          <label class="check-line"><input v-model="features[name]" type="checkbox" /><span>{{ features[name] ? t('admin.feat.on') : t('admin.feat.off') }}</span></label>
-        </div>
-      </div>
-      <button class="primary-action" type="button" style="margin-top:14px" @click="saveFeatures">{{ t('admin.feat.saveFeatures') }}</button>
-    </section>
+    <a-card :body-style="{ padding: screens.md ? '16px 24px 24px 0' : '0 16px 16px' }">
+      <a-tabs v-model:active-key="activeTab" :tab-position="screens.md ? 'left' : 'top'">
+        <a-tab-pane v-for="tab in TABS" :key="tab.id">
+          <template #tab>
+            <div class="tab-label">
+              <span>{{ tab.label }}</span>
+              <a-typography-text v-if="screens.md" type="secondary" class="tab-desc">{{ tab.desc }}</a-typography-text>
+            </div>
+          </template>
 
-    <!-- All other tabs render the same generic table from FIELD_META -->
-    <section v-for="tab in TABS.filter(tt => tt.id !== 'features')" v-show="activeTab === tab.id" :key="tab.id" class="surface">
-      <div class="section-head"><h2>{{ tab.label }}</h2></div>
-      <p class="hint">{{ t('admin.feat.tabFooter', { desc: tab.desc }) }}</p>
-      <div v-if="groups[tab.id]" class="data-table">
-        <div class="table-head" style="grid-template-columns: 1.4fr 2.6fr 160px">
-          <span>{{ t('admin.feat.colField') }}</span><span>{{ t('admin.feat.colDesc') }}</span><span style="text-align:right">{{ t('admin.feat.colValue') }}</span>
-        </div>
-        <div
-          v-for="[key, label, kind, hint] in FIELD_META[tab.id]"
-          :key="key"
-          class="table-row"
-          style="grid-template-columns: 1.4fr 2.6fr 160px"
-        >
-          <span>{{ label }}</span>
-          <span class="muted">{{ hint }}</span>
-          <template v-if="kind === 'bool'">
-            <label class="check-line" style="justify-content:flex-end"><input v-model="groups[tab.id][key]" type="checkbox" /><span>{{ groups[tab.id][key] ? t('admin.feat.on') : t('admin.feat.off') }}</span></label>
+          <!-- Features tab: runtime module toggles -->
+          <template v-if="tab.id === 'features'">
+            <a-typography-title :level="5" class="pane-title">{{ t('admin.feat.flagsTitle') }}</a-typography-title>
+            <a-typography-paragraph type="secondary">{{ t('admin.feat.flagsHint') }}</a-typography-paragraph>
+            <a-list
+              :data-source="Object.keys(features)"
+              :loading="loading && !Object.keys(features).length"
+              bordered
+              size="small"
+            >
+              <template #renderItem="{ item: name }">
+                <a-list-item>
+                  <a-list-item-meta :description="FEATURE_DESCRIPTIONS[name] || '—'">
+                    <template #title><span class="mono">{{ name }}</span></template>
+                  </a-list-item-meta>
+                  <a-switch
+                    v-model:checked="features[name]"
+                    :checked-children="t('admin.feat.on')"
+                    :un-checked-children="t('admin.feat.off')"
+                  />
+                </a-list-item>
+              </template>
+            </a-list>
+            <a-button type="primary" class="save-btn" :loading="saving === 'features'" @click="saveFeatures">
+              <template #icon><SaveOutlined /></template>
+              {{ t('admin.feat.saveFeatures') }}
+            </a-button>
           </template>
-          <template v-else-if="kind === 'int' || kind === 'float'">
-            <input v-model.number="groups[tab.id][key]" :type="'number'" :step="kind === 'float' ? '0.01' : '1'" min="0" class="cell-mono input-mono" />
-          </template>
-          <template v-else-if="kind.startsWith('select:')">
-            <select v-model="groups[tab.id][key]" class="input-mono">
-              <option v-for="opt in parseSelect(kind)" :key="opt" :value="opt">{{ opt }}</option>
-            </select>
-          </template>
+
+          <!-- All other tabs render the same generic form from FIELD_META -->
           <template v-else>
-            <input v-model="groups[tab.id][key]" type="text" class="cell-mono input-mono" />
+            <a-typography-title :level="5" class="pane-title">{{ tab.label }}</a-typography-title>
+            <a-typography-paragraph type="secondary">{{ t('admin.feat.tabFooter', { desc: tab.desc }) }}</a-typography-paragraph>
+            <a-form v-if="groups[tab.id]" :model="groups[tab.id]" layout="vertical" @finish="saveGroup(tab.id)">
+              <a-row :gutter="[16, 0]">
+                <a-col v-for="[key, label, kind, hint] in FIELD_META[tab.id]" :key="key" :xs="24" :lg="12" :xxl="8">
+                  <a-form-item :label="label" :name="key" :extra="hint || undefined">
+                    <a-switch
+                      v-if="kind === 'bool'"
+                      v-model:checked="groups[tab.id][key]"
+                      :checked-children="t('admin.feat.on')"
+                      :un-checked-children="t('admin.feat.off')"
+                    />
+                    <a-input-number
+                      v-else-if="kind === 'int' || kind === 'float'"
+                      v-model:value="groups[tab.id][key]"
+                      :min="0"
+                      :step="kind === 'float' ? 0.01 : 1"
+                      class="full-width"
+                    />
+                    <a-select
+                      v-else-if="kind.startsWith('select:')"
+                      v-model:value="groups[tab.id][key]"
+                      :options="selectOptions(kind)"
+                    />
+                    <a-input v-else v-model:value="groups[tab.id][key]" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+              <a-button type="primary" html-type="submit" :loading="saving === tab.id">
+                <template #icon><SaveOutlined /></template>
+                {{ t('admin.feat.saveGroup', { label: tab.label }) }}
+              </a-button>
+            </a-form>
+            <a-skeleton v-else-if="loading" active />
+            <a-empty v-else />
           </template>
-        </div>
-      </div>
-      <button class="primary-action" type="button" style="margin-top:14px" @click="saveGroup(tab.id)">{{ t('admin.feat.saveGroup', { label: tab.label }) }}</button>
-    </section>
-  </section>
+        </a-tab-pane>
+      </a-tabs>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.success-text { color: var(--green); font-size: 13px; margin: 4px 0 10px; }
-.hint { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
-.muted { color: var(--muted); font-size: 12.5px; }
-
-.settings-tabs {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  margin-bottom: 14px;
-  padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.settings-tab {
-  flex: 1 1 auto; min-width: 130px;
-  display: flex; flex-direction: column; align-items: flex-start;
-  gap: 1px;
-  padding: 6px 10px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12.5px;
-  text-align: left;
-}
-.settings-tab:hover { background: rgba(255,255,255,0.04); }
-.settings-tab.active {
-  background: rgba(34,197,94,0.08);
-  border-color: rgba(34,197,94,0.35);
-  color: var(--green);
-}
-.settings-tab .t-name { font-weight: 600; }
-.settings-tab .t-desc { font-size: 10.5px; color: var(--muted); }
-.settings-tab.active .t-desc { color: rgba(34,197,94,0.7); }
-
-.input-mono {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 5px 8px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-  text-align: right;
-}
-.input-mono:focus { outline: none; border-color: var(--green); }
-select.input-mono { text-align: left; }
+.tab-label { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.3; text-align: left; }
+.tab-desc { font-size: 11.5px; }
+.pane-title { margin-top: 0; }
+.save-btn { margin-top: 16px; }
 </style>

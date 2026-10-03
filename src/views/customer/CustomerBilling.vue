@@ -1,13 +1,11 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import {
-  ArrowDownLeft, ArrowUpRight, Check, ChevronRight, CircleDollarSign, CreditCard,
-  FileText, Gift, Landmark, Plus, QrCode, RefreshCw, Search, Tag, Wallet, X
-} from 'lucide-vue-next'
+import { BankOutlined, CreditCardOutlined, DollarOutlined, WalletOutlined } from '@ant-design/icons-vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
-import qrcode from '../../lib/qrcode'
+import { message } from '../../ui/feedback'
+import { isDark } from '../../theme'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -19,7 +17,8 @@ const orders = ref([])
 const topup = ref(100000)
 const busy = ref(false)
 const err = ref('')
-const flash = ref('')
+// Action failures: toast + keep the inline a-alert visible.
+function fail(msg) { err.value = msg; message.error(msg) }
 const txSearch = ref('')
 const txFilter = ref('all')
 const promoCode = ref('')
@@ -86,7 +85,7 @@ async function redeemPromo() {
   promoBusy.value = true
   try {
     const r = await apiFetch('/api/v1/user/credit-codes/redeem', { method: 'POST', body: { code } })
-    flash.value = t('cust.billing.promoRedeemed', { amount: Number(r.amount).toLocaleString(), currency: r.currency })
+    message.success(t('cust.billing.promoRedeemed', { amount: Number(r.amount).toLocaleString(), currency: r.currency }))
     promoCode.value = ''; promoInfo.value = null
     await refresh()
   } catch (e) { promoErr.value = mapPromoErr(e.message) }
@@ -94,7 +93,7 @@ async function redeemPromo() {
 }
 async function pay() {
   if (busy.value) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true; err.value = ''
   try {
     const amount = Math.max(10000, Math.floor(Number(topup.value) || 0))
     const pm = billing.value?.paymentMethods || {}
@@ -104,14 +103,14 @@ async function pay() {
     if (min > 0) {
       const minWallet = walletCur === 'USD' ? min : min * rate
       if (amount + 1e-9 < minWallet) {
-        err.value = t('cust.billing.stripeMinErr', { min, wallet: Math.ceil(minWallet).toLocaleString(), walletCur })
+        fail(t('cust.billing.stripeMinErr', { min, wallet: Math.ceil(minWallet).toLocaleString(), walletCur }))
         busy.value = false; return
       }
     }
     const r = await apiFetch('/api/v1/user/billing/checkout', { method: 'POST', body: { amount } })
     if (r.url) window.location.href = r.url
-    else flash.value = t('cust.billing.sessionCreated')
-  } catch (e) { err.value = e.message } finally { busy.value = false }
+    else message.success(t('cust.billing.sessionCreated'))
+  } catch (e) { fail(e.message) } finally { busy.value = false }
 }
 // ─── SePay (VN bank transfer) ──────────────────────────────────────
 const sepayOpen = ref(false)
@@ -121,7 +120,7 @@ const sepayCheck = ref(null)        // matched txn from /sepay/latest
 let sepayPollTimer = null
 async function payWithSepay() {
   if (busy.value) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true; err.value = ''
   try {
     const amount = Math.max(10000, Math.floor(Number(topup.value) || 0))
     const r = await apiFetch(`/api/v1/user/billing/sepay/qr?amount=${amount}`)
@@ -137,13 +136,13 @@ async function payWithSepay() {
         if (hit) {
           sepayCheck.value = hit
           clearInterval(sepayPollTimer); sepayPollTimer = null
-          flash.value = t('cust.billing.sepayHit', { amount: Number(hit.amount).toLocaleString() })
+          message.success(t('cust.billing.sepayHit', { amount: Number(hit.amount).toLocaleString() }))
           await refresh()
         }
       } catch { /* keep polling */ }
     }, 5000)
     setTimeout(() => { if (sepayPollTimer) { clearInterval(sepayPollTimer); sepayPollTimer = null } }, 15 * 60_000)
-  } catch (e) { err.value = e.message } finally { busy.value = false }
+  } catch (e) { fail(e.message) } finally { busy.value = false }
 }
 function closeSepay() {
   sepayOpen.value = false
@@ -171,19 +170,12 @@ const usdtQrPayload = computed(() => {
   }
   return d2.address
 })
-const usdtQrSvg = computed(() => {
-  const payload = usdtQrPayload.value
-  if (!payload) return { path: '', size: 0 }
-  const qr = qrcode(0, 'M')
-  qr.addData(payload)
-  qr.make()
-  const n = qr.getModuleCount()
-  let path = ''
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) if (qr.isDark(r, c)) path += `M${c} ${r}h1v1h-1z`
-  }
-  return { path, size: n }
-})
+const qrTabOptions = computed(() => [
+  { label: t('cust.billing.usdtQrTabBinance'), value: 'binance' },
+  ...(usdtData.value?.contract ? [{ label: t('cust.billing.usdtQrTabWallet'), value: 'wallet' }] : [])
+])
+// a-typography copyable tooltips: "Copy" → "Copied."
+const copyTips = computed(() => [t('cust.billing.copy'), t('cust.billing.copied')])
 const usdtEstimate = computed(() => {
   const pm = billing.value?.paymentMethods
   if (!pm) return ''
@@ -192,14 +184,14 @@ const usdtEstimate = computed(() => {
 })
 async function payWithUsdt() {
   if (busy.value) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true; err.value = ''
   try {
     const amount = Math.floor(Number(topup.value) || 0)
     const pm = billing.value?.paymentMethods || {}
     const min = Number(pm.binanceMin) || 0
     const rate = Number(pm.binanceRate) > 0 ? Number(pm.binanceRate) : 25000
     if (min > 0 && amount / rate + 1e-9 < min) {
-      err.value = t('cust.billing.usdtMinErr', { min, wallet: Math.ceil(min * rate).toLocaleString(), walletCur: (pm.walletCurrency || 'VND') })
+      fail(t('cust.billing.usdtMinErr', { min, wallet: Math.ceil(min * rate).toLocaleString(), walletCur: (pm.walletCurrency || 'VND') }))
       busy.value = false
       return
     }
@@ -208,7 +200,7 @@ async function payWithUsdt() {
     usdtPaid.value = null
     usdtOpen.value = true
     startUsdtTimers()
-  } catch (e) { err.value = e.message } finally { busy.value = false }
+  } catch (e) { fail(e.message) } finally { busy.value = false }
 }
 function startUsdtTimers() {
   stopUsdtTimers()
@@ -218,7 +210,7 @@ function startUsdtTimers() {
       if (s.status === 'paid') {
         usdtPaid.value = s
         stopUsdtTimers()
-        flash.value = t('cust.billing.usdtHit', { amount: Number(s.creditAmount).toLocaleString() })
+        message.success(t('cust.billing.usdtHit', { amount: Number(s.creditAmount).toLocaleString() }))
         await refresh()
       } else if (s.status === 'expired' || s.status === 'cancelled') {
         stopUsdtTimers()
@@ -243,9 +235,9 @@ async function markUsdtSent() {
   busy.value = true
   try {
     usdtData.value = await apiFetch('/api/v1/user/billing/binance/mark-sent', { method: 'POST', body: { id: usdtData.value.id } })
-    flash.value = t('cust.billing.usdtSentFlash')
+    message.success(t('cust.billing.usdtSentFlash'))
     await refresh()
-  } catch (e) { err.value = e.message } finally { busy.value = false }
+  } catch (e) { fail(e.message) } finally { busy.value = false }
 }
 function reopenUsdt() {
   const pend = billing.value?.binancePending
@@ -266,7 +258,7 @@ watch([() => billing.value?.binancePending?.id, usdtOpen], ([pid, open]) => {
       const s = await apiFetch(`/api/v1/user/billing/binance/status?id=${encodeURIComponent(pid)}`)
       if (s.status === 'paid') {
         clearInterval(usdtBgTimer); usdtBgTimer = null
-        flash.value = t('cust.billing.usdtHit', { amount: Number(s.creditAmount).toLocaleString() })
+        message.success(t('cust.billing.usdtHit', { amount: Number(s.creditAmount).toLocaleString() }))
         await refresh()
       } else if (s.status === 'expired' || s.status === 'cancelled') {
         clearInterval(usdtBgTimer); usdtBgTimer = null
@@ -275,26 +267,9 @@ watch([() => billing.value?.binancePending?.id, usdtOpen], ([pid, open]) => {
     } catch { /* keep polling */ }
   }, 30_000)
 }, { immediate: true })
-async function copyUsdtAddress() {
-  if (!usdtData.value?.address) return
-  try { await navigator.clipboard.writeText(usdtData.value.address); flash.value = t('cust.billing.copied') } catch {}
-}
-async function copyUsdtAmount() {
-  if (!usdtData.value?.usdtAmount) return
-  try { await navigator.clipboard.writeText(usdtData.value.usdtAmount); flash.value = t('cust.billing.copied') } catch {}
-}
-async function copyMemo() {
-  if (!sepayData.value?.memo) return
-  try { await navigator.clipboard.writeText(sepayData.value.memo); flash.value = t('cust.billing.copied') } catch {}
-}
-async function copyAccount() {
-  if (!sepayData.value?.bank?.accountNumber) return
-  try { await navigator.clipboard.writeText(sepayData.value.bank.accountNumber); flash.value = t('cust.billing.copied') } catch {}
-}
-
 async function payWithPaypal() {
   if (busy.value) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true; err.value = ''
   try {
     const amount = Math.max(1, Number(topup.value) || 0)
     // Client-side mirror of the server's minimum gate so the customer gets a
@@ -307,7 +282,7 @@ async function payWithPaypal() {
       const rate = Number(pm.paypalRate) > 0 ? Number(pm.paypalRate) : 25000
       const minWallet = payCur === walletCur ? min : min * rate
       if (amount + 1e-9 < minWallet) {
-        err.value = t('cust.billing.paypalMinErr', { min, cur: payCur, wallet: Math.ceil(minWallet).toLocaleString(), walletCur })
+        fail(t('cust.billing.paypalMinErr', { min, cur: payCur, wallet: Math.ceil(minWallet).toLocaleString(), walletCur }))
         busy.value = false
         return
       }
@@ -318,26 +293,26 @@ async function payWithPaypal() {
       try { sessionStorage.setItem('proxybox.paypal.pending', JSON.stringify({ orderId: r.orderId, ts: Date.now() })) } catch {}
       window.location.href = r.approveUrl
     } else {
-      err.value = 'PayPal did not return approve URL'
+      fail('PayPal did not return approve URL')
     }
-  } catch (e) { err.value = e.message } finally { busy.value = false }
+  } catch (e) { fail(e.message) } finally { busy.value = false }
 }
 // After PayPal redirects back to our return URL (with ?token=ORDER_ID), finalize the capture.
 async function maybeFinalizePaypal() {
   const params = new URLSearchParams(location.search)
   const orderId = params.get('token') || params.get('paypal_order_id')
   if (!orderId) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true; err.value = ''
   try {
     const r = await apiFetch('/api/v1/user/billing/paypal/capture', { method: 'POST', body: { orderId } })
-    flash.value = r.alreadyCaptured
+    message.success(r.alreadyCaptured
       ? (t('cust.billing.paypalAlreadyDone') || 'PayPal capture already processed.')
-      : (t('cust.billing.paypalSuccess', { amount: Number(r.amount).toLocaleString(), currency: r.currency }) || `PayPal payment received: ${r.amount} ${r.currency}.`)
+      : (t('cust.billing.paypalSuccess', { amount: Number(r.amount).toLocaleString(), currency: r.currency }) || `PayPal payment received: ${r.amount} ${r.currency}.`))
     try { sessionStorage.removeItem('proxybox.paypal.pending') } catch {}
     history.replaceState(null, '', location.pathname)
     await refresh()
   } catch (e) {
-    err.value = `PayPal capture failed: ${e.message}`
+    fail(`PayPal capture failed: ${e.message}`)
   } finally { busy.value = false }
 }
 // Return from a 3DS redirect for an in-place PaymentIntent / SetupIntent.
@@ -348,14 +323,14 @@ async function maybeFinalizePaymentIntent() {
   try {
     if (pi && pi.startsWith('pi_')) {
       const r = await apiFetch('/api/v1/user/billing/stripe/confirm-intent', { method: 'POST', body: { paymentIntentId: pi } })
-      if (r.ok) flash.value = r.alreadyCredited ? (t('cust.billing.stripeAlreadyDone')) : t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() })
+      if (r.ok) message.success(r.alreadyCredited ? (t('cust.billing.stripeAlreadyDone')) : t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() }))
       history.replaceState(null, '', location.pathname); await refresh()
     } else if (si && si.startsWith('seti_')) {
       const r = await apiFetch('/api/v1/user/billing/stripe/save-card', { method: 'POST', body: { setupIntentId: si } })
-      if (r.ok) flash.value = t('cust.billing.cardSaved')
+      if (r.ok) message.success(t('cust.billing.cardSaved'))
       history.replaceState(null, '', location.pathname); await refresh()
     }
-  } catch (e) { err.value = e.message }
+  } catch (e) { fail(e.message) }
 }
 async function maybeFinalizeStripe() {
   const params = new URLSearchParams(location.search)
@@ -364,13 +339,13 @@ async function maybeFinalizeStripe() {
   busy.value = true; err.value = ''
   try {
     const r = await apiFetch('/api/v1/user/billing/checkout/confirm', { method: 'POST', body: { sessionId } })
-    if (r.ok) flash.value = r.alreadyCredited
+    if (r.ok) message.success(r.alreadyCredited
       ? (t('cust.billing.stripeAlreadyDone') || 'Card payment already processed.')
-      : (t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() }) || `Card payment received: ${r.amount}.`)
-    else if (r.pending) flash.value = t('cust.billing.stripePending') || 'Payment is processing.'
+      : (t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() }) || `Card payment received: ${r.amount}.`))
+    else if (r.pending) message.info(t('cust.billing.stripePending') || 'Payment is processing.')
     history.replaceState(null, '', location.pathname)
     await refresh()
-  } catch (e) { err.value = `Card confirm failed: ${e.message}` } finally { busy.value = false }
+  } catch (e) { fail(`Card confirm failed: ${e.message}`) } finally { busy.value = false }
 }
 // ─── Saved card + auto-recharge (Stripe) ───────────────────────────
 const ar = computed(() => billing.value?.paymentMethods?.autoRecharge || {})
@@ -380,8 +355,8 @@ async function saveCard() {
   try {
     const r = await apiFetch('/api/v1/user/billing/card/setup', { method: 'POST' })
     if (r.url) window.location.href = r.url
-    else err.value = 'Stripe did not return a setup URL'
-  } catch (e) { err.value = e.message; busy.value = false }
+    else fail('Stripe did not return a setup URL')
+  } catch (e) { fail(e.message); busy.value = false }
 }
 async function maybeFinalizeCard() {
   const params = new URLSearchParams(location.search)
@@ -390,23 +365,24 @@ async function maybeFinalizeCard() {
   busy.value = true; err.value = ''
   try {
     const r = await apiFetch('/api/v1/user/billing/card/confirm', { method: 'POST', body: { sessionId: sid } })
-    if (r.ok) flash.value = t('cust.billing.cardSaved') || 'Card saved.'
-    else if (r.pending) flash.value = t('cust.billing.stripePending') || 'Processing…'
+    if (r.ok) message.success(t('cust.billing.cardSaved') || 'Card saved.')
+    else if (r.pending) message.info(t('cust.billing.stripePending') || 'Processing…')
     history.replaceState(null, '', location.pathname)
     await refresh()
-  } catch (e) { err.value = `Card save failed: ${e.message}` } finally { busy.value = false }
+  } catch (e) { fail(`Card save failed: ${e.message}`) } finally { busy.value = false }
 }
-async function toggleAutoRecharge(ev) {
-  const enabled = ev.target.checked
+async function toggleAutoRecharge(enabled) {
   try { await apiFetch('/api/v1/user/billing/auto-recharge', { method: 'PATCH', body: { enabled } }); await refresh() }
-  catch (e) { err.value = e.message; await refresh() }
+  catch (e) { fail(e.message); await refresh() }
 }
 async function removeCard() {
   if (busy.value) return
   busy.value = true; err.value = ''
-  try { await apiFetch('/api/v1/user/billing/card', { method: 'DELETE' }); flash.value = t('cust.billing.cardRemoved') || 'Card removed.'; await refresh() }
-  catch (e) { err.value = e.message } finally { busy.value = false }
+  try { await apiFetch('/api/v1/user/billing/card', { method: 'DELETE' }); message.success(t('cust.billing.cardRemoved') || 'Card removed.'); await refresh() }
+  catch (e) { fail(e.message) } finally { busy.value = false }
 }
+// Key/value rows: label left, value right-aligned.
+const kvContent = { justifyContent: 'flex-end', textAlign: 'right' }
 function fmtTs(s) { return s ? String(s).slice(0, 16).replace('T', ' ') : '—' }
 function viewOrder(id) { router.push({ name: 'proxies', query: { order: id } }) }
 function invoiceUrl(id) { return `/api/v1/user/orders/${id}/invoice` }
@@ -436,10 +412,33 @@ const filteredTx = computed(() => txs.value.filter((tx) => {
 }))
 const TX_PAGE = 12
 const txPage = ref(1)
-const txPageCount = computed(() => Math.max(1, Math.ceil(filteredTx.value.length / TX_PAGE)))
-const pagedTx = computed(() => { const s = (txPage.value - 1) * TX_PAGE; return filteredTx.value.slice(s, s + TX_PAGE) })
-function setTxPage(p) { txPage.value = Math.min(txPageCount.value, Math.max(1, p)) }
+const txRows = computed(() => filteredTx.value.map((tx, i) => ({ ...tx, _k: `${tx.ts || ''}#${i}` })))
+const txPagination = computed(() => ({ current: txPage.value, pageSize: TX_PAGE, hideOnSinglePage: true, showSizeChanger: false }))
+function onTxChange(p) { txPage.value = p.current }
 watch(filteredTx, () => { txPage.value = 1 })
+const txColumns = computed(() => [
+  { title: t('cust.billing.txTime'), key: 'ts', dataIndex: 'ts', width: 150 },
+  { title: t('cust.billing.txType'), key: 'type', dataIndex: 'type', width: 140 },
+  { title: t('cust.billing.txNote'), key: 'note', dataIndex: 'note', ellipsis: true },
+  { title: t('cust.orders.col.amount'), key: 'amount', dataIndex: 'amount', width: 130, align: 'right' },
+  { title: t('cust.billing.txBalance'), key: 'balanceAfter', dataIndex: 'balanceAfter', width: 140, align: 'right' }
+])
+const txFilterOptions = computed(() => [
+  { value: 'all', label: t('cust.billing.txAll') },
+  { value: 'topup', label: t('cust.billing.txTopup') },
+  { value: 'order', label: t('cust.billing.txOrder') },
+  { value: 'refund', label: t('cust.billing.txRefund') },
+  { value: 'bonus', label: t('cust.billing.txBonus') }
+])
+function txTagColor(type) {
+  return type === 'topup' ? 'success' : type === 'order' ? 'blue' : type === 'refund' ? 'purple' : 'orange'
+}
+const grantColumns = computed(() => [
+  { title: t('cust.billing.promoGroup'), key: 'group', dataIndex: 'group' },
+  { title: t('cust.billing.promoValue'), key: 'remaining', dataIndex: 'remaining', align: 'right' },
+  { title: t('cust.billing.promoExpiry'), key: 'expiresAt', dataIndex: 'expiresAt' }
+])
+const grantRows = computed(() => grants.value.map((g, i) => ({ ...g, _k: i })))
 
 const presets = [50000, 100000, 200000, 500000, 1000000, 2000000]
 
@@ -517,12 +516,26 @@ const stripeSubmitting = ref(false)
 const stripeSaveCard = ref(false)
 const stripeErr = ref('')
 let _stripe = null, _elements = null
-const appearance = { theme: 'night', variables: { colorPrimary: '#22c55e', colorBackground: '#0f1720', borderRadius: '8px' } }
+const appearance = computed(() => (isDark.value
+  ? { theme: 'night', variables: { colorPrimary: '#22c55e', colorBackground: '#0f1720', borderRadius: '8px' } }
+  : { theme: 'stripe', variables: { colorPrimary: '#16a34a', borderRadius: '8px' } }))
+// The a-modal body is portalled a frame or two after `open` flips, so wait
+// (bounded) for the #stripe-pe container before mounting into it.
+function waitForEl(selector, frames = 120) {
+  return new Promise((resolve) => {
+    const check = (left) => {
+      if (document.querySelector(selector) || left <= 0) resolve()
+      else requestAnimationFrame(() => check(left - 1))
+    }
+    check(frames)
+  })
+}
 async function mountElement(clientSecret) {
   const Stripe = await loadStripeJs()
   _stripe = Stripe(billing.value?.paymentMethods?.stripePublishableKey || '')
   await nextTick()
-  _elements = _stripe.elements({ clientSecret, appearance })
+  await waitForEl('#stripe-pe')
+  _elements = _stripe.elements({ clientSecret, appearance: appearance.value })
   _elements.create('payment', { layout: 'tabs' }).mount('#stripe-pe')
 }
 const selectedMethod = ref('')
@@ -536,6 +549,17 @@ const enabledMethods = computed(() => {
   return list
 })
 watch(enabledMethods, (m) => { if (!selectedMethod.value || !m.includes(selectedMethod.value)) selectedMethod.value = m[0] || '' }, { immediate: true })
+const METHOD_ICON = { card: CreditCardOutlined, paypal: DollarOutlined, sepay: BankOutlined, usdt: WalletOutlined }
+const methodTiles = computed(() => {
+  const pm = billing.value?.paymentMethods || {}
+  const out = []
+  if (pm.stripeEnabled) out.push({ id: 'card', tone: 'ico-green', label: t('cust.billing.cardMethodLabel'), sub: `≈ ${stripeEstimate.value}` })
+  if (pm.paypalEnabled) out.push({ id: 'paypal', tone: 'ico-blue', label: 'PayPal', sub: `≈ ${paypalEstimate.value}` })
+  if (pm.sepayEnabled) out.push({ id: 'sepay', tone: 'ico-green', label: t('cust.billing.sepayMethodLabel'), sub: `${Number(topup.value || 0).toLocaleString()} VND` })
+  if (pm.binanceEnabled) out.push({ id: 'usdt', tone: 'ico-teal', label: 'USDT · BEP20', sub: `≈ ${usdtEstimate.value} USDT` })
+  return out.map((m) => ({ ...m, icon: METHOD_ICON[m.id] }))
+})
+const methodIcon = computed(() => METHOD_ICON[selectedMethod.value] || WalletOutlined)
 const methodEstimate = computed(() => {
   const cur = (billing.value?.paymentMethods?.walletCurrency || 'VND')
   switch (selectedMethod.value) {
@@ -574,14 +598,14 @@ async function payWithCardInline() {
   const amount = Math.max(10000, Math.floor(Number(topup.value) || 0))
   const { min, walletCur, minWallet } = stripeMinWallet()
   if (min > 0 && amount + 1e-9 < minWallet) {
-    err.value = t('cust.billing.stripeMinErr', { min, wallet: Math.ceil(minWallet).toLocaleString(), walletCur }); return
+    fail(t('cust.billing.stripeMinErr', { min, wallet: Math.ceil(minWallet).toLocaleString(), walletCur })); return
   }
   busy.value = true
   try {
     const r = await apiFetch('/api/v1/user/billing/stripe/intent', { method: 'POST', body: { amount, saveCard: stripeSaveCard.value } })
     stripeModal.value = 'pay'
     await mountElement(r.clientSecret)
-  } catch (e) { err.value = e.message; stripeModal.value = false } finally { busy.value = false }
+  } catch (e) { fail(e.message); stripeModal.value = false } finally { busy.value = false }
 }
 async function submitStripePay() {
   if (stripeSubmitting.value || !_stripe || !_elements) return
@@ -591,7 +615,7 @@ async function submitStripePay() {
     if (error) { stripeErr.value = error.message; return }
     const r = await apiFetch('/api/v1/user/billing/stripe/confirm-intent', { method: 'POST', body: { paymentIntentId: paymentIntent.id } })
     closeStripeModal()
-    flash.value = r.alreadyCredited ? (t('cust.billing.stripeAlreadyDone') || 'Đã xử lý.') : (t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() }))
+    message.success(r.alreadyCredited ? (t('cust.billing.stripeAlreadyDone') || 'Đã xử lý.') : (t('cust.billing.stripeSuccess', { amount: Number(r.amount).toLocaleString() })))
     await refresh()
   } catch (e) { stripeErr.value = e.message } finally { stripeSubmitting.value = false }
 }
@@ -603,7 +627,7 @@ async function addCardInline() {
     const r = await apiFetch('/api/v1/user/billing/stripe/setup-intent', { method: 'POST' })
     stripeModal.value = 'setup'
     await mountElement(r.clientSecret)
-  } catch (e) { err.value = e.message; stripeModal.value = false } finally { busy.value = false }
+  } catch (e) { fail(e.message); stripeModal.value = false } finally { busy.value = false }
 }
 async function submitStripeSetup() {
   if (stripeSubmitting.value || !_stripe || !_elements) return
@@ -613,7 +637,7 @@ async function submitStripeSetup() {
     if (error) { stripeErr.value = error.message; return }
     await apiFetch('/api/v1/user/billing/stripe/save-card', { method: 'POST', body: { setupIntentId: setupIntent.id } })
     closeStripeModal()
-    flash.value = t('cust.billing.cardSaved') || 'Đã lưu thẻ.'
+    message.success(t('cust.billing.cardSaved') || 'Đã lưu thẻ.')
     await refresh()
   } catch (e) { stripeErr.value = e.message } finally { stripeSubmitting.value = false }
 }
@@ -629,358 +653,476 @@ onMounted(async () => {
 </script>
 
 <template>
-  <h1>{{ t('cust.nav.topup') }}</h1>
-  <p class="sub">{{ t('cust.billing.subtitle') }}</p>
+  <div class="page">
+    <a-typography-text type="secondary">{{ t('cust.billing.subtitle') }}</a-typography-text>
 
-  <p v-if="err" class="error-text">{{ err }}</p>
-  <p v-if="flash" style="color:#4ade80; font-size:13px">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon closable :message="err" @close="err = ''" />
 
-  <!-- KPI -->
-  <div v-if="billing" class="kpi-row">
-    <div class="kpi-card-v2">
-      <span class="ico purple"><Wallet :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.side.balance') }}</span>
-        <span class="val">{{ Number(billing.wallet.balance).toLocaleString() }}</span>
-        <span class="foot"><span class="dot"></span> {{ (pricing?.currency || 'VND').toUpperCase() }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico green"><ArrowDownLeft :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.billing.kpiDeposit') }}</span>
-        <span class="val">{{ monthDeposit.toLocaleString() }}</span>
-        <span class="foot"><span class="dot"></span> {{ t('cust.billing.thisMonth') }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico amber"><ArrowUpRight :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.billing.kpiSpent') }}</span>
-        <span class="val">{{ monthSpent.toLocaleString() }}</span>
-        <span class="foot warn"><span class="dot"></span> {{ t('cust.billing.thisMonth') }}</span>
-      </div>
-    </div>
-  </div>
+    <!-- KPI -->
+    <a-row v-if="billing" :gutter="[12, 12]">
+      <a-col :xs="24" :sm="8">
+        <a-card size="small">
+          <a-statistic :title="t('cust.side.balance')" :value="Number(billing.wallet.balance)" :value-style="{ color: 'var(--pb-primary)' }">
+            <template #prefix><WalletOutlined /></template>
+            <template #formatter="{ value }"><span class="mono">{{ Number(value).toLocaleString() }}</span></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="small-text">{{ (pricing?.currency || 'VND').toUpperCase() }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :sm="8">
+        <a-card size="small">
+          <a-statistic :title="t('cust.billing.kpiDeposit')" :value="monthDeposit">
+            <template #prefix><ArrowDownOutlined class="kpi-in" /></template>
+            <template #formatter="{ value }"><span class="mono">{{ Number(value).toLocaleString() }}</span></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="small-text">{{ t('cust.billing.thisMonth') }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :sm="8">
+        <a-card size="small">
+          <a-statistic :title="t('cust.billing.kpiSpent')" :value="monthSpent">
+            <template #prefix><ArrowUpOutlined class="kpi-out" /></template>
+            <template #formatter="{ value }"><span class="mono">{{ Number(value).toLocaleString() }}</span></template>
+          </a-statistic>
+          <a-typography-text type="warning" class="small-text">{{ t('cust.billing.thisMonth') }}</a-typography-text>
+        </a-card>
+      </a-col>
+    </a-row>
 
-  <div style="display:grid; grid-template-columns: 1fr 360px; gap:18px; align-items:start">
-    <!-- LEFT column -->
-    <div style="display:flex; flex-direction:column; gap:14px; min-width:0">
-      <!-- Topup card -->
-      <section class="surface" style="padding:18px">
-        <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><Plus :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.billing.topupTitle') }}</h2>
-        <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.billing.topupDesc') }}</p>
+    <a-row :gutter="[16, 16]">
+      <!-- LEFT column -->
+      <a-col :xs="24" :lg="15" :xl="16">
+        <a-flex vertical gap="middle">
+          <!-- Topup card -->
+          <a-card>
+            <template #title><PlusCircleOutlined class="title-ico" /> {{ t('cust.billing.topupTitle') }}</template>
+            <a-flex vertical gap="middle" class="narrow">
+              <a-typography-text type="secondary">{{ t('cust.billing.topupDesc') }}</a-typography-text>
 
-        <div v-if="billing?.binancePending" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 14px; margin-bottom:12px; background:var(--pxl-card-2); border:1px solid rgba(38,161,123,0.4); border-radius:var(--radius-sm); max-width:560px">
-          <RefreshCw :size="13" class="spin" style="color:#26a17b; flex-shrink:0" />
-          <div style="flex:1; min-width:200px">
-            <div style="font-size:13px; color:var(--text)">{{ t('cust.billing.usdtPendingTitle') }}</div>
-            <div style="font-size:11.5px; color:var(--muted)"><span class="cell-mono">{{ billing.binancePending.usdtAmount }} USDT</span> → +{{ Number(billing.binancePending.creditAmount).toLocaleString() }} {{ billing.paymentMethods?.walletCurrency || 'VND' }} · {{ billing.binancePending.status === 'sent' ? t('cust.billing.usdtPendingSent') : t('cust.billing.usdtPendingWaiting') }}</div>
-          </div>
-          <button class="ghost-button" type="button" style="padding:4px 10px; font-size:11.5px" @click="reopenUsdt">{{ t('cust.billing.usdtPendingView') }}</button>
-        </div>
-        <label class="input-field" style="max-width:560px; margin-bottom:10px">
-          <span>{{ t('cust.billing.amount') }} ({{ (pricing?.currency || 'VND').toUpperCase() }})</span>
-          <input v-model.number="topup" type="number" min="10000" step="10000" class="amount-input" />
-        </label>
+              <a-alert v-if="billing?.binancePending" type="info" show-icon :message="t('cust.billing.usdtPendingTitle')">
+                <template #icon><SyncOutlined spin /></template>
+                <template #description>
+                  <a-flex vertical gap="small" align="flex-start">
+                    <span>
+                      <span class="mono">{{ billing.binancePending.usdtAmount }} USDT</span>
+                      → +{{ Number(billing.binancePending.creditAmount).toLocaleString() }} {{ billing.paymentMethods?.walletCurrency || 'VND' }}
+                      · {{ billing.binancePending.status === 'sent' ? t('cust.billing.usdtPendingSent') : t('cust.billing.usdtPendingWaiting') }}
+                    </span>
+                    <a-button size="small" @click="reopenUsdt">{{ t('cust.billing.usdtPendingView') }}</a-button>
+                  </a-flex>
+                </template>
+              </a-alert>
 
-        <div class="chips" style="margin-bottom:16px">
-          <button v-for="a in presets" :key="a" type="button" :class="{ active: topup === a }" @click="topup = a">{{ a.toLocaleString() }}</button>
-        </div>
-
-        <div v-if="enabledMethods.length" class="pay-methods">
-          <button v-if="billing?.paymentMethods?.stripeEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'card' }" @click="selectedMethod = 'card'">
-            <span class="pay-ico" style="color:var(--pxl)"><CreditCard :size="18" /></span>
-            <span class="pay-meta"><b>{{ t('cust.billing.cardMethodLabel') }}</b><small>≈ {{ stripeEstimate }}</small></span>
-          </button>
-          <button v-if="billing?.paymentMethods?.paypalEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'paypal' }" @click="selectedMethod = 'paypal'">
-            <span class="pay-ico" style="color:#3b82f6"><CircleDollarSign :size="18" /></span>
-            <span class="pay-meta"><b>PayPal</b><small>≈ {{ paypalEstimate }}</small></span>
-          </button>
-          <button v-if="billing?.paymentMethods?.sepayEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'sepay' }" @click="selectedMethod = 'sepay'">
-            <span class="pay-ico" style="color:var(--green)"><Landmark :size="18" /></span>
-            <span class="pay-meta"><b>{{ t('cust.billing.sepayMethodLabel') }}</b><small>{{ Number(topup || 0).toLocaleString() }} VND</small></span>
-          </button>
-          <button v-if="billing?.paymentMethods?.binanceEnabled" type="button" class="pay-tile" :class="{ active: selectedMethod === 'usdt' }" @click="selectedMethod = 'usdt'">
-            <span class="pay-ico" style="color:#26a17b"><Wallet :size="18" /></span>
-            <span class="pay-meta"><b>USDT · BEP20</b><small>≈ {{ usdtEstimate }} USDT</small></span>
-          </button>
-        </div>
-        <p v-else style="font-size:12px; color:var(--muted)">{{ t('cust.billing.noPayment') }}</p>
-
-        <button v-if="enabledMethods.length" class="primary-action pay-cta" type="button" :disabled="busy" @click="payNow">
-          <CreditCard v-if="selectedMethod === 'card'" :size="16" />
-          <CircleDollarSign v-else-if="selectedMethod === 'paypal'" :size="16" />
-          <Landmark v-else-if="selectedMethod === 'sepay'" :size="16" />
-          <Wallet v-else :size="16" />
-          {{ busy && stripeModal === false ? t('common.loading') : t('cust.billing.payNowBtn', { amount: methodEstimate }) }}
-        </button>
-        <p v-if="selectedNote" style="font-size:11.5px; color:var(--muted); margin:10px 0 0; line-height:1.5">{{ selectedNote }}</p>
-      </section>
-
-      <!-- Saved card + auto-recharge (Stripe) -->
-      <section v-if="billing?.paymentMethods?.stripeEnabled && ar.adminEnabled" class="surface" style="padding:18px">
-        <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><CreditCard :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.billing.autoRechargeTitle') }}</h2>
-        <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.billing.autoRechargeDesc', { threshold: Number(ar.threshold).toLocaleString(), amount: Number(ar.amount).toLocaleString(), cur: (billing.paymentMethods.walletCurrency || 'VND') }) }}</p>
-        <div v-if="ar.hasCard" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 14px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:10px; max-width:560px">
-          <CreditCard :size="18" style="color:var(--pxl)" />
-          <span class="cell-mono" style="font-size:14px">{{ (ar.cardBrand || 'card').toUpperCase() }} ····{{ ar.cardLast4 }}</span>
-          <span style="font-size:12px; color:var(--muted)">exp {{ ar.cardExp }}</span>
-          <div style="flex:1"></div>
-          <button class="ghost-button" type="button" style="padding:4px 10px; font-size:12px" @click="removeCard">{{ t('cust.billing.cardRemove') }}</button>
-        </div>
-        <button v-else class="primary-action" type="button" :disabled="busy" @click="addCardInline" style="max-width:280px">
-          <CreditCard :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.cardSave') }}
-        </button>
-        <label v-if="ar.hasCard" class="check-line" style="margin-top:14px; display:inline-flex; align-items:center; gap:8px; cursor:pointer">
-          <input type="checkbox" :checked="ar.enabled" @change="toggleAutoRecharge" />
-          <span style="font-size:13px">{{ t('cust.billing.autoRechargeToggle') }}</span>
-        </label>
-      </section>
-
-      <!-- SePay QR modal — shown after clicking Pay via VN bank transfer -->
-      <div v-if="sepayOpen" class="sepay-modal-overlay" @click.self="closeSepay">
-        <div class="sepay-modal">
-          <div class="sepay-modal-head">
-            <h3><QrCode :size="16" style="vertical-align:-3px" /> {{ t('cust.billing.sepayQrTitle') }}</h3>
-            <button class="ghost-button" type="button" @click="closeSepay" style="padding:4px 8px"><X :size="14" /></button>
-          </div>
-          <div v-if="sepayCheck" class="sepay-success">
-            <div style="font-size:32px">✓</div>
-            <h4>{{ t('cust.billing.sepayPaid') }}</h4>
-            <p>{{ t('cust.billing.sepayPaidDesc', { amount: Number(sepayCheck.amount).toLocaleString() }) }}</p>
-            <button class="primary-action" type="button" @click="closeSepay">{{ t('common.close') }}</button>
-          </div>
-          <div v-else class="sepay-modal-body">
-            <div class="sepay-qr-wrap">
-              <img :src="sepayData.qrUrl" alt="VietQR" class="sepay-qr" />
-            </div>
-            <div class="sepay-info">
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayBank') }}</span><strong class="cell-mono">{{ sepayData.bank.code }}</strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayAccount') }}</span><strong class="cell-mono">{{ sepayData.bank.accountNumber }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyAccount">{{ t('cust.billing.copy') }}</button></strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayHolder') }}</span><strong>{{ sepayData.bank.accountHolder }}</strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayAmount') }}</span><strong class="cell-mono" style="color:var(--green)">{{ Number(sepayData.amount).toLocaleString() }} VND</strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.sepayMemo') }}</span><strong class="cell-mono" style="color:var(--yellow)">{{ sepayData.memo }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyMemo">{{ t('cust.billing.copy') }}</button></strong></div>
-              <p class="sepay-hint">{{ sepayData.instructions }}</p>
-              <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.sepayPolling') }}</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Stripe Payment Element modal (in-place card entry, no redirect) -->
-      <div v-if="stripeModal" class="sepay-modal-overlay" @click.self="closeStripeModal">
-        <div class="sepay-modal" style="max-width:460px">
-          <div class="sepay-modal-head">
-            <h3><CreditCard :size="16" style="vertical-align:-3px" /> {{ stripeModal === 'setup' ? t('cust.billing.cardSave') : t('cust.billing.cardModalTitle') }}</h3>
-            <button class="ghost-button" type="button" @click="closeStripeModal" style="padding:4px 8px"><X :size="14" /></button>
-          </div>
-          <div style="padding:18px; display:flex; flex-direction:column; gap:14px">
-            <div v-if="stripeModal === 'pay'" style="display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:10px 12px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:8px">
-              <span style="color:var(--muted)">{{ t('cust.billing.cardChargeLabel') }}</span>
-              <strong class="cell-mono" style="color:var(--green); font-size:15px">≈ {{ stripeEstimate }}</strong>
-            </div>
-            <div id="stripe-pe"><div style="padding:20px; text-align:center; color:var(--muted); font-size:12px"><RefreshCw :size="14" class="spin" style="vertical-align:-2px" /> {{ t('common.loading') }}</div></div>
-            <p v-if="stripeErr" class="error-text" style="margin:0; font-size:12px">{{ stripeErr }}</p>
-            <button v-if="stripeModal === 'pay'" class="primary-action" type="button" :disabled="stripeSubmitting" @click="submitStripePay" style="width:100%">
-              <CreditCard :size="15" /> {{ stripeSubmitting ? t('common.loading') : t('cust.billing.cardPayNow', { amount: stripeEstimate }) }}
-            </button>
-            <button v-else class="primary-action" type="button" :disabled="stripeSubmitting" @click="submitStripeSetup" style="width:100%">
-              <CreditCard :size="15" /> {{ stripeSubmitting ? t('common.loading') : t('cust.billing.cardSaveNow') }}
-            </button>
-            <p style="font-size:11px; color:var(--muted); margin:0; text-align:center">🔒 {{ t('cust.billing.cardSecure') }}</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- USDT (BEP20) deposit modal — company Binance deposit address -->
-      <div v-if="usdtOpen" class="sepay-modal-overlay" @click.self="closeUsdt">
-        <div class="sepay-modal">
-          <div class="sepay-modal-head">
-            <h3><Wallet :size="16" style="vertical-align:-3px" /> {{ t('cust.billing.usdtTitle') }}</h3>
-            <button class="ghost-button" type="button" @click="closeUsdt" style="padding:4px 8px"><X :size="14" /></button>
-          </div>
-          <div v-if="usdtPaid" class="sepay-success">
-            <div style="font-size:32px">✓</div>
-            <h4>{{ t('cust.billing.usdtPaid') }}</h4>
-            <p>{{ t('cust.billing.usdtPaidDesc', { amount: Number(usdtPaid.creditAmount).toLocaleString() }) }}</p>
-            <button class="primary-action" type="button" @click="closeUsdt">{{ t('common.close') }}</button>
-          </div>
-          <div v-else class="sepay-modal-body">
-            <div style="display:flex; flex-direction:column; gap:8px; align-items:center">
-              <div class="sepay-qr-wrap">
-                <svg class="sepay-qr" :viewBox="`-2 -2 ${usdtQrSvg.size + 4} ${usdtQrSvg.size + 4}`" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg" role="img"><path :d="usdtQrSvg.path" fill="#000" /></svg>
+              <div>
+                <a-typography-text strong>{{ t('cust.billing.amount') }} ({{ (pricing?.currency || 'VND').toUpperCase() }})</a-typography-text>
+                <a-input-number
+                  v-model:value="topup"
+                  :min="0"
+                  :step="10000"
+                  size="large"
+                  class="mono amount-input"
+                  :formatter="(v) => `${v ?? ''}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')"
+                  :parser="(v) => `${v ?? ''}`.replace(/[^\d.]/g, '')"
+                />
+                <a-flex wrap="wrap" gap="small" class="presets">
+                  <a-button
+                    v-for="a in presets"
+                    :key="a"
+                    size="small"
+                    class="mono"
+                    :type="topup === a ? 'primary' : 'default'"
+                    :ghost="topup === a"
+                    @click="topup = a"
+                  >
+                    {{ a.toLocaleString() }}
+                  </a-button>
+                </a-flex>
               </div>
-              <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center">
-                <button class="ghost-button" type="button" style="padding:4px 8px; font-size:11px" :style="qrTab === 'binance' ? { borderColor: '#26a17b', color: '#26a17b' } : null" @click="qrTab = 'binance'">{{ t('cust.billing.usdtQrTabBinance') }}</button>
-                <button v-if="usdtData.contract" class="ghost-button" type="button" style="padding:4px 8px; font-size:11px" :style="qrTab === 'wallet' ? { borderColor: '#26a17b', color: '#26a17b' } : null" @click="qrTab = 'wallet'">{{ t('cust.billing.usdtQrTabWallet') }}</button>
+
+              <a-row v-if="enabledMethods.length" :gutter="[10, 10]" role="radiogroup">
+                <a-col v-for="m in methodTiles" :key="m.id" :xs="24" :sm="12">
+                  <a-card
+                    size="small"
+                    hoverable
+                    class="choice"
+                    :class="{ 'is-selected': selectedMethod === m.id }"
+                    role="radio"
+                    tabindex="0"
+                    :aria-checked="selectedMethod === m.id"
+                    @click="selectedMethod = m.id"
+                    @keydown.enter.space.prevent="selectedMethod = m.id"
+                  >
+                    <a-flex align="center" gap="middle">
+                      <a-avatar shape="square" :size="36" :class="['ico', m.tone]">
+                        <template #icon><component :is="m.icon" /></template>
+                      </a-avatar>
+                      <div class="choice-text">
+                        <a-typography-text strong>{{ m.label }}</a-typography-text>
+                        <a-typography-text type="secondary" class="choice-sub mono">{{ m.sub }}</a-typography-text>
+                      </div>
+                    </a-flex>
+                    <CheckCircleFilled v-if="selectedMethod === m.id" class="choice-check" />
+                  </a-card>
+                </a-col>
+              </a-row>
+              <a-alert v-else type="warning" show-icon :message="t('cust.billing.noPayment')" />
+
+              <template v-if="enabledMethods.length">
+                <a-button type="primary" size="large" block :loading="busy && stripeModal === false" :disabled="busy" @click="payNow">
+                  <template #icon><component :is="methodIcon" /></template>
+                  {{ busy && stripeModal === false ? t('common.loading') : t('cust.billing.payNowBtn', { amount: methodEstimate }) }}
+                </a-button>
+              </template>
+              <a-typography-text v-if="selectedNote" type="secondary" class="small-text">{{ selectedNote }}</a-typography-text>
+            </a-flex>
+          </a-card>
+
+          <!-- Saved card + auto-recharge (Stripe) -->
+          <a-card v-if="billing?.paymentMethods?.stripeEnabled && ar.adminEnabled">
+            <template #title><CreditCardOutlined class="title-ico" /> {{ t('cust.billing.autoRechargeTitle') }}</template>
+            <a-flex vertical gap="middle" align="flex-start" class="narrow">
+              <a-typography-text type="secondary">
+                {{ t('cust.billing.autoRechargeDesc', { threshold: Number(ar.threshold).toLocaleString(), amount: Number(ar.amount).toLocaleString(), cur: (billing.paymentMethods.walletCurrency || 'VND') }) }}
+              </a-typography-text>
+              <a-card v-if="ar.hasCard" size="small" class="full-width">
+                <a-flex align="center" gap="middle" wrap="wrap">
+                  <CreditCardOutlined class="title-ico card-ico" />
+                  <span class="mono card-num">{{ (ar.cardBrand || 'card').toUpperCase() }} ····{{ ar.cardLast4 }}</span>
+                  <a-typography-text type="secondary" class="small-text">exp {{ ar.cardExp }}</a-typography-text>
+                  <span class="spacer"></span>
+                  <a-button size="small" danger :disabled="busy" @click="removeCard">{{ t('cust.billing.cardRemove') }}</a-button>
+                </a-flex>
+              </a-card>
+              <a-button v-else type="primary" :loading="busy" @click="addCardInline">
+                <template #icon><CreditCardOutlined /></template>
+                {{ busy ? t('common.loading') : t('cust.billing.cardSave') }}
+              </a-button>
+              <label v-if="ar.hasCard" class="switch-line">
+                <a-switch :checked="!!ar.enabled" @change="toggleAutoRecharge" />
+                <span>{{ t('cust.billing.autoRechargeToggle') }}</span>
+              </label>
+            </a-flex>
+          </a-card>
+
+          <!-- Redeem free-credit promo code -->
+          <a-card>
+            <template #title><GiftOutlined class="title-ico" /> {{ t('cust.billing.promoTitle') }}</template>
+            <a-flex vertical gap="middle" class="narrow">
+              <a-typography-text type="secondary">{{ t('cust.billing.promoDesc') }}</a-typography-text>
+              <div>
+                <a-typography-text strong>{{ t('cust.billing.promoCode') }}</a-typography-text>
+                <a-space-compact block class="promo-row">
+                  <a-input v-model:value="promoCode" :placeholder="t('cust.billing.promoPlaceholder')" class="mono promo-input" @press-enter="checkPromo" />
+                  <a-button :loading="promoBusy && !promoInfo" :disabled="promoBusy || !promoCode.trim()" @click="checkPromo">{{ t('cust.billing.promoCheck') }}</a-button>
+                </a-space-compact>
               </div>
-              <p style="font-size:11px; color:var(--muted); max-width:236px; margin:0; line-height:1.45; text-align:center">{{ qrTab === 'binance' ? t('cust.billing.usdtQrHintBinance') : t('cust.billing.usdtQrHintWallet') }}</p>
+              <a-alert v-if="promoErr" type="error" show-icon :message="promoErr" />
+              <a-card v-if="promoInfo" size="small">
+                <a-descriptions :column="1" size="small" :colon="false" :content-style="kvContent">
+                  <a-descriptions-item :label="t('cust.billing.promoValue')">
+                    <a-typography-text type="success" strong class="mono">+{{ Number(promoInfo.amount).toLocaleString() }} {{ promoInfo.currency }}</a-typography-text>
+                  </a-descriptions-item>
+                  <a-descriptions-item :label="t('cust.billing.promoGroup')">
+                    <a-tag :bordered="false" color="blue">{{ promoGroupLabel(promoInfo.productGroup) }}</a-tag>
+                  </a-descriptions-item>
+                  <a-descriptions-item :label="t('cust.billing.promoExpiry')">
+                    <span class="mono">{{ promoInfo.validUntil || t('cust.billing.promoNoExpiry') }}</span>
+                  </a-descriptions-item>
+                </a-descriptions>
+                <a-button type="primary" block :loading="promoBusy" :disabled="!promoInfo.redeemable" @click="redeemPromo">
+                  <template #icon><GiftOutlined /></template>
+                  {{ promoInfo.expired ? t('cust.billing.promoExpired') : promoInfo.already ? t('cust.billing.promoAlready') : promoInfo.full ? t('cust.billing.promoFull') : t('cust.billing.promoRedeem') }}
+                </a-button>
+              </a-card>
+            </a-flex>
+          </a-card>
+
+          <!-- Active scoped free credit -->
+          <a-card v-if="grants.length" :body-style="{ padding: 0 }">
+            <template #title><GiftOutlined class="title-ico" /> {{ t('cust.billing.grantsTitle') }}</template>
+            <a-table :columns="grantColumns" :data-source="grantRows" row-key="_k" size="small" :pagination="false" :scroll="{ x: 420 }">
+              <template #bodyCell="{ column, record: g }">
+                <template v-if="column.key === 'group'">
+                  <a-tag :bordered="false" color="blue">{{ promoGroupLabel(g.group) }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'remaining'">
+                  <a-typography-text type="success" class="mono">{{ Number(g.remaining).toLocaleString() }} {{ g.currency }}</a-typography-text>
+                </template>
+                <template v-else-if="column.key === 'expiresAt'">
+                  <span class="mono">{{ g.expiresAt || t('cust.billing.promoNoExpiry') }}</span>
+                </template>
+              </template>
+            </a-table>
+          </a-card>
+
+          <!-- Transactions -->
+          <a-card :body-style="{ padding: 0 }">
+            <template #title>{{ t('cust.billing.txTitle') }} ({{ txs.length }})</template>
+            <template #extra>
+              <a-button shape="circle" @click="refresh"><template #icon><ReloadOutlined /></template></a-button>
+            </template>
+            <a-flex wrap="wrap" gap="small" class="tx-filters">
+              <a-input v-model:value="txSearch" allow-clear :placeholder="t('cust.billing.txSearch')" class="tx-search">
+                <template #prefix><SearchOutlined /></template>
+              </a-input>
+              <a-select v-model:value="txFilter" :options="txFilterOptions" class="tx-type" />
+            </a-flex>
+            <a-table
+              :columns="txColumns"
+              :data-source="txRows"
+              row-key="_k"
+              size="middle"
+              :pagination="txPagination"
+              :scroll="{ x: 720 }"
+              :locale="{ emptyText: t('cust.billing.txEmpty') }"
+              @change="onTxChange"
+            >
+              <template #bodyCell="{ column, record: tx }">
+                <template v-if="column.key === 'ts'">
+                  <span class="mono">{{ fmtTs(tx.ts) }}</span>
+                </template>
+                <template v-else-if="column.key === 'type'">
+                  <a-tag :color="txTagColor(tx.type)" :bordered="false">{{ tx.type }}</a-tag>
+                </template>
+                <template v-else-if="column.key === 'note'">
+                  {{ tx.note || '—' }}
+                </template>
+                <template v-else-if="column.key === 'amount'">
+                  <a-typography-text :type="Number(tx.amount) > 0 ? 'success' : 'danger'" class="mono">
+                    {{ Number(tx.amount) > 0 ? '+' : '' }}{{ Number(tx.amount).toLocaleString() }}
+                  </a-typography-text>
+                </template>
+                <template v-else-if="column.key === 'balanceAfter'">
+                  <span class="mono">{{ Number(tx.balanceAfter).toLocaleString() }}</span>
+                </template>
+              </template>
+            </a-table>
+          </a-card>
+        </a-flex>
+      </a-col>
+
+      <!-- RIGHT column -->
+      <a-col :xs="24" :lg="9" :xl="8">
+        <a-flex vertical gap="middle" class="aside">
+          <!-- Pricing snapshot -->
+          <a-card v-if="pricing" size="small" :title="t('cust.billing.pricingTitle')">
+            <a-descriptions :column="1" size="small" :colon="false" :content-style="kvContent">
+              <a-descriptions-item :label="t('cust.buy.t.ipv4')">
+                <a-typography-text type="success" class="mono">{{ Number(pricing.ipv4.perHour).toLocaleString() }} {{ pricing.currency.toUpperCase() }}/h</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.buy.t.ipv6')">
+                <a-typography-text type="success" class="mono">{{ Number(pricing.ipv6.perHour).toLocaleString() }} {{ pricing.currency.toUpperCase() }}/h</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.duration')">{{ pricing.minHours }}h – {{ pricing.maxHours }}h</a-descriptions-item>
+            </a-descriptions>
+            <template v-if="pricing.tiers?.length">
+              <a-typography-text type="secondary" class="eyebrow-text">{{ t('cust.billing.tierDiscount') }}</a-typography-text>
+              <a-flex wrap="wrap" gap="small" class="tiers">
+                <a-tag v-for="tier in pricing.tiers" :key="tier.min" color="blue" :bordered="false" class="mono">≥{{ tier.min }} → -{{ (Number(tier.discount) * 100).toFixed(0) }}%</a-tag>
+              </a-flex>
+            </template>
+          </a-card>
+
+          <!-- Recent orders -->
+          <a-card v-if="orders.length" size="small" :title="t('cust.billing.recentOrders')" :body-style="{ padding: '0 12px' }">
+            <template #extra>
+              <a-button type="link" size="small" @click="router.push({ name: 'proxies' })">
+                {{ t('cust.viewAll') }} <RightOutlined />
+              </a-button>
+            </template>
+            <a-list size="small" :data-source="orders.slice(0, 5)" :row-key="(o) => o.id">
+              <template #renderItem="{ item: o }">
+                <a-list-item class="order-item" @click="viewOrder(o.id)">
+                  <a-list-item-meta>
+                    <template #title><span class="mono small-text">{{ o.id }}</span></template>
+                    <template #description><span class="one-line small-text">{{ o.item }}</span></template>
+                  </a-list-item-meta>
+                  <template #actions>
+                    <a-button type="text" size="small" :href="invoiceUrl(o.id)" target="_blank" @click.stop>
+                      <template #icon><FileTextOutlined /></template>
+                    </a-button>
+                    <RightOutlined class="muted" />
+                  </template>
+                </a-list-item>
+              </template>
+            </a-list>
+          </a-card>
+        </a-flex>
+      </a-col>
+    </a-row>
+
+    <!-- SePay QR modal — shown after clicking Pay via VN bank transfer -->
+    <a-modal :open="sepayOpen" :footer="null" :width="640" @cancel="closeSepay">
+      <template #title><QrcodeOutlined /> {{ t('cust.billing.sepayQrTitle') }}</template>
+      <a-result
+        v-if="sepayCheck"
+        status="success"
+        :title="t('cust.billing.sepayPaid')"
+        :sub-title="t('cust.billing.sepayPaidDesc', { amount: Number(sepayCheck.amount).toLocaleString() })"
+      >
+        <template #extra><a-button type="primary" @click="closeSepay">{{ t('common.close') }}</a-button></template>
+      </a-result>
+      <a-row v-else-if="sepayData" :gutter="[20, 16]">
+        <a-col :xs="24" :sm="10" class="qr-col">
+          <div class="qr-box"><img :src="sepayData.qrUrl" alt="VietQR" class="qr-img" /></div>
+        </a-col>
+        <a-col :xs="24" :sm="14">
+          <a-flex vertical gap="small">
+            <a-descriptions :column="1" size="small" bordered>
+              <a-descriptions-item :label="t('cust.billing.sepayBank')"><span class="mono">{{ sepayData.bank.code }}</span></a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.sepayAccount')">
+                <a-typography-text strong class="mono" :copyable="{ text: String(sepayData.bank.accountNumber || ''), tooltips: copyTips }">{{ sepayData.bank.accountNumber }}</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.sepayHolder')"><strong>{{ sepayData.bank.accountHolder }}</strong></a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.sepayAmount')">
+                <a-typography-text type="success" strong class="mono">{{ Number(sepayData.amount).toLocaleString() }} VND</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.sepayMemo')">
+                <a-typography-text type="warning" strong class="mono" :copyable="{ text: String(sepayData.memo || ''), tooltips: copyTips }">{{ sepayData.memo }}</a-typography-text>
+              </a-descriptions-item>
+            </a-descriptions>
+            <a-typography-text v-if="sepayData.instructions" type="secondary" class="small-text">{{ sepayData.instructions }}</a-typography-text>
+            <a-typography-text type="success" class="small-text"><SyncOutlined spin /> {{ t('cust.billing.sepayPolling') }}</a-typography-text>
+          </a-flex>
+        </a-col>
+      </a-row>
+    </a-modal>
+
+    <!-- Stripe Payment Element modal (in-place card entry, no redirect) -->
+    <a-modal :open="!!stripeModal" :footer="null" :width="460" destroy-on-close @cancel="closeStripeModal">
+      <template #title><CreditCardOutlined /> {{ stripeModal === 'setup' ? t('cust.billing.cardSave') : t('cust.billing.cardModalTitle') }}</template>
+      <a-flex vertical gap="middle" class="stripe-body">
+        <a-card v-if="stripeModal === 'pay'" size="small">
+          <a-flex justify="space-between" align="center" gap="small">
+            <a-typography-text type="secondary">{{ t('cust.billing.cardChargeLabel') }}</a-typography-text>
+            <a-typography-text type="success" strong class="mono charge">≈ {{ stripeEstimate }}</a-typography-text>
+          </a-flex>
+        </a-card>
+        <!-- Stripe mounts its Payment Element into this container (see mountElement) -->
+        <div id="stripe-pe"><div class="pe-loading"><SyncOutlined spin /> {{ t('common.loading') }}</div></div>
+        <a-alert v-if="stripeErr" type="error" show-icon :message="stripeErr" />
+        <a-button v-if="stripeModal === 'pay'" type="primary" size="large" block :loading="stripeSubmitting" @click="submitStripePay">
+          <template #icon><CreditCardOutlined /></template>
+          {{ stripeSubmitting ? t('common.loading') : t('cust.billing.cardPayNow', { amount: stripeEstimate }) }}
+        </a-button>
+        <a-button v-else type="primary" size="large" block :loading="stripeSubmitting" @click="submitStripeSetup">
+          <template #icon><CreditCardOutlined /></template>
+          {{ stripeSubmitting ? t('common.loading') : t('cust.billing.cardSaveNow') }}
+        </a-button>
+        <a-typography-text type="secondary" class="small-text secure-note"><LockOutlined /> {{ t('cust.billing.cardSecure') }}</a-typography-text>
+      </a-flex>
+    </a-modal>
+
+    <!-- USDT (BEP20) deposit modal — company Binance deposit address -->
+    <a-modal :open="usdtOpen" :footer="null" :width="680" @cancel="closeUsdt">
+      <template #title><WalletOutlined /> {{ t('cust.billing.usdtTitle') }}</template>
+      <a-result
+        v-if="usdtPaid"
+        status="success"
+        :title="t('cust.billing.usdtPaid')"
+        :sub-title="t('cust.billing.usdtPaidDesc', { amount: Number(usdtPaid.creditAmount).toLocaleString() })"
+      >
+        <template #extra><a-button type="primary" @click="closeUsdt">{{ t('common.close') }}</a-button></template>
+      </a-result>
+      <a-row v-else-if="usdtData" :gutter="[20, 16]">
+        <a-col :xs="24" :sm="10">
+          <a-flex vertical align="center" gap="small">
+            <div class="qr-box">
+              <a-qrcode :value="usdtQrPayload || ' '" :size="208" color="#000000" bg-color="#ffffff" :bordered="false" error-level="M" />
             </div>
-            <div class="sepay-info">
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtNetwork') }}</span><strong class="cell-mono" style="color:var(--yellow)">{{ usdtData.coin }} · {{ usdtData.network }}</strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtAddress') }}</span><strong class="cell-mono" style="word-break:break-all">{{ usdtData.address }} <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyUsdtAddress">{{ t('cust.billing.copy') }}</button></strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtAmount') }}</span><strong class="cell-mono" style="color:var(--green); font-size:16px">{{ usdtData.usdtAmount }} USDT <button class="ghost-button" style="padding:2px 6px; font-size:10px; margin-left:6px" @click="copyUsdtAmount">{{ t('cust.billing.copy') }}</button></strong></div>
-              <div class="sepay-row"><span class="lbl">{{ t('cust.billing.usdtCredit') }}</span><strong class="cell-mono">{{ Number(usdtData.creditAmount).toLocaleString() }} {{ billing?.paymentMethods?.walletCurrency || 'VND' }}</strong></div>
-              <div class="sepay-row" v-if="usdtLeft"><span class="lbl">{{ t('cust.billing.usdtExpires') }}</span><strong class="cell-mono">{{ usdtLeft }}</strong></div>
-              <p class="sepay-hint">{{ t('cust.billing.usdtHint') }}</p>
-              <p class="sepay-poll"><RefreshCw :size="11" class="spin" /> {{ t('cust.billing.usdtPolling') }}</p>
-              <button v-if="usdtData.status === 'pending'" class="primary-action" type="button" :disabled="busy" @click="markUsdtSent" style="margin-top:10px; background:#26a17b; border-color:#26a17b">
-                <Check :size="15" /> {{ busy ? t('common.loading') : t('cust.billing.usdtSentBtn') }}
-              </button>
-              <p v-else-if="usdtData.status === 'sent'" class="sepay-hint" style="color:var(--yellow); margin-top:8px">{{ t('cust.billing.usdtSentNote') }}</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Redeem free-credit promo code -->
-      <section class="surface" style="padding:18px">
-        <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><Gift :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.billing.promoTitle') }}</h2>
-        <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.billing.promoDesc') }}</p>
-        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; max-width:560px">
-          <label class="input-field" style="flex:1 1 200px; margin:0">
-            <span>{{ t('cust.billing.promoCode') }}</span>
-            <input v-model="promoCode" :placeholder="t('cust.billing.promoPlaceholder')" style="text-transform:uppercase" @keyup.enter="checkPromo" />
-          </label>
-          <button class="ghost-button" type="button" :disabled="promoBusy || !promoCode.trim()" @click="checkPromo">{{ t('cust.billing.promoCheck') }}</button>
-        </div>
-        <p v-if="promoErr" class="error-text" style="margin:8px 0 0">{{ promoErr }}</p>
-        <div v-if="promoInfo" style="margin-top:12px; padding:12px 14px; background:var(--pxl-card-2); border:1px solid var(--pxl-bd); border-radius:10px; max-width:560px">
-          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; margin-bottom:6px"><span style="color:var(--muted)">{{ t('cust.billing.promoValue') }}</span><strong class="cell-mono" style="color:var(--green); font-size:15px">+{{ Number(promoInfo.amount).toLocaleString() }} {{ promoInfo.currency }}</strong></div>
-          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; margin-bottom:6px"><span style="color:var(--muted)">{{ t('cust.billing.promoGroup') }}</span><span class="tag-soft">{{ promoGroupLabel(promoInfo.productGroup) }}</span></div>
-          <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px"><span style="color:var(--muted)">{{ t('cust.billing.promoExpiry') }}</span><span class="cell-mono">{{ promoInfo.validUntil || t('cust.billing.promoNoExpiry') }}</span></div>
-          <button class="primary-action" type="button" :disabled="promoBusy || !promoInfo.redeemable" @click="redeemPromo" style="margin-top:12px; width:100%">
-            <Gift :size="15" /> {{ promoInfo.expired ? t('cust.billing.promoExpired') : promoInfo.already ? t('cust.billing.promoAlready') : promoInfo.full ? t('cust.billing.promoFull') : t('cust.billing.promoRedeem') }}
-          </button>
-        </div>
-      </section>
-
-      <!-- Active scoped free credit -->
-      <section class="surface" v-if="grants.length" style="padding:18px">
-        <h2 style="margin:0 0 10px; color:var(--text); font-size:15px"><Gift :size="13" style="vertical-align:-2px; color:var(--green)" /> {{ t('cust.billing.grantsTitle') }}</h2>
-        <div class="data-table">
-          <div class="table-head" style="grid-template-columns: 1fr 1fr 1fr">
-            <span>{{ t('cust.billing.promoGroup') }}</span><span>{{ t('cust.billing.promoValue') }}</span><span>{{ t('cust.billing.promoExpiry') }}</span>
-          </div>
-          <div v-for="(g, i) in grants" :key="i" class="table-row" style="grid-template-columns: 1fr 1fr 1fr">
-            <span><span class="tag-soft">{{ promoGroupLabel(g.group) }}</span></span>
-            <span class="cell-mono" style="color:var(--green)">{{ Number(g.remaining).toLocaleString() }} {{ g.currency }}</span>
-            <span class="cell-mono">{{ g.expiresAt || t('cust.billing.promoNoExpiry') }}</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- Transactions -->
-      <section class="dt2">
-        <div class="dt2-toolbar">
-          <h2 style="margin:0; color:var(--text); font-size:15px">{{ t('cust.billing.txTitle') }} ({{ txs.length }})</h2>
-          <div class="spacer"></div>
-          <div class="search-box">
-            <Search :size="14" />
-            <input v-model="txSearch" type="search" :placeholder="t('cust.billing.txSearch')" />
-          </div>
-          <select v-model="txFilter">
-            <option value="all">{{ t('cust.billing.txAll') }}</option>
-            <option value="topup">{{ t('cust.billing.txTopup') }}</option>
-            <option value="order">{{ t('cust.billing.txOrder') }}</option>
-            <option value="refund">{{ t('cust.billing.txRefund') }}</option>
-            <option value="bonus">{{ t('cust.billing.txBonus') }}</option>
-          </select>
-          <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="13" /></button>
-        </div>
-
-        <div class="dt2-head" style="grid-template-columns: 1.2fr 0.8fr 1.5fr 0.9fr 0.9fr">
-          <span>{{ t('cust.billing.txTime') }}</span>
-          <span>{{ t('cust.billing.txType') }}</span>
-          <span>{{ t('cust.billing.txNote') }}</span>
-          <span>{{ t('cust.orders.col.amount') }}</span>
-          <span>{{ t('cust.billing.txBalance') }}</span>
-        </div>
-        <div v-for="(tx, i) in pagedTx" :key="i" class="dt2-row" style="grid-template-columns: 1.2fr 0.8fr 1.5fr 0.9fr 0.9fr">
-          <span class="cell-mono">{{ fmtTs(tx.ts) }}</span>
-          <span><span :class="['tag-soft', tx.type === 'topup' ? 'active' : (tx.type === 'order' ? 'datacenter' : (tx.type === 'refund' ? 'mobile' : 'isp'))]">{{ tx.type }}</span></span>
-          <span style="color:var(--text); font-size:12.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ tx.note || '—' }}</span>
-          <span class="cell-mono" :style="{ color: Number(tx.amount) > 0 ? '#4ade80' : '#f87171' }">{{ Number(tx.amount) > 0 ? '+' : '' }}{{ Number(tx.amount).toLocaleString() }}</span>
-          <span class="cell-mono">{{ Number(tx.balanceAfter).toLocaleString() }}</span>
-        </div>
-        <p v-if="!filteredTx.length" class="empty-text" style="padding:30px">{{ t('cust.billing.txEmpty') }}</p>
-        <div v-if="txPageCount > 1" class="px-pager">
-          <button class="ghost-button" type="button" :disabled="txPage === 1" @click="setTxPage(txPage - 1)">‹</button>
-          <span class="px-pager-info">{{ txPage }} / {{ txPageCount }}</span>
-          <button class="ghost-button" type="button" :disabled="txPage >= txPageCount" @click="setTxPage(txPage + 1)">›</button>
-        </div>
-      </section>
-    </div>
-
-    <!-- RIGHT column -->
-    <aside style="display:flex; flex-direction:column; gap:14px; position:sticky; top:80px">
-      <!-- Pricing snapshot -->
-      <div v-if="pricing" class="px-detail">
-        <h3>{{ t('cust.billing.pricingTitle') }}</h3>
-        <div class="kv"><span class="k">{{ t('cust.buy.t.ipv4') }}</span><span class="v pxl" style="font-family:var(--mono)">{{ Number(pricing.ipv4.perHour).toLocaleString() }} {{ pricing.currency.toUpperCase() }}/h</span></div>
-        <div class="kv"><span class="k">{{ t('cust.buy.t.ipv6') }}</span><span class="v pxl" style="font-family:var(--mono)">{{ Number(pricing.ipv6.perHour).toLocaleString() }} {{ pricing.currency.toUpperCase() }}/h</span></div>
-        <div class="kv"><span class="k">{{ t('cust.billing.duration') }}</span><span class="v">{{ pricing.minHours }}h – {{ pricing.maxHours }}h</span></div>
-        <div v-if="pricing.tiers?.length" style="margin-top:8px">
-          <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px">{{ t('cust.billing.tierDiscount') }}</div>
-          <div style="display:flex; flex-wrap:wrap; gap:4px">
-            <span v-for="t in pricing.tiers" :key="t.min" class="tag-soft datacenter" style="font-size:10.5px">≥{{ t.min }} → -{{ (Number(t.discount) * 100).toFixed(0) }}%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Recent orders -->
-      <div v-if="orders.length" class="px-detail">
-        <div class="title-row">
-          <h3>{{ t('cust.billing.recentOrders') }}</h3>
-          <button class="text-mini" style="color:var(--pxl)" @click="router.push({ name: 'proxies' })">{{ t('cust.viewAll') }} <ChevronRight :size="11" style="vertical-align:-1px" /></button>
-        </div>
-        <div style="display:flex; flex-direction:column; gap:6px">
-          <div v-for="o in orders.slice(0, 5)" :key="o.id" style="display:grid; grid-template-columns: 1fr auto auto; gap:8px; align-items:center; padding:8px 10px; background:var(--pxl-card-2); border-radius:8px; cursor:pointer" @click="viewOrder(o.id)">
-            <div style="min-width:0; overflow:hidden">
-              <div class="cell-mono" style="font-size:11.5px; color:var(--text)">{{ o.id }}</div>
-              <div style="font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ o.item }}</div>
-            </div>
-            <a class="row-menu" :href="invoiceUrl(o.id)" target="_blank" @click.stop><FileText :size="14" /></a>
-            <ChevronRight :size="14" style="color:var(--muted)" />
-          </div>
-        </div>
-      </div>
-    </aside>
+            <a-segmented v-model:value="qrTab" size="small" :options="qrTabOptions" />
+            <a-typography-text type="secondary" class="small-text qr-hint">
+              {{ qrTab === 'binance' ? t('cust.billing.usdtQrHintBinance') : t('cust.billing.usdtQrHintWallet') }}
+            </a-typography-text>
+          </a-flex>
+        </a-col>
+        <a-col :xs="24" :sm="14">
+          <a-flex vertical gap="small">
+            <a-descriptions :column="1" size="small" bordered>
+              <a-descriptions-item :label="t('cust.billing.usdtNetwork')">
+                <a-tag color="gold" :bordered="false" class="mono">{{ usdtData.coin }} · {{ usdtData.network }}</a-tag>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.usdtAddress')">
+                <a-typography-text class="mono" :copyable="{ text: String(usdtData.address || ''), tooltips: copyTips }">{{ usdtData.address }}</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.usdtAmount')">
+                <a-typography-text type="success" strong class="mono usdt-amount" :copyable="{ text: String(usdtData.usdtAmount || ''), tooltips: copyTips }">{{ usdtData.usdtAmount }} USDT</a-typography-text>
+              </a-descriptions-item>
+              <a-descriptions-item :label="t('cust.billing.usdtCredit')">
+                <span class="mono">{{ Number(usdtData.creditAmount).toLocaleString() }} {{ billing?.paymentMethods?.walletCurrency || 'VND' }}</span>
+              </a-descriptions-item>
+              <a-descriptions-item v-if="usdtLeft" :label="t('cust.billing.usdtExpires')"><span class="mono">{{ usdtLeft }}</span></a-descriptions-item>
+            </a-descriptions>
+            <a-typography-text type="secondary" class="small-text">{{ t('cust.billing.usdtHint') }}</a-typography-text>
+            <a-typography-text type="success" class="small-text"><SyncOutlined spin /> {{ t('cust.billing.usdtPolling') }}</a-typography-text>
+            <a-button v-if="usdtData.status === 'pending'" type="primary" block :loading="busy" @click="markUsdtSent">
+              <template #icon><CheckOutlined /></template>
+              {{ busy ? t('common.loading') : t('cust.billing.usdtSentBtn') }}
+            </a-button>
+            <a-alert v-else-if="usdtData.status === 'sent'" type="warning" show-icon :message="t('cust.billing.usdtSentNote')" />
+          </a-flex>
+        </a-col>
+      </a-row>
+    </a-modal>
   </div>
 </template>
 
 <style scoped>
-.sepay-modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:1000; padding:16px }
-.sepay-modal { background:var(--surface); border:1px solid var(--border); border-radius:12px; max-width:560px; width:100%; max-height:90vh; overflow:auto }
-.sepay-modal-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border-soft) }
-.sepay-modal-head h3 { margin:0; font-size:15px; color:var(--text) }
-.sepay-modal-body { display:grid; grid-template-columns: auto 1fr; gap:18px; padding:18px }
-@media (max-width: 600px) { .sepay-modal-body { grid-template-columns: 1fr } }
-.sepay-qr-wrap { display:flex; align-items:center; justify-content:center; background:#fff; padding:8px; border-radius:8px }
-.sepay-qr { width:220px; height:220px; display:block }
-.sepay-info { display:flex; flex-direction:column; gap:8px }
-.sepay-row { display:flex; justify-content:space-between; align-items:center; font-size:13px; padding:4px 0; border-bottom:1px dashed var(--border-soft) }
-.sepay-row .lbl { color:var(--muted); font-size:11.5px; text-transform:uppercase; letter-spacing:0.04em }
-.sepay-hint { font-size:11.5px; color:var(--muted); margin-top:8px; line-height:1.5 }
-.sepay-poll { font-size:11.5px; color:var(--green); margin-top:4px; display:flex; align-items:center; gap:4px }
-.spin { animation: spin 1.5s linear infinite }
-@keyframes spin { from { transform:rotate(0deg) } to { transform:rotate(360deg) } }
-.sepay-success { padding:32px 18px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:10px }
-.sepay-success h4 { margin:0; font-size:18px; color:var(--green) }
-.sepay-success p { margin:0; color:var(--muted); font-size:13px }
-.px-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px 8px 2px; }
-.px-pager .ghost-button { min-width: 34px; justify-content: center; }
-.px-pager-info { font-size: 12.5px; color: var(--muted); min-width: 50px; text-align: center; font-family: var(--mono); }
+.small-text { font-size: 12px; }
+.title-ico { color: var(--pb-primary); }
+.kpi-in { color: var(--pb-success); }
+.kpi-out { color: var(--pb-warning); }
+.narrow { max-width: 600px; }
+.full-width { width: 100%; }
+.spacer { flex: 1; }
+.muted { color: var(--pb-text-3); }
+.one-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.amount-input { font-size:18px; font-variant-numeric:tabular-nums; letter-spacing:0.02em }
-.pay-methods { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; max-width:560px; margin-bottom:16px }
-.pay-tile { display:flex; align-items:center; gap:11px; padding:12px 13px; background:var(--pxl-card-2); border:1.5px solid var(--pxl-bd); border-radius:12px; cursor:pointer; text-align:left; transition:border-color .12s, background .12s }
-.pay-tile:hover { border-color:var(--pxl) }
-.pay-tile.active { border-color:var(--pxl); background:color-mix(in srgb, var(--pxl) 12%, var(--pxl-card-2)); box-shadow:0 0 0 3px color-mix(in srgb, var(--pxl) 18%, transparent) }
-.pay-ico { display:flex; flex-shrink:0; width:34px; height:34px; align-items:center; justify-content:center; background:var(--surface); border-radius:9px }
-.pay-meta { display:flex; flex-direction:column; gap:1px; min-width:0 }
-.pay-meta b { font-size:13px; color:var(--text); font-weight:600; line-height:1.25 }
-.pay-meta small { font-size:11px; color:var(--muted); font-family:var(--mono) }
-.pay-cta { width:100%; max-width:560px; justify-content:center; padding:13px; font-size:14.5px; font-weight:600 }
+.amount-input { width: 100%; margin-top: 6px; font-size: 18px; }
+.presets { margin-top: 10px; }
+
+/* Selectable payment-method tile */
+.choice { position: relative; height: 100%; cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s; }
+.choice:focus-visible { outline: 2px solid var(--pb-primary); outline-offset: 2px; }
+.choice.is-selected { border-color: var(--pb-primary); box-shadow: 0 0 0 1px var(--pb-primary); background: var(--pb-primary-soft); }
+.choice-check { position: absolute; top: 8px; right: 8px; color: var(--pb-primary); font-size: 16px; }
+.choice-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; padding-right: 18px; line-height: 1.3; }
+.choice-sub { font-size: 12px; }
+.ico { flex: none; background: color-mix(in srgb, var(--ico) 16%, transparent); color: var(--ico); }
+.ico-green { --ico: var(--pb-primary); }
+.ico-blue { --ico: var(--pb-info); }
+.ico-teal { --ico: #26a17b; }
+
+.card-ico { font-size: 18px; }
+.card-num { font-size: 14px; }
+.switch-line { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+
+.promo-row { margin-top: 6px; }
+.promo-input { text-transform: uppercase; }
+
+.tx-filters { padding: 12px 16px; }
+.tx-search { width: 260px; max-width: 100%; }
+.tx-type { width: 180px; }
+
+.eyebrow-text { display: block; margin-top: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.tiers { margin-top: 6px; }
+.order-item { cursor: pointer; }
+
+/* QR codes stay black-on-white in both themes so scanners can read them */
+.qr-col { display: flex; justify-content: center; }
+.qr-box { display: inline-flex; padding: 8px; background: #fff; border-radius: 8px; line-height: 0; }
+.qr-img { width: 220px; height: 220px; display: block; }
+.qr-hint { max-width: 236px; text-align: center; line-height: 1.45; }
+.usdt-amount { font-size: 15px; }
+.charge { font-size: 15px; }
+.pe-loading { padding: 20px; text-align: center; font-size: 12px; color: var(--pb-text-3); }
+.secure-note { text-align: center; }
+.stripe-body { padding-top: 4px; }
+
+@media (min-width: 992px) {
+  .aside { position: sticky; top: 84px; }
+}
+@media (max-width: 575px) {
+  .tx-search, .tx-type { width: 100%; }
+}
 </style>

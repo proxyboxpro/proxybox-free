@@ -2,12 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  Check, ChevronLeft, ChevronRight, Clock, Cloud, Copy, Cpu, Globe, KeyRound, Plus, RefreshCw,
-  Search, Server, ShieldCheck, Terminal, Wrench
-} from 'lucide-vue-next'
+  CloudOutlined, CloudServerOutlined, FieldTimeOutlined, GlobalOutlined, SafetyCertificateOutlined,
+  SwapOutlined, ToolOutlined
+} from '@ant-design/icons-vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
 import CountryFlag from '../../components/CountryFlag.vue'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 // BYON-related state for the dashboard row: token + install commands.
 const fleetToken = ref(null)
@@ -35,6 +36,7 @@ const pricing = ref(null)
 const zones = ref([])
 const search = ref('')
 const filterTab = ref('all')
+const loading = ref(false)
 // Reactive "now" — ticks every second so countdown timers refresh live.
 const nowMs = ref(Date.now())
 let tickInterval = null
@@ -63,6 +65,8 @@ function fmtCountdown(expiresAt) {
   else if (diff < 7 * 86400_000) tier = 'soon'
   return { text, tier }
 }
+// Countdown tier → antd Typography `type`.
+const TIER_TYPE = { active: 'success', soon: 'success', expiring: 'warning', critical: 'danger', expired: 'secondary', muted: 'secondary' }
 function fmtExpiresAt(expiresAt) {
   if (!expiresAt) return '—'
   const d = new Date(expiresAt)
@@ -71,6 +75,7 @@ function fmtExpiresAt(expiresAt) {
 }
 
 async function refresh() {
+  loading.value = true
   try {
     [account.value, proxies.value, pricing.value, zones.value] = await Promise.all([
       apiFetch('/api/v1/user/account'),
@@ -79,6 +84,7 @@ async function refresh() {
       apiFetch('/api/v1/user/zones').catch(() => [])
     ])
   } catch { /* not logged in as customer */ }
+  finally { loading.value = false }
 }
 
 // Top 5 zones with online nodes — sourced from backend, not hardcoded.
@@ -93,16 +99,21 @@ const popularZones = computed(() =>
 // Hub Proxy (rent a VPS — single tile covers v4 and v6 via the /buy?source=hub
 // flow which then asks the customer to pick family), and Tools (free utility:
 // create proxy on the customer's own node).
+const ACCENT = { blue: '#3b82f6', green: '#16a34a', cyan: '#06b6d4', amber: '#f59e0b' }
 const currencyCode = computed(() => String(pricing.value?.currency || 'VND').toUpperCase())
 const products = computed(() => {
   if (!pricing.value) return []
   return [
-    { kind: 'proxy', type: 'ipv4', color: 'blue',  icon: Server, labelKey: 'cust.buy.t.ipv4', subKey: 'cust.buy.t.ipv4Sub', descKey: 'cust.buy.t.ipv4Desc', perHour: Number(pricing.value.ipv4?.perHour || 0) },
-    { kind: 'proxy', type: 'ipv6', color: 'green', icon: Globe,  labelKey: 'cust.buy.t.ipv6', subKey: 'cust.buy.t.ipv6Sub', descKey: 'cust.buy.t.ipv6Desc', perHour: Number(pricing.value.ipv6?.perHour || 0) },
-    { kind: 'hub',   type: 'hub',  color: 'cyan',  icon: Cloud,  labelKey: 'cust.dash.hubLabel',  subKey: 'cust.dash.hubSub',  descKey: 'cust.dash.hubDesc',  ctaKey: 'cust.dash.hubCta' },
-    { kind: 'tool',  type: 'byon', color: 'amber', icon: Wrench, labelKey: 'cust.dash.byonLabel', subKey: 'cust.dash.byonSub', descKey: 'cust.dash.byonDesc', ctaKey: 'cust.dash.byonCta' }
+    { kind: 'proxy', type: 'ipv4', color: 'blue',  icon: CloudServerOutlined, labelKey: 'cust.buy.t.ipv4', subKey: 'cust.buy.t.ipv4Sub', descKey: 'cust.buy.t.ipv4Desc', perHour: Number(pricing.value.ipv4?.perHour || 0) },
+    { kind: 'proxy', type: 'ipv6', color: 'green', icon: GlobalOutlined,      labelKey: 'cust.buy.t.ipv6', subKey: 'cust.buy.t.ipv6Sub', descKey: 'cust.buy.t.ipv6Desc', perHour: Number(pricing.value.ipv6?.perHour || 0) },
+    { kind: 'hub',   type: 'hub',  color: 'cyan',  icon: CloudOutlined,       labelKey: 'cust.dash.hubLabel',  subKey: 'cust.dash.hubSub',  descKey: 'cust.dash.hubDesc',  ctaKey: 'cust.dash.hubCta' },
+    { kind: 'tool',  type: 'byon', color: 'amber', icon: ToolOutlined,        labelKey: 'cust.dash.byonLabel', subKey: 'cust.dash.byonSub', descKey: 'cust.dash.byonDesc', ctaKey: 'cust.dash.byonCta' }
   ]
 })
+function avatarStyle(color) {
+  const c = ACCENT[color] || ACCENT.green
+  return { color: c, background: `${c}24`, border: `1px solid ${c}66` }
+}
 
 // Real stats from user's own proxies — replaces generic "99.9% uptime" marketing copy.
 const myStats = computed(() => {
@@ -113,6 +124,12 @@ const myStats = computed(() => {
   const uniqueZones = new Set(list.map((p) => p.zone).filter(Boolean)).size
   return { total: list.length, active, expiring, totalBytes, uniqueZones }
 })
+const kpis = computed(() => [
+  { key: 'owned',    label: t('cust.dash.kpiOwned'),    value: myStats.value.total,                icon: CloudServerOutlined },
+  { key: 'active',   label: t('cust.dash.kpiActive'),   value: myStats.value.active,               icon: SafetyCertificateOutlined },
+  { key: 'expiring', label: t('cust.dash.kpiExpiring'), value: myStats.value.expiring,             icon: FieldTimeOutlined, warn: myStats.value.expiring > 0 },
+  { key: 'traffic',  label: t('cust.dash.kpiTraffic'),  value: fmtBytes(myStats.value.totalBytes), icon: SwapOutlined }
+])
 function fmtBytes(b) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0; let v = Number(b || 0)
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i += 1 }
@@ -130,6 +147,17 @@ function searchProxies() {
   if (!search.value.trim()) router.push({ name: 'buy' })
   else router.push({ name: 'buy', query: { q: search.value } })
 }
+
+const installCmds = computed(() => {
+  const f = fleetToken.value
+  if (!f) return []
+  return [
+    { key: 'v4',  label: '🌐 Linux IPv4',       cmd: f.installLinuxV4 },
+    { key: 'v6',  label: '🛰 Linux IPv6',       cmd: f.installLinuxV6 },
+    { key: 'win', label: '🪟 Windows (Admin)',  cmd: f.installWindows },
+    { key: 'un',  label: `🗑 ${t('cust.dash.uninstall')}`, cmd: f.uninstall, danger: true }
+  ]
+})
 
 // Group proxies by orderId — each row in the dashboard table is one order group
 // (matches the /proxies page convention). Proxies without orderId fall into a
@@ -167,7 +195,16 @@ function groupStatus(g) {
   if (g.proxies.every((p) => p.status === 'active')) return 'active'
   return 'mixed'
 }
+function groupStatusLabel(s) {
+  return ({ active: 'active', expiring: t('cust.dash.stExpiring'), expired: t('cust.dash.stExpired'), mixed: t('cust.dash.stMixed') })[s] || s
+}
 
+const filterOptions = computed(() => [
+  { label: t('cust.filter.all'), value: 'all' },
+  { label: t('cust.filter.active'), value: 'active' },
+  { label: t('cust.filter.expiring'), value: 'expiring' },
+  { label: t('cust.filter.expired'), value: 'expired' }
+])
 const filteredGroups = computed(() => {
   const list = proxyGroups.value
   if (filterTab.value === 'all') return list
@@ -177,8 +214,27 @@ const filteredGroups = computed(() => {
 const PAGE_SIZE = 10
 const page = ref(1)
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredGroups.value.length / PAGE_SIZE)))
-const pagedGroups = computed(() => filteredGroups.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
 watch([filterTab, filteredGroups], () => { if (page.value > totalPages.value) page.value = 1 })
+const pagination = computed(() => ({
+  current: page.value,
+  pageSize: PAGE_SIZE,
+  hideOnSinglePage: true,
+  showSizeChanger: false,
+  size: 'small',
+  showTotal: (total) => `${total} ${t('cust.col.groups')} · ${t('cust.pager.page')} ${page.value}/${totalPages.value}`
+}))
+function onTableChange(p) { page.value = p.current }
+
+const columns = computed(() => [
+  { title: t('cust.col.name'),     key: 'name',     width: 130 },
+  { title: t('cust.col.type'),     key: 'type',     width: 90 },
+  { title: t('cust.col.endpoint'), key: 'endpoint', width: 210 },
+  { title: t('cust.col.country'),  key: 'country',  width: 150 },
+  { title: t('cust.col.qty'),      key: 'qty',      width: 100, align: 'right' },
+  { title: t('cust.col.expires'),  key: 'expires',  width: 190 },
+  { title: t('cust.col.status'),   key: 'status',   width: 120 },
+  { title: t('cust.col.action'),   key: 'action',   width: 100, fixed: 'right' }
+])
 
 function countryForProxy(p) {
   const z = (p.zone || '').toLowerCase()
@@ -195,9 +251,9 @@ function countryName(p) {
   const c = countryForProxy(p)
   return { VN: 'Vietnam', US: 'United States', GB: 'United Kingdom', DE: 'Germany', JP: 'Japan', SG: 'Singapore', HK: 'Hong Kong', GLOBAL: 'Global' }[c] || c
 }
-function fmtExpires(at) {
-  if (!at) return '—'
-  return String(at).slice(0, 16).replace('T', ' ')
+function openGroup(g) {
+  if (g.orderId) router.push({ name: 'proxies', query: { order: g.orderId } })
+  else router.push({ name: 'proxies' })
 }
 
 onMounted(() => {
@@ -209,287 +265,277 @@ onBeforeUnmount(() => { if (tickInterval) clearInterval(tickInterval) })
 </script>
 
 <template>
-  <!-- ── Hero ──────────────────────────────────────────────── -->
-  <section class="px-hero">
-    <div>
-      <h2>{{ t('cust.hero.title1') }}<br>{{ t('cust.hero.title2') }}</h2>
-      <p class="sub-text">{{ t('cust.hero.tagline') }}</p>
-      <form class="px-hero-search" @submit.prevent="searchProxies">
-        <Search :size="16" style="color:var(--muted)" />
-        <input v-model="search" type="search" :placeholder="t('cust.hero.searchPlaceholder')" />
-        <button class="btn" type="submit">{{ t('cust.hero.search') }}</button>
-      </form>
-      <div v-if="popularZones.length" class="px-hero-tags">
-        <span class="lbl">{{ t('cust.hero.popular') }}:</span>
-        <button v-for="z in popularZones" :key="z.id" class="px-hero-tag" type="button" @click="router.push({ name: 'buy', query: { country: z.id } })">
-          <CountryFlag :code="(z.flag || z.id.slice(0,2)).toUpperCase()" :size="14" /> {{ z.name }}
-        </button>
-      </div>
-    </div>
-    <div class="px-hero-illust" aria-hidden="true">
-      <!-- Original geometric SVG illustration -->
-      <svg viewBox="0 0 220 180" width="100%" height="100%">
-        <defs>
-          <linearGradient id="hg1" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#3fb950" stop-opacity="0.9" />
-            <stop offset="100%" stop-color="#39d0d8" stop-opacity="0.7" />
-          </linearGradient>
-          <linearGradient id="hg2" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#3fb950" stop-opacity="0.25" />
-            <stop offset="100%" stop-color="#0e2e1a" stop-opacity="0.05" />
-          </linearGradient>
-        </defs>
-        <circle cx="110" cy="90" r="78" fill="url(#hg2)" />
-        <g transform="translate(110,90)">
-          <polygon points="-40,-30 0,-50 40,-30 0,-10" fill="url(#hg1)" opacity="0.95" />
-          <polygon points="-40,-30 0,-10 0,40 -40,20" fill="#1a4a26" opacity="0.85" />
-          <polygon points="40,-30 0,-10 0,40 40,20" fill="#3fb950" opacity="0.95" />
-          <circle cx="0" cy="-30" r="6" fill="#d29922" />
-          <circle cx="-32" cy="0" r="4" fill="#39d0d8" />
-          <circle cx="32" cy="0" r="4" fill="#58a6ff" />
-          <circle cx="0" cy="36" r="5" fill="#3fb950" />
-        </g>
-        <g stroke="#3fb950" stroke-width="0.6" stroke-dasharray="3,3" fill="none" opacity="0.4">
-          <path d="M30,150 Q110,170 190,150" />
-          <path d="M30,30 Q110,10 190,30" />
-        </g>
-      </svg>
-    </div>
-  </section>
+  <div class="page">
+    <!-- ── Hero ──────────────────────────────────────────────── -->
+    <a-card class="hero" :bordered="true">
+      <a-row :gutter="[24, 16]" align="middle">
+        <a-col :xs="24" :md="16" :lg="17">
+          <a-typography-title :level="3" class="hero-title">{{ t('cust.hero.title1') }}<br>{{ t('cust.hero.title2') }}</a-typography-title>
+          <a-typography-paragraph type="secondary">{{ t('cust.hero.tagline') }}</a-typography-paragraph>
+          <a-input-search
+            v-model:value="search"
+            class="hero-search"
+            size="large"
+            allow-clear
+            :placeholder="t('cust.hero.searchPlaceholder')"
+            :enter-button="t('cust.hero.search')"
+            @search="searchProxies"
+          />
+          <a-flex v-if="popularZones.length" wrap="wrap" align="center" gap="small" class="hero-tags">
+            <a-typography-text type="secondary">{{ t('cust.hero.popular') }}:</a-typography-text>
+            <a-button v-for="z in popularZones" :key="z.id" size="small" @click="router.push({ name: 'buy', query: { country: z.id } })">
+              <CountryFlag :code="(z.flag || z.id.slice(0,2)).toUpperCase()" :size="14" class="flag-gap" /> {{ z.name }}
+            </a-button>
+          </a-flex>
+        </a-col>
+        <a-col :xs="0" :md="8" :lg="7">
+          <div class="hero-illust" aria-hidden="true">
+            <!-- Original geometric SVG illustration -->
+            <svg viewBox="0 0 220 180" width="100%" height="100%">
+              <defs>
+                <linearGradient id="hg1" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#3fb950" stop-opacity="0.9" />
+                  <stop offset="100%" stop-color="#39d0d8" stop-opacity="0.7" />
+                </linearGradient>
+                <linearGradient id="hg2" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#3fb950" stop-opacity="0.25" />
+                  <stop offset="100%" stop-color="#0e2e1a" stop-opacity="0.05" />
+                </linearGradient>
+              </defs>
+              <circle cx="110" cy="90" r="78" fill="url(#hg2)" />
+              <g transform="translate(110,90)">
+                <polygon points="-40,-30 0,-50 40,-30 0,-10" fill="url(#hg1)" opacity="0.95" />
+                <polygon points="-40,-30 0,-10 0,40 -40,20" fill="#1a4a26" opacity="0.85" />
+                <polygon points="40,-30 0,-10 0,40 40,20" fill="#3fb950" opacity="0.95" />
+                <circle cx="0" cy="-30" r="6" fill="#d29922" />
+                <circle cx="-32" cy="0" r="4" fill="#39d0d8" />
+                <circle cx="32" cy="0" r="4" fill="#58a6ff" />
+                <circle cx="0" cy="36" r="5" fill="#3fb950" />
+              </g>
+              <g stroke="#3fb950" stroke-width="0.6" stroke-dasharray="3,3" fill="none" opacity="0.4">
+                <path d="M30,150 Q110,170 190,150" />
+                <path d="M30,30 Q110,10 190,30" />
+              </g>
+            </svg>
+          </div>
+        </a-col>
+      </a-row>
+    </a-card>
 
-  <!-- ── Real KPIs from user's account ─────────────────────── -->
-  <div class="px-quickstats">
-    <div><div class="ico"><Server :size="18" /></div><div><div class="lbl">{{ t('cust.dash.kpiOwned') }}</div><div class="val">{{ myStats.total }}</div></div></div>
-    <div><div class="ico"><ShieldCheck :size="18" /></div><div><div class="lbl">{{ t('cust.dash.kpiActive') }}</div><div class="val">{{ myStats.active }}</div></div></div>
-    <div><div class="ico"><Clock :size="18" /></div><div><div class="lbl">{{ t('cust.dash.kpiExpiring') }}</div><div class="val">{{ myStats.expiring }}</div></div></div>
-    <div><div class="ico"><Globe :size="18" /></div><div><div class="lbl">{{ t('cust.dash.kpiTraffic') }}</div><div class="val">{{ fmtBytes(myStats.totalBytes) }}</div></div></div>
+    <!-- ── Real KPIs from user's account ─────────────────────── -->
+    <a-row :gutter="[12, 12]">
+      <a-col v-for="k in kpis" :key="k.key" :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="k.label" :value="k.value" :value-style="k.warn ? { color: 'var(--pb-warning)' } : undefined">
+            <template #prefix><component :is="k.icon" class="kpi-ico" /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+    </a-row>
+
+    <!-- ── 4-card product grid: pool v4 · pool v6 · hub · tools ── -->
+    <a-row :gutter="[12, 12]">
+      <a-col v-for="p in products" :key="p.type" :xs="24" :sm="12" :xl="6">
+        <a-card hoverable class="product" @click="goBuy(p)">
+          <a-flex align="center" gap="middle">
+            <a-avatar shape="square" :size="46" :style="avatarStyle(p.color)">
+              <template #icon><component :is="p.icon" /></template>
+            </a-avatar>
+            <a-flex vertical class="min0">
+              <a-typography-text strong class="product-title">{{ t(p.labelKey) }}</a-typography-text>
+              <a-typography-text type="secondary" class="small">{{ t(p.subKey) }}</a-typography-text>
+            </a-flex>
+          </a-flex>
+          <a-typography-text type="secondary" class="small"><CheckOutlined class="feat-ico" /> {{ t(p.descKey) }}</a-typography-text>
+          <a-flex wrap="wrap" align="baseline" :gap="6" class="product-price">
+            <template v-if="p.kind === 'proxy'">
+              <a-typography-text type="secondary">{{ t('cust.product.from') }}</a-typography-text>
+              <strong class="mono price-val">{{ fmtMoney(p.perHour) }}</strong>
+              <a-typography-text type="secondary" class="small">{{ currencyCode }} / {{ t('cust.buy.hour') }}</a-typography-text>
+            </template>
+            <template v-else-if="p.kind === 'hub'">
+              <strong class="price-val" :style="{ color: ACCENT.cyan }">{{ t('cust.dash.vpsOwn') }}</strong>
+              <a-typography-text type="secondary" class="small">{{ t('cust.dash.billedHourly') }}</a-typography-text>
+            </template>
+            <template v-else>
+              <strong class="price-val" :style="{ color: ACCENT.amber }">FREE</strong>
+              <a-typography-text type="secondary" class="small">{{ t('cust.dash.nodeYours') }}</a-typography-text>
+            </template>
+          </a-flex>
+          <a-button block :type="p.kind === 'proxy' ? 'primary' : 'default'" @click.stop="goBuy(p)">
+            {{ p.ctaKey ? t(p.ctaKey) : t('cust.product.buy') }}
+          </a-button>
+        </a-card>
+      </a-col>
+      <a-col v-for="n in (products.length ? 0 : 4)" :key="`sk-${n}`" :xs="24" :sm="12" :xl="6">
+        <a-card><a-skeleton active :title="false" :paragraph="{ rows: 4 }" /></a-card>
+      </a-col>
+    </a-row>
+
+    <!-- ── BYON: token + install commands row (compact, persistent) ── -->
+    <a-card size="small">
+      <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+        <a-space :size="6" wrap>
+          <DeploymentUnitOutlined class="accent" />
+          <a-typography-text strong>ProxyBox</a-typography-text>
+          <a-typography-text type="secondary" class="small">{{ t('cust.dash.agentFree') }}</a-typography-text>
+        </a-space>
+        <a-button size="small" @click="router.push('/my-nodes')">
+          <template #icon><CloudServerOutlined /></template>
+          {{ t('cust.dash.manageNodes') }}
+        </a-button>
+      </a-flex>
+      <a-divider dashed class="byon-divider" />
+
+      <a-flex v-if="!fleetToken" justify="space-between" align="center" wrap="wrap" gap="small">
+        <a-typography-text type="secondary">{{ t('cust.dash.tokenReady') }}</a-typography-text>
+        <a-button type="primary" size="small" @click="generateFleetToken">
+          <template #icon><PlusOutlined /></template>
+          {{ t('cust.dash.showToken') }}
+        </a-button>
+      </a-flex>
+      <template v-else>
+        <a-flex align="center" gap="small" wrap="wrap" class="tok-line">
+          <KeyOutlined class="muted-ico" />
+          <a-typography-text code class="mono tok-val" :class="{ blurred: !tokenReveal }">{{ fleetToken.token }}</a-typography-text>
+          <a-space :size="6">
+            <a-button size="small" @click="tokenReveal = !tokenReveal">
+              <template #icon><EyeInvisibleOutlined v-if="tokenReveal" /><EyeOutlined v-else /></template>
+              {{ tokenReveal ? t('cust.dash.hide') : t('cust.dash.show') }}
+            </a-button>
+            <a-button size="small" :disabled="!tokenReveal" @click="copyCmd(fleetToken.token, 'tok')">
+              <template #icon><CopyOutlined /></template>
+              {{ copiedCmd === 'tok' ? '✓' : 'Copy' }}
+            </a-button>
+          </a-space>
+        </a-flex>
+        <a-row :gutter="[8, 8]">
+          <a-col v-for="c in installCmds" :key="c.key" :xs="24" :md="12">
+            <a-card size="small" class="cmd-card" :body-style="{ padding: '8px 12px' }">
+              <template #title>
+                <a-typography-text strong :type="c.danger ? 'danger' : undefined" class="small">{{ c.label }}</a-typography-text>
+              </template>
+              <template #extra>
+                <a-button size="small" type="text" @click="copyCmd(c.cmd, c.key)">
+                  <template #icon><CopyOutlined /></template>
+                  {{ copiedCmd === c.key ? '✓' : 'Copy' }}
+                </a-button>
+              </template>
+              <pre class="mono cmd">{{ c.cmd }}</pre>
+            </a-card>
+          </a-col>
+        </a-row>
+        <a-typography-paragraph type="secondary" class="byon-hint">
+          <span v-html="t('cust.dash.tokenHint')"></span>
+        </a-typography-paragraph>
+      </template>
+    </a-card>
+
+    <!-- ── My proxies snippet ───────────────────────────────── -->
+    <a-card :title="t('cust.proxies.title')" :body-style="{ paddingTop: '12px' }">
+      <template #extra>
+        <a-button type="link" size="small" @click="router.push({ name: 'proxies' })">{{ t('cust.viewAll') }} →</a-button>
+      </template>
+      <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="proxies-filter">
+        <div class="seg-scroll"><a-segmented v-model:value="filterTab" :options="filterOptions" /></div>
+        <a-space wrap>
+          <a-button :loading="loading" @click="refresh">
+            <template #icon><ReloadOutlined /></template>
+            {{ t('cust.refresh') }}
+          </a-button>
+          <a-button type="primary" @click="router.push({ name: 'buy' })">
+            <template #icon><PlusOutlined /></template>
+            {{ t('cust.product.buy') }}
+          </a-button>
+        </a-space>
+      </a-flex>
+
+      <a-table
+        :columns="columns"
+        :data-source="filteredGroups"
+        :pagination="pagination"
+        row-key="id"
+        size="middle"
+        :scroll="{ x: 1000 }"
+        @change="onTableChange"
+      >
+        <template #emptyText>
+          <a-empty :description="t('cust.proxies.empty')">
+            <a-button type="primary" @click="router.push({ name: 'buy' })">{{ t('cust.product.buy') }}</a-button>
+          </a-empty>
+        </template>
+        <template #bodyCell="{ column, record: g }">
+          <template v-if="column.key === 'name'">
+            <a-typography-text strong class="mono">{{ g.name }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'type'">
+            <a-tag :color="String(g.type || 'ipv4').toLowerCase() === 'ipv6' ? 'green' : 'blue'" :bordered="false">{{ String(g.type || 'IPv4').toUpperCase() }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'endpoint'">
+            <a-typography-text class="mono" :copyable="{ text: `${g.ip || g.bindIp}:${g.port}` }">{{ g.ip || g.bindIp }}:{{ g.port }}</a-typography-text>
+            <a-typography-text v-if="g.proxies.length > 1" type="secondary" class="small"> (+{{ g.proxies.length - 1 }})</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'country'">
+            <a-space :size="6"><CountryFlag :code="countryForProxy(g)" :size="18" /> {{ countryName(g) }}</a-space>
+          </template>
+          <template v-else-if="column.key === 'qty'">
+            <span class="mono">{{ g.proxies.length }}</span>
+          </template>
+          <template v-else-if="column.key === 'expires'">
+            <a-flex vertical>
+              <span class="mono">{{ fmtExpiresAt(g.expiresAt) }}</span>
+              <a-typography-text :type="TIER_TYPE[fmtCountdown(g.expiresAt).tier]" class="mono small">
+                <ClockCircleOutlined /> {{ fmtCountdown(g.expiresAt).text }}
+              </a-typography-text>
+            </a-flex>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <StatusTag :status="groupStatus(g)" :label="groupStatusLabel(groupStatus(g))" />
+          </template>
+          <template v-else-if="column.key === 'action'">
+            <a-button size="small" @click="openGroup(g)">{{ t('cust.col.detail') }}</a-button>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
   </div>
-
-  <!-- ── 4-card product grid: pool v4 · pool v6 · hub · tools ── -->
-  <div class="product-grid quad" style="margin-bottom:14px">
-    <div
-      v-for="p in products"
-      :key="p.type"
-      class="product-card"
-      :class="{ 'is-hub': p.kind === 'hub', 'is-tool': p.kind === 'tool' }"
-      @click="goBuy(p)"
-    >
-      <div class="head">
-        <span class="icon-box" :class="p.color"><component :is="p.icon" :size="22" /></span>
-        <div>
-          <h3>{{ p.labelKey ? t(p.labelKey) : p.label }}</h3>
-          <p class="desc-sub">{{ p.subKey ? t(p.subKey) : p.sub }}</p>
-        </div>
-      </div>
-      <p class="feat"><Check :size="13" /> {{ p.descKey ? t(p.descKey) : p.desc }}</p>
-      <div class="price">
-        <template v-if="p.kind === 'proxy'">
-          {{ t('cust.product.from') }}
-          <strong>{{ fmtMoney(p.perHour) }}</strong>
-          <small>{{ currencyCode }} / {{ t('cust.buy.hour') }}</small>
-        </template>
-        <template v-else-if="p.kind === 'hub'">
-          <strong style="color: #22d3ee">{{ t('cust.dash.vpsOwn') }}</strong>
-          <small>{{ t('cust.dash.billedHourly') }}</small>
-        </template>
-        <template v-else>
-          <strong style="color: #fbbf24">FREE</strong>
-          <small>{{ t('cust.dash.nodeYours') }}</small>
-        </template>
-      </div>
-      <button class="buy-btn" type="button" @click.stop="goBuy(p)">
-        {{ p.ctaKey ? t(p.ctaKey) : (p.cta || t('cust.product.buy')) }}
-      </button>
-    </div>
-    <p v-if="!products.length" class="empty-text" style="grid-column: 1 / -1; color: var(--muted)">{{ t('common.loading') }}</p>
-  </div>
-
-  <!-- ── BYON: token + install commands row (compact, persistent) ── -->
-  <section class="byon-row surface">
-    <header>
-      <span><Cpu :size="14" style="vertical-align:-2px; color: var(--green)" /> <strong>ProxyBox</strong> <small>{{ t('cust.dash.agentFree') }}</small></span>
-      <router-link to="/my-nodes" class="ghost-button" style="margin-left:auto"><Server :size="13" /> {{ t('cust.dash.manageNodes') }}</router-link>
-    </header>
-    <div v-if="!fleetToken" class="byon-empty">
-      <p>{{ t('cust.dash.tokenReady') }}</p>
-      <button class="primary-action small" type="button" @click="generateFleetToken"><Plus :size="13" /> {{ t('cust.dash.showToken') }}</button>
-    </div>
-    <template v-else>
-      <div class="tok-line">
-        <KeyRound :size="13" style="color: var(--muted)" />
-        <code class="tok-val" :class="{ blurred: !tokenReveal }">{{ fleetToken.token }}</code>
-        <button class="ghost-button mini" type="button" @click="tokenReveal = !tokenReveal">{{ tokenReveal ? t('cust.dash.hide') : t('cust.dash.show') }}</button>
-        <button class="ghost-button mini" type="button" :disabled="!tokenReveal" @click="copyCmd(fleetToken.token, 'tok')"><Copy :size="11" /> {{ copiedCmd === 'tok' ? '✓' : 'Copy' }}</button>
-      </div>
-      <div class="cmd-grid">
-        <div class="cmd-card">
-          <header><strong>🌐 Linux IPv4</strong>
-            <button class="ghost-button mini" type="button" @click="copyCmd(fleetToken.installLinuxV4, 'v4')"><Copy :size="11" /> {{ copiedCmd === 'v4' ? '✓' : 'Copy' }}</button>
-          </header>
-          <code>{{ fleetToken.installLinuxV4 }}</code>
-        </div>
-        <div class="cmd-card">
-          <header><strong>🛰 Linux IPv6</strong>
-            <button class="ghost-button mini" type="button" @click="copyCmd(fleetToken.installLinuxV6, 'v6')"><Copy :size="11" /> {{ copiedCmd === 'v6' ? '✓' : 'Copy' }}</button>
-          </header>
-          <code>{{ fleetToken.installLinuxV6 }}</code>
-        </div>
-        <div class="cmd-card">
-          <header><strong>🪟 Windows (Admin)</strong>
-            <button class="ghost-button mini" type="button" @click="copyCmd(fleetToken.installWindows, 'win')"><Copy :size="11" /> {{ copiedCmd === 'win' ? '✓' : 'Copy' }}</button>
-          </header>
-          <code>{{ fleetToken.installWindows }}</code>
-        </div>
-        <div class="cmd-card danger">
-          <header><strong>🗑 {{ t('cust.dash.uninstall') }}</strong>
-            <button class="ghost-button mini" type="button" @click="copyCmd(fleetToken.uninstall, 'un')"><Copy :size="11" /> {{ copiedCmd === 'un' ? '✓' : 'Copy' }}</button>
-          </header>
-          <code>{{ fleetToken.uninstall }}</code>
-        </div>
-      </div>
-      <p class="byon-hint" v-html="t('cust.dash.tokenHint')"></p>
-    </template>
-  </section>
-
-  <!-- ── My proxies snippet ───────────────────────────────── -->
-  <section class="dt2">
-    <div class="dt2-toolbar" style="border-bottom:1px solid var(--pxl-bd-soft)">
-      <div>
-        <h2 style="margin:0; font-size:16px; color:var(--text)">{{ t('cust.proxies.title') }}</h2>
-      </div>
-      <div class="segment-tabs" style="background:transparent; border:none; padding:0">
-        <button :class="{ active: filterTab === 'all' }" type="button" @click="filterTab = 'all'">{{ t('cust.filter.all') }}</button>
-        <button :class="{ active: filterTab === 'active' }" type="button" @click="filterTab = 'active'">{{ t('cust.filter.active') }}</button>
-        <button :class="{ active: filterTab === 'expiring' }" type="button" @click="filterTab = 'expiring'">{{ t('cust.filter.expiring') }}</button>
-        <button :class="{ active: filterTab === 'expired' }" type="button" @click="filterTab = 'expired'">{{ t('cust.filter.expired') }}</button>
-      </div>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="13" /> {{ t('cust.refresh') }}</button>
-      <button class="primary-action small" type="button" @click="router.push({ name: 'buy' })"><Plus :size="13" /> {{ t('cust.product.buy') }}</button>
-    </div>
-
-    <div class="dt2-head" style="grid-template-columns: 1.2fr 0.9fr 1.2fr 1.2fr 0.6fr 1.1fr 1fr 0.6fr">
-      <span>{{ t('cust.col.name') }}</span>
-      <span>{{ t('cust.col.type') }}</span>
-      <span>{{ t('cust.col.endpoint') }}</span>
-      <span>{{ t('cust.col.country') }}</span>
-      <span>{{ t('cust.col.qty') }}</span>
-      <span>{{ t('cust.col.expires') }}</span>
-      <span>{{ t('cust.col.status') }}</span>
-      <span>{{ t('cust.col.action') }}</span>
-    </div>
-
-    <template v-if="pagedGroups.length">
-      <div v-for="g in pagedGroups" :key="g.id" class="dt2-row" style="grid-template-columns: 1.2fr 0.9fr 1.2fr 1.2fr 0.6fr 1.1fr 1fr 0.6fr">
-        <span class="name">{{ g.name }}</span>
-        <span><span :class="['tag-soft', String(g.type || 'ipv4').toLowerCase()]">{{ String(g.type || 'IPv4').toUpperCase() }}</span></span>
-        <span class="cell-mono">{{ g.ip || g.bindIp }}:{{ g.port }}<span v-if="g.proxies.length > 1" style="color:var(--muted); margin-left:4px">(+{{ g.proxies.length - 1 }})</span></span>
-        <span class="country"><CountryFlag :code="countryForProxy(g)" :size="18" /> {{ countryName(g) }}</span>
-        <span>{{ g.proxies.length }}</span>
-        <span class="cell-mono expires-cell">
-          <strong>{{ fmtExpiresAt(g.expiresAt) }}</strong>
-          <small :class="['countdown', fmtCountdown(g.expiresAt).tier]">
-            ⏱ {{ fmtCountdown(g.expiresAt).text }}
-          </small>
-        </span>
-        <span><span :class="['tag-soft', groupStatus(g)]">{{ ({ active: 'active', expiring: t('cust.dash.stExpiring'), expired: t('cust.dash.stExpired'), mixed: t('cust.dash.stMixed') })[groupStatus(g)] || groupStatus(g) }}</span></span>
-        <button class="row-action" type="button" @click="g.orderId ? router.push({ name: 'proxies', query: { order: g.orderId } }) : router.push({ name: 'proxies' })">{{ t('cust.col.detail') }}</button>
-      </div>
-    </template>
-    <div v-else class="dt2-row" style="grid-template-columns: 1fr; color: var(--muted); justify-content: center; text-align:center; padding: 30px">
-      <span>{{ t('cust.proxies.empty') }} <button class="px-promo-btn" type="button" style="margin-left:8px" @click="router.push({ name: 'buy' })">{{ t('cust.product.buy') }}</button></span>
-    </div>
-
-    <div v-if="totalPages > 1" class="dt2-pager">
-      <span style="color:var(--muted); font-size:12px">{{ filteredGroups.length }} {{ t('cust.col.groups') }} · {{ t('cust.pager.page') }} {{ page }}/{{ totalPages }}</span>
-      <span class="spacer"></span>
-      <button type="button" :disabled="page <= 1" @click="page--"><ChevronLeft :size="13" /> {{ t('cust.pager.prev') }}</button>
-      <button type="button" :disabled="page >= totalPages" @click="page++">{{ t('cust.pager.next') }} <ChevronRight :size="13" /></button>
-      <button type="button" @click="router.push({ name: 'proxies' })">{{ t('cust.viewAll') }} →</button>
-    </div>
-  </section>
 </template>
 
 <style scoped>
-/* 4-card product grid (pool v4 · pool v6 · hub · tools).
-   Desktop: 4 columns. Tablet ≤960px: 2 columns. Phone ≤520px: 1 column. */
-.product-grid.quad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-@media (max-width: 960px) { .product-grid.quad { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 520px) { .product-grid.quad { grid-template-columns: 1fr; gap: 10px; } }
+.hero { background-image: linear-gradient(135deg, var(--pb-primary-soft) 0%, transparent 55%); }
+.hero :deep(.ant-card-body) { padding: 28px; }
+.hero-title { margin-bottom: 8px !important; line-height: 1.25 !important; }
+.hero-search { max-width: 520px; }
+.hero-tags { margin-top: 16px; }
+.hero-illust { height: 180px; display: grid; place-items: center; }
+.flag-gap { margin-inline-end: 6px; }
 
-/* Hub + Tool tile color accents (override default .product-card border on hover). */
-.product-card.is-hub  { border-color: rgba(34, 211, 238, 0.25); }
-.product-card.is-hub:hover  { border-color: rgba(34, 211, 238, 0.55); }
-.product-card.is-tool { border-color: rgba(251, 191, 36, 0.25); }
-.product-card.is-tool:hover { border-color: rgba(251, 191, 36, 0.55); }
-.product-card.is-hub  .icon-box.cyan  { background: rgba(34, 211, 238, 0.14); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4); }
-.product-card.is-tool .icon-box.amber { background: rgba(251, 191, 36, 0.14); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4); }
-.product-card.is-hub  .buy-btn { background: rgba(34, 211, 238, 0.16); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.35); }
-.product-card.is-tool .buy-btn { background: rgba(251, 191, 36, 0.16); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.35); }
+.kpi-ico { color: var(--pb-primary); margin-inline-end: 4px; }
 
-/* BYON row (token + install) */
-.byon-row { padding: 14px 16px; margin-bottom: 18px; }
-.byon-row > header {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding-bottom: 10px; margin-bottom: 10px;
-  border-bottom: 1px dashed var(--border);
-}
-.byon-row > header strong { font-size: 14px; color: var(--text); }
-.byon-row > header small { font-size: 11.5px; color: var(--muted); }
-.byon-empty { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
-.byon-empty p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.product { height: 100%; }
+.product :deep(.ant-card-body) { height: 100%; display: flex; flex-direction: column; gap: 12px; }
+.product-title { font-size: 15px; }
+.product-price { margin-top: auto; }
+.price-val { font-size: 22px; font-weight: 700; color: var(--pb-primary); }
+.feat-ico { color: var(--pb-primary); margin-inline-end: 4px; }
+.min0 { min-width: 0; }
+.small { font-size: 12px; }
+.accent { color: var(--pb-primary); }
+.muted-ico { color: var(--pb-text-3); }
 
-.tok-line { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.tok-val {
-  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px;
-  color: var(--green); padding: 5px 10px;
-  background: rgba(0,0,0,0.35); border: 1px solid var(--border); border-radius: 5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  filter: none; transition: filter 120ms;
-}
+.byon-divider { margin: 10px 0 12px; }
+.tok-line { margin-bottom: 10px; }
+.tok-val { flex: 1 1 260px; min-width: 0; margin: 0; transition: filter 120ms; }
 .tok-val.blurred { filter: blur(4px); user-select: none; }
+.cmd { margin: 0; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.cmd-card { height: 100%; }
+.byon-hint { margin: 12px 0 0 !important; font-size: 12px; }
 
-.cmd-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-@media (max-width: 700px) { .cmd-grid { grid-template-columns: 1fr; } }
-.cmd-card {
-  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px;
-  display: flex; flex-direction: column; gap: 5px;
-}
-.cmd-card.danger { border-color: rgba(239,68,68,0.25); }
-.cmd-card.danger strong { color: #f87171; }
-.cmd-card header { display: flex; align-items: center; justify-content: space-between; }
-.cmd-card strong { font-size: 12px; color: var(--text); }
-.cmd-card code {
-  font-family: var(--mono); font-size: 10.5px;
-  background: rgba(0,0,0,0.35); border-radius: 4px;
-  padding: 6px 8px; color: #9bb8b1;
-  overflow-x: auto; white-space: nowrap;
-}
-.ghost-button.mini { padding: 2px 7px; font-size: 10.5px; }
-.byon-hint { margin: 10px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
-.byon-hint code { font-family: var(--mono); background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 3px; font-size: 10.5px; color: #d6c060; }
+.proxies-filter { margin-bottom: 12px; }
+.seg-scroll { max-width: 100%; min-width: 0; overflow-x: auto; }
 
-@media (max-width: 640px) {
-  .byon-row { padding: 12px 11px; }
-  .byon-row > header { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .byon-row > header .ghost-button { margin-left: 0 !important; align-self: stretch; justify-content: center; }
-  .byon-row > header > span { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
-  .byon-row > header > span small { display: block; font-size: 11px; line-height: 1.4; }
-  .tok-line { flex-wrap: wrap; gap: 6px; }
-  .tok-val { flex: 1 1 100%; order: -1; font-size: 10.5px; padding: 6px 8px; }
-  .tok-line .ghost-button.mini { flex: 1; justify-content: center; padding: 5px 8px; font-size: 11px; }
-  .cmd-grid { gap: 6px; }
-  .cmd-card { padding: 7px 8px; }
-  .cmd-card header { gap: 6px; }
-  .cmd-card code { font-size: 9.5px; padding: 5px 6px; white-space: pre-wrap; word-break: break-all; }
-  .byon-empty { flex-direction: column; align-items: stretch; gap: 8px; }
-  .byon-empty .primary-action { width: 100%; justify-content: center; }
-  .byon-hint { font-size: 10.5px; line-height: 1.5; }
-}
-@media (max-width: 380px) {
-  .cmd-card strong { font-size: 11px; }
-  .cmd-card code { font-size: 9px; }
-  .tok-val { font-size: 9.5px; letter-spacing: -0.2px; }
+@media (max-width: 575px) {
+  .hero :deep(.ant-card-body) { padding: 18px; }
+  .cmd { font-size: 10.5px; }
 }
 </style>

@@ -1,9 +1,9 @@
 <script setup>
-import { onMounted, ref } from 'vue'
-import { Download, LockKeyhole, RefreshCw, Terminal } from 'lucide-vue-next'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from '../i18n'
 import { apiFetch } from '../api'
 import { profile } from '../store/profile'
+import { confirmAsync } from '../ui/feedback'
 
 const { t } = useI18n()
 
@@ -18,6 +18,7 @@ const upgradeLog = ref('')
 const upgradeErr = ref('')
 const upgradeFlash = ref('')
 let pollHandle = null
+let giveUpHandle = null
 
 async function loadVersion() {
   try { systemInfo.value = await apiFetch('/api/admin/system/version') }
@@ -25,11 +26,16 @@ async function loadVersion() {
 }
 async function refreshLog() {
   try { const r = await apiFetch('/api/admin/system/upgrade/log'); upgradeLog.value = r.log || '' }
-  catch (e) { /* tolerate transient failures during restart */ }
+  catch { /* tolerate transient failures during restart */ }
 }
 async function startUpgrade() {
   if (upgrading.value) return
-  if (!confirm('Nâng cấp ProxyBox lên phiên bản mới nhất?\n\nQuá trình mất ~1 phút và sẽ restart service. Truy cập của customer trên proxy KHÔNG bị ảnh hưởng (agent giữ kết nối tới listener). Admin panel sẽ mất kết nối trong ~30 giây.')) return
+  const ok = await confirmAsync({
+    title: 'Nâng cấp ProxyBox lên phiên bản mới nhất?',
+    content: 'Quá trình mất ~1 phút và sẽ restart service. Truy cập của customer trên proxy KHÔNG bị ảnh hưởng (agent giữ kết nối tới listener). Admin panel sẽ mất kết nối trong ~30 giây.',
+    type: 'warning'
+  })
+  if (!ok) return
   upgrading.value = true; upgradeErr.value = ''; upgradeFlash.value = ''
   try {
     const r = await apiFetch('/api/admin/system/upgrade', { method: 'POST' })
@@ -46,7 +52,7 @@ async function startUpgrade() {
       }
     }, 5000)
     // Auto-give-up after 5 min so the UI doesn't hang forever if something deadlocks.
-    setTimeout(() => {
+    giveUpHandle = setTimeout(() => {
       if (upgrading.value) {
         clearInterval(pollHandle); pollHandle = null
         upgrading.value = false
@@ -57,66 +63,73 @@ async function startUpgrade() {
 }
 
 onMounted(() => { loadVersion() })
+onBeforeUnmount(() => {
+  if (pollHandle) clearInterval(pollHandle)
+  if (giveUpHandle) clearTimeout(giveUpHandle)
+})
 </script>
 
 <template>
-  <section class="page-stack">
+  <div class="page">
     <!-- ── System upgrade (HUBFREE-only) ──────────────────────────────── -->
-    <section v-if="systemInfo" class="surface settings-list">
-      <div class="section-head">
-        <h2>System</h2>
-        <Download :size="20" />
-      </div>
-      <div class="kv-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px 14px; padding:8px 0">
-        <div><small>Version</small><strong class="cell-mono">v{{ systemInfo.version }}</strong></div>
-        <div v-if="systemInfo.gitRev"><small>Git rev</small><strong class="cell-mono">{{ systemInfo.gitRev }}</strong></div>
-        <div><small>Node</small><strong class="cell-mono">{{ systemInfo.node }}</strong></div>
-        <div><small>Uptime</small><strong class="cell-mono">{{ Math.floor(systemInfo.uptimeSec / 60) }}m</strong></div>
-      </div>
+    <a-card v-if="systemInfo" title="System">
+      <template #extra><CloudDownloadOutlined /></template>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 4 }">
+        <a-descriptions-item label="Version"><span class="mono">v{{ systemInfo.version }}</span></a-descriptions-item>
+        <a-descriptions-item v-if="systemInfo.gitRev" label="Git rev">
+          <a-typography-text :copyable="{ text: systemInfo.gitRev }" class="mono">{{ systemInfo.gitRev }}</a-typography-text>
+        </a-descriptions-item>
+        <a-descriptions-item label="Node"><span class="mono">{{ systemInfo.node }}</span></a-descriptions-item>
+        <a-descriptions-item label="Uptime"><span class="mono">{{ Math.floor(systemInfo.uptimeSec / 60) }}m</span></a-descriptions-item>
+      </a-descriptions>
 
-      <div style="display:flex; gap:8px; flex-wrap:wrap; padding:8px 0; align-items:center">
-        <button class="primary-action" type="button" :disabled="upgrading" @click="startUpgrade">
-          <RefreshCw :size="14" :class="{ spin: upgrading }" />
+      <a-space wrap class="actions">
+        <a-button type="primary" :loading="upgrading" @click="startUpgrade">
+          <template #icon><CloudDownloadOutlined /></template>
           {{ upgrading ? 'Đang nâng cấp…' : 'Nâng cấp lên phiên bản mới' }}
-        </button>
-        <button class="ghost-button" type="button" @click="refreshLog">
-          <Terminal :size="12" /> Xem log
-        </button>
-        <button class="ghost-button" type="button" @click="loadVersion">
-          <RefreshCw :size="12" /> Reload
-        </button>
-      </div>
+        </a-button>
+        <a-button @click="refreshLog">
+          <template #icon><CodeOutlined /></template>
+          Xem log
+        </a-button>
+        <a-button @click="loadVersion">
+          <template #icon><ReloadOutlined /></template>
+          Reload
+        </a-button>
+      </a-space>
 
-      <p v-if="upgradeFlash" style="color:var(--green); font-size:13px; margin:6px 0 0">{{ upgradeFlash }}</p>
-      <p v-if="upgradeErr" style="color:var(--red); font-size:13px; margin:6px 0 0">{{ upgradeErr }}</p>
-      <pre v-if="upgradeLog" style="margin-top:10px; padding:10px 12px; background:#0a0e14; border:1px solid var(--border); border-radius:8px; font-family:var(--mono); font-size:11px; color:#9bb8b1; max-height:280px; overflow:auto; white-space:pre-wrap">{{ upgradeLog }}</pre>
-    </section>
+      <a-alert v-if="upgradeFlash" type="success" show-icon :message="upgradeFlash" class="msg" />
+      <a-alert v-if="upgradeErr" type="error" show-icon :message="upgradeErr" class="msg" />
+      <a-typography-paragraph v-if="upgradeLog" class="log-wrap">
+        <pre class="mono log">{{ upgradeLog }}</pre>
+      </a-typography-paragraph>
+    </a-card>
+    <a-alert v-else-if="upgradeErr" type="error" show-icon :message="upgradeErr" />
 
     <!-- ── Existing security toggles ──────────────────────────────────── -->
-    <section class="surface settings-list">
-      <div class="section-head">
-        <h2>{{ t('settings.security') }}</h2>
-        <LockKeyhole :size="20" />
-      </div>
-      <label class="switch-row">
-        <span><strong>{{ t('settings.2fa') }}</strong><small>{{ t('settings.2faHelp') }}</small></span>
-        <input v-model="profile.twoFactor" type="checkbox" />
-      </label>
-      <label class="switch-row">
-        <span><strong>{{ t('settings.emailAlerts') }}</strong><small>{{ t('settings.emailHelp') }}</small></span>
-        <input v-model="profile.emailAlerts" type="checkbox" />
-      </label>
-      <label class="switch-row">
-        <span><strong>{{ t('settings.balanceAlerts') }}</strong><small>{{ t('settings.balanceHelp') }}</small></span>
-        <input v-model="profile.lowBalanceAlerts" type="checkbox" />
-      </label>
-    </section>
-  </section>
+    <a-card :title="t('settings.security')">
+      <template #extra><LockOutlined /></template>
+      <a-list item-layout="horizontal">
+        <a-list-item>
+          <a-list-item-meta :title="t('settings.2fa')" :description="t('settings.2faHelp')" />
+          <a-switch v-model:checked="profile.twoFactor" />
+        </a-list-item>
+        <a-list-item>
+          <a-list-item-meta :title="t('settings.emailAlerts')" :description="t('settings.emailHelp')" />
+          <a-switch v-model:checked="profile.emailAlerts" />
+        </a-list-item>
+        <a-list-item>
+          <a-list-item-meta :title="t('settings.balanceAlerts')" :description="t('settings.balanceHelp')" />
+          <a-switch v-model:checked="profile.lowBalanceAlerts" />
+        </a-list-item>
+      </a-list>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.spin { animation: spin 1.2s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.kv-grid small { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.kv-grid strong { display: block; font-size: 13px; color: var(--text); margin-top: 2px; }
+.actions { margin-top: 16px; }
+.msg { margin-top: 12px; }
+.log-wrap { margin: 12px 0 0; }
+.log { max-height: 280px; overflow: auto; white-space: pre-wrap; font-size: 11px; margin: 0; }
 </style>

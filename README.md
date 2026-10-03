@@ -11,7 +11,7 @@ Published by **[ProxyBox](https://proxybox.pro)** · live demo: **[proxybox.pro]
 - **Wallet billing** — VND / USD, auto-renew, coupons, tier discounts, Stripe + PayPal
 - **Admin remote control** — reboot, restart-agent, diagnose, install-package, drain, force-upgrade
 - **mTLS** agent ↔ master, scrypt password hashing, AES-256-GCM at-rest secrets
-- Vue 3 dark-theme SPA + Rust+Tokio agent (cross-platform glibc binary)
+- Vue 3 SPA on Ant Design (ant-design-vue 4, dark + light theme) + Rust+Tokio agent (cross-platform glibc binary)
 
 ---
 

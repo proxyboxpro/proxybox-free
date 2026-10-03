@@ -1,20 +1,21 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import {
-  ChevronRight, Clipboard, Copy, Gift, Share2, Sparkles, TrendingUp, Users, Wallet
-} from 'lucide-vue-next'
+import { computed, h, onMounted, ref } from 'vue'
+import { ShareAltOutlined, TeamOutlined, WalletOutlined } from '@ant-design/icons-vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 
 const { t } = useI18n()
 const data = ref(null)
 const err = ref('')
-const flash = ref('')
+const loading = ref(false)
 
 async function refresh() {
   err.value = ''
+  loading.value = true
   try { data.value = await apiFetch('/api/v1/user/affiliate') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 
 const fullUrl = computed(() => {
@@ -22,8 +23,10 @@ const fullUrl = computed(() => {
   const base = typeof location !== 'undefined' ? location.origin : ''
   return `${base}${data.value.shareUrl || `/register?ref=${data.value.referralCode || ''}`}`
 })
+const shareBlock = computed(() => `${data.value?.shareText || ''}\n${fullUrl.value}`)
 function copy(text, label) {
-  navigator.clipboard?.writeText(text); flash.value = label || t('cust.detail.copied'); setTimeout(() => flash.value = '', 1200)
+  navigator.clipboard?.writeText(text)
+  message.success(label || t('cust.detail.copied'))
 }
 function copyLink() { copy(fullUrl.value, t('cust.aff.copiedLink')) }
 function copyText() {
@@ -39,138 +42,162 @@ function shareFb() {
   window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(fullUrl.value)}`, '_blank')
 }
 
+const referralColumns = computed(() => [
+  { title: t('cust.aff.col.signupAt'), key: 'signupDate', dataIndex: 'signupDate', width: 120 },
+  { title: t('cust.aff.col.email'), key: 'maskedEmail', dataIndex: 'maskedEmail' },
+  { title: t('cust.aff.col.kickback'), key: 'kickback', dataIndex: 'kickback', width: 110, align: 'right' }
+])
+const referralRows = computed(() => (data.value?.referrals || []).map((r, i) => ({ ...r, _k: i })))
+
+const howSteps = computed(() => [
+  { title: t('cust.aff.step1'), description: t('cust.aff.step1Desc'), icon: h(ShareAltOutlined), status: 'process' },
+  { title: t('cust.aff.step2'), description: t('cust.aff.step2Desc'), icon: h(TeamOutlined), status: 'process' },
+  { title: t('cust.aff.step3'), description: t('cust.aff.step3Desc'), icon: h(WalletOutlined), status: 'process' }
+])
+const tips = computed(() => [t('cust.aff.tip1'), t('cust.aff.tip2'), t('cust.aff.tip3')])
+
 onMounted(refresh)
 </script>
 
 <template>
-  <h1>{{ t('cust.aff.title') }}</h1>
-  <p class="sub">{{ t('cust.aff.subtitle') }}</p>
+  <div class="page">
+    <a-typography-text type="secondary">{{ t('cust.aff.subtitle') }}</a-typography-text>
 
-  <p v-if="err" class="error-text">{{ err }}</p>
-  <p v-if="flash" style="color:#4ade80; font-size:13px">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" />
 
-  <div v-if="data">
-    <!-- KPI row -->
-    <div class="kpi-row">
-      <div class="kpi-card-v2">
-        <span class="ico purple"><Wallet :size="22" /></span>
-        <div class="body">
-          <span class="lbl">{{ t('cust.aff.kpiEarned') }}</span>
-          <span class="val">{{ Number(data.totalEarned).toLocaleString() }}</span>
-          <span class="foot"><span class="dot"></span> VND</span>
-        </div>
-      </div>
-      <div class="kpi-card-v2">
-        <span class="ico green"><Users :size="22" /></span>
-        <div class="body">
-          <span class="lbl">{{ t('cust.aff.kpiReferred') }}</span>
-          <span class="val">{{ data.totalReferred }}</span>
-          <span class="foot"><span class="dot"></span> {{ t('cust.aff.referredSub') }}</span>
-        </div>
-      </div>
-      <div class="kpi-card-v2">
-        <span class="ico amber"><TrendingUp :size="22" /></span>
-        <div class="body">
-          <span class="lbl">{{ t('cust.aff.kpiPerSignup') }}</span>
-          <span class="val">{{ Number(data.kickbackPerSignup).toLocaleString() }}</span>
-          <span class="foot"><span class="dot"></span> {{ t('cust.aff.perSignupUnit') }}</span>
-        </div>
-      </div>
-      <div class="kpi-card-v2">
-        <span class="ico blue"><Gift :size="22" /></span>
-        <div class="body">
-          <span class="lbl">{{ t('cust.aff.kpiCode') }}</span>
-          <span class="val cell-mono" style="font-size:16px">{{ data.referralCode || '—' }}</span>
-          <span class="foot"><span class="dot"></span> {{ t('cust.aff.codeSub') }}</span>
-        </div>
-      </div>
-    </div>
+    <a-card v-if="!data && loading"><a-skeleton active /></a-card>
 
-    <div style="display:grid; grid-template-columns: 1fr 360px; gap:18px; align-items:start">
-      <!-- LEFT: share + referrals -->
-      <div style="display:flex; flex-direction:column; gap:14px; min-width:0">
-        <section class="surface">
-          <h2 style="margin:0 0 6px; color:var(--text); font-size:16px"><Share2 :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.aff.shareTitle') }}</h2>
-          <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px">{{ t('cust.aff.shareDesc') }}</p>
+    <template v-if="data">
+      <!-- KPI row -->
+      <a-row :gutter="[12, 12]">
+        <a-col :xs="12" :lg="6">
+          <a-card size="small">
+            <a-statistic :title="t('cust.aff.kpiEarned')" :value="Number(data.totalEarned)" :value-style="{ color: 'var(--pb-primary)' }">
+              <template #prefix><WalletOutlined /></template>
+              <template #formatter="{ value }"><span class="mono">{{ Number(value).toLocaleString() }}</span></template>
+            </a-statistic>
+            <a-typography-text type="secondary" class="small-text">VND</a-typography-text>
+          </a-card>
+        </a-col>
+        <a-col :xs="12" :lg="6">
+          <a-card size="small">
+            <a-statistic :title="t('cust.aff.kpiReferred')" :value="data.totalReferred">
+              <template #prefix><TeamOutlined /></template>
+            </a-statistic>
+            <a-typography-text type="secondary" class="small-text">{{ t('cust.aff.referredSub') }}</a-typography-text>
+          </a-card>
+        </a-col>
+        <a-col :xs="12" :lg="6">
+          <a-card size="small">
+            <a-statistic :title="t('cust.aff.kpiPerSignup')" :value="Number(data.kickbackPerSignup)">
+              <template #prefix><RiseOutlined /></template>
+              <template #formatter="{ value }"><span class="mono">{{ Number(value).toLocaleString() }}</span></template>
+            </a-statistic>
+            <a-typography-text type="secondary" class="small-text">{{ t('cust.aff.perSignupUnit') }}</a-typography-text>
+          </a-card>
+        </a-col>
+        <a-col :xs="12" :lg="6">
+          <a-card size="small">
+            <a-statistic :title="t('cust.aff.kpiCode')" :value="data.referralCode || '—'">
+              <template #prefix><GiftOutlined /></template>
+              <template #formatter="{ value }">
+                <a-typography-text v-if="data.referralCode" class="mono code-val" :copyable="{ text: data.referralCode }">{{ value }}</a-typography-text>
+                <span v-else>—</span>
+              </template>
+            </a-statistic>
+            <a-typography-text type="secondary" class="small-text">{{ t('cust.aff.codeSub') }}</a-typography-text>
+          </a-card>
+        </a-col>
+      </a-row>
 
-          <span class="eyebrow">{{ t('cust.aff.linkLabel') }}</span>
-          <div class="credential-box" style="display:flex; align-items:center; gap:8px; margin: 6px 0 12px; background: var(--pxl-card-2); border-color: var(--pxl-bd)">
-            <code style="flex:1; word-break:break-all; color:var(--text)">{{ fullUrl }}</code>
-            <button class="ghost-button" type="button" @click="copyLink"><Clipboard :size="14" /></button>
-          </div>
+      <a-row :gutter="[16, 16]">
+        <!-- LEFT: share + referrals -->
+        <a-col :xs="24" :lg="15" :xl="16">
+          <a-flex vertical gap="middle">
+            <a-card>
+              <template #title><ShareAltOutlined class="title-ico" /> {{ t('cust.aff.shareTitle') }}</template>
+              <a-flex vertical gap="middle">
+                <a-typography-text type="secondary">{{ t('cust.aff.shareDesc') }}</a-typography-text>
 
-          <span class="eyebrow">{{ t('cust.aff.textLabel') }}</span>
-          <pre style="margin-top: 6px; font-size:12.5px; white-space:pre-wrap; line-height:1.55; background: var(--pxl-card-2); border-color: var(--pxl-bd); color:var(--text)">{{ data.shareText || '' }}
-{{ fullUrl }}</pre>
+                <div>
+                  <a-typography-text strong>{{ t('cust.aff.linkLabel') }}</a-typography-text>
+                  <a-space-compact block class="field-gap">
+                    <a-input :value="fullUrl" readonly class="mono" />
+                    <a-button @click="copyLink"><template #icon><CopyOutlined /></template></a-button>
+                  </a-space-compact>
+                </div>
 
-          <div class="action-row" style="margin-top:14px; gap:8px">
-            <button class="primary-action" type="button" @click="copyText"><Copy :size="14" /> {{ t('cust.aff.copyAll') }}</button>
-            <button class="ghost-button" type="button" @click="shareTelegram">{{ t('cust.aff.shareTg') }}</button>
-            <button class="ghost-button" type="button" @click="shareFb">{{ t('cust.aff.shareFb') }}</button>
-          </div>
-        </section>
+                <div>
+                  <a-typography-text strong>{{ t('cust.aff.textLabel') }}</a-typography-text>
+                  <a-typography-paragraph class="field-gap share-text">
+                    <pre>{{ shareBlock }}</pre>
+                  </a-typography-paragraph>
+                </div>
 
-        <!-- Referrals table -->
-        <section class="dt2">
-          <div class="dt2-toolbar">
-            <h2 style="margin:0; color:var(--text); font-size:15px">{{ t('cust.aff.referralsTitle') }} ({{ data.referrals?.length || 0 }})</h2>
-          </div>
-          <div class="dt2-head" style="grid-template-columns: 1.2fr 2fr 0.8fr">
-            <span>{{ t('cust.aff.col.signupAt') }}</span>
-            <span>{{ t('cust.aff.col.email') }}</span>
-            <span>{{ t('cust.aff.col.kickback') }}</span>
-          </div>
-          <div v-for="(r, i) in (data.referrals || [])" :key="i" class="dt2-row" style="grid-template-columns: 1.2fr 2fr 0.8fr">
-            <span class="cell-mono">{{ r.signupDate || '—' }}</span>
-            <span class="cell-mono" style="color:var(--text)">{{ r.maskedEmail }}</span>
-            <span class="cell-mono" style="color:#4ade80">+{{ Number(r.kickback || data.kickbackPerSignup).toLocaleString() }}</span>
-          </div>
-          <p v-if="!data.referrals?.length" class="empty-text" style="padding:30px">{{ t('cust.aff.empty') }}</p>
-        </section>
-      </div>
+                <a-space wrap>
+                  <a-button type="primary" @click="copyText"><template #icon><CopyOutlined /></template>{{ t('cust.aff.copyAll') }}</a-button>
+                  <a-button @click="shareTelegram"><template #icon><SendOutlined /></template>{{ t('cust.aff.shareTg') }}</a-button>
+                  <a-button @click="shareFb"><template #icon><FacebookOutlined /></template>{{ t('cust.aff.shareFb') }}</a-button>
+                </a-space>
+              </a-flex>
+            </a-card>
 
-      <!-- RIGHT: how it works -->
-      <aside style="display:flex; flex-direction:column; gap:14px; position:sticky; top:80px">
-        <div class="px-detail">
-          <h3>{{ t('cust.aff.howTitle') }}</h3>
-          <div style="display:flex; flex-direction:column; gap:14px; margin-top:6px">
-            <div style="display:flex; gap:10px">
-              <div class="kpi-card-v2" style="padding:0; background:transparent; border:none">
-                <span class="ico purple" style="width:36px; height:36px; border-radius:10px"><Share2 :size="16" /></span>
-              </div>
-              <div>
-                <div style="color:var(--text); font-size:13px; font-weight:600">{{ t('cust.aff.step1') }}</div>
-                <div style="color:var(--muted); font-size:11.5px">{{ t('cust.aff.step1Desc') }}</div>
-              </div>
-            </div>
-            <div style="display:flex; gap:10px">
-              <div class="kpi-card-v2" style="padding:0; background:transparent; border:none">
-                <span class="ico green" style="width:36px; height:36px; border-radius:10px"><Users :size="16" /></span>
-              </div>
-              <div>
-                <div style="color:var(--text); font-size:13px; font-weight:600">{{ t('cust.aff.step2') }}</div>
-                <div style="color:var(--muted); font-size:11.5px">{{ t('cust.aff.step2Desc') }}</div>
-              </div>
-            </div>
-            <div style="display:flex; gap:10px">
-              <div class="kpi-card-v2" style="padding:0; background:transparent; border:none">
-                <span class="ico amber" style="width:36px; height:36px; border-radius:10px"><Wallet :size="16" /></span>
-              </div>
-              <div>
-                <div style="color:var(--text); font-size:13px; font-weight:600">{{ t('cust.aff.step3') }}</div>
-                <div style="color:var(--muted); font-size:11.5px">{{ t('cust.aff.step3Desc') }}</div>
-              </div>
-            </div>
-          </div>
-        </div>
+            <!-- Referrals table -->
+            <a-card :title="`${t('cust.aff.referralsTitle')} (${data.referrals?.length || 0})`" :body-style="{ padding: 0 }">
+              <a-table
+                :columns="referralColumns"
+                :data-source="referralRows"
+                row-key="_k"
+                size="middle"
+                :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
+                :scroll="{ x: 360 }"
+                :locale="{ emptyText: t('cust.aff.empty') }"
+              >
+                <template #bodyCell="{ column, record: r }">
+                  <template v-if="column.key === 'signupDate'">
+                    <span class="mono">{{ r.signupDate || '—' }}</span>
+                  </template>
+                  <template v-else-if="column.key === 'maskedEmail'">
+                    <span class="mono">{{ r.maskedEmail }}</span>
+                  </template>
+                  <template v-else-if="column.key === 'kickback'">
+                    <a-typography-text type="success" class="mono">+{{ Number(r.kickback || data.kickbackPerSignup).toLocaleString() }}</a-typography-text>
+                  </template>
+                </template>
+              </a-table>
+            </a-card>
+          </a-flex>
+        </a-col>
 
-        <div class="px-detail">
-          <h3>{{ t('cust.aff.tipsTitle') }}</h3>
-          <span class="help-link" style="cursor:default"><Sparkles :size="14" /> {{ t('cust.aff.tip1') }}</span>
-          <span class="help-link" style="cursor:default"><Sparkles :size="14" /> {{ t('cust.aff.tip2') }}</span>
-          <span class="help-link" style="cursor:default"><Sparkles :size="14" /> {{ t('cust.aff.tip3') }}</span>
-        </div>
-      </aside>
-    </div>
+        <!-- RIGHT: how it works -->
+        <a-col :xs="24" :lg="9" :xl="8">
+          <a-flex vertical gap="middle" class="aside">
+            <a-card size="small" :title="t('cust.aff.howTitle')">
+              <a-steps direction="vertical" size="small" :items="howSteps" />
+            </a-card>
+
+            <a-card size="small" :title="t('cust.aff.tipsTitle')">
+              <a-flex vertical gap="small">
+                <span v-for="(tip, i) in tips" :key="i" class="tip"><StarOutlined class="title-ico" /> {{ tip }}</span>
+              </a-flex>
+            </a-card>
+          </a-flex>
+        </a-col>
+      </a-row>
+    </template>
   </div>
 </template>
+
+<style scoped>
+.small-text { font-size: 12px; }
+.title-ico { color: var(--pb-primary); }
+.code-val { font-size: 18px; }
+.field-gap { margin-top: 6px; }
+.share-text { margin-bottom: 0; }
+.share-text pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.55; }
+.tip { display: flex; gap: 8px; align-items: baseline; }
+
+@media (min-width: 992px) {
+  .aside { position: sticky; top: 84px; }
+}
+</style>

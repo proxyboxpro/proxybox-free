@@ -1,8 +1,8 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Activity, Globe, Loader2, Network, Play, Server } from 'lucide-vue-next'
 import { apiFetch, ApiError } from '../../api'
 import { useI18n } from '../../i18n'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
 
@@ -11,6 +11,8 @@ const count = ref(4)
 const busy = ref(false)
 const err = ref('')
 const result = ref(null)
+
+const COUNT_OPTIONS = [1, 4, 8, 10].map((n) => ({ label: String(n), value: n }))
 
 const trimmed = computed(() => input.value.trim())
 
@@ -28,6 +30,7 @@ const detectedFamily = computed(() => {
 })
 
 async function runPing() {
+  if (busy.value) return
   err.value = ''
   result.value = null
   if (!detectedFamily.value) {
@@ -51,292 +54,157 @@ function pasteFromClipboard() {
   if (!navigator.clipboard) return
   navigator.clipboard.readText().then((v) => { input.value = String(v || '').trim() }).catch(() => {})
 }
+
+// Latency thresholds shared by the sample table text colour + bar colour.
+function latencyType(ms) { return ms < 50 ? 'success' : ms < 150 ? 'warning' : 'danger' }
+const BAR_COLOR = { success: 'var(--pb-success)', warning: 'var(--pb-warning)', danger: 'var(--pb-error)' }
+const lossType = computed(() => {
+  const l = result.value?.loss
+  return l === 0 ? 'success' : l < 100 ? 'warning' : 'danger'
+})
+
+const sampleColumns = [
+  { key: 'seq', dataIndex: 'seq', width: 72 },
+  { key: 'ttl', dataIndex: 'ttl', width: 80 },
+  { key: 'time', dataIndex: 'time', width: 96, align: 'right' },
+  { key: 'bar' }
+]
 </script>
 
 <template>
-  <h1>{{ t('cust.tools.ping.title') }}</h1>
-  <p class="sub">{{ t('cust.tools.ping.subtitle') }}</p>
+  <div class="page">
+    <a-typography-text type="secondary">{{ t('cust.tools.ping.subtitle') }}</a-typography-text>
 
-  <section class="surface" style="padding:18px; margin-bottom:14px">
-    <div class="section-head">
-      <h2><Network :size="14" /> {{ t('cust.tools.ping.inputHead') }}</h2>
-    </div>
+    <a-card size="small">
+      <template #title><ApiOutlined /> {{ t('cust.tools.ping.inputHead') }}</template>
+      <a-form @submit="runPing">
+        <a-flex wrap="wrap" gap="small" align="center">
+          <a-input
+            v-model:value="input"
+            size="large"
+            class="ip-input mono-field"
+            :placeholder="t('cust.tools.ping.placeholder')"
+            :status="trimmed && !detectedFamily ? 'error' : undefined"
+            autocomplete="off"
+            spellcheck="false"
+            allow-clear
+          >
+            <template #suffix>
+              <a-tag v-if="detectedFamily === 4" color="green" :bordered="false" class="mono fam-tag">
+                <template #icon><CloudServerOutlined /></template>IPv4
+              </a-tag>
+              <a-tag v-else-if="detectedFamily === 6" color="blue" :bordered="false" class="mono fam-tag">
+                <template #icon><GlobalOutlined /></template>IPv6
+              </a-tag>
+              <a-tag v-else-if="trimmed" color="error" :bordered="false" class="fam-tag">
+                {{ t('cust.tools.ping.notIp') }}
+              </a-tag>
+            </template>
+          </a-input>
 
-    <div class="ping-input-row">
-      <div class="ping-input-wrap">
-        <input
-          v-model="input"
-          type="text"
-          class="ping-input"
-          :placeholder="t('cust.tools.ping.placeholder')"
-          autocomplete="off"
-          spellcheck="false"
-          @keydown.enter="runPing"
+          <a-space :size="8">
+            <a-typography-text type="secondary">{{ t('cust.tools.ping.count') }}</a-typography-text>
+            <a-select v-model:value="count" size="large" :options="COUNT_OPTIONS" class="mono-field" style="width: 80px" />
+          </a-space>
+
+          <a-space :size="8">
+            <a-button size="large" @click="pasteFromClipboard">
+              <template #icon><SnippetsOutlined /></template>
+              {{ t('cust.tools.ping.paste') }}
+            </a-button>
+            <a-button type="primary" size="large" html-type="submit" :loading="busy" :disabled="!detectedFamily">
+              <template #icon><CaretRightOutlined /></template>
+              {{ busy ? t('cust.tools.ping.running') : t('cust.tools.ping.run') }}
+            </a-button>
+          </a-space>
+        </a-flex>
+      </a-form>
+
+      <a-alert v-if="err" type="error" show-icon :message="err" class="below" />
+      <a-typography-paragraph v-else type="secondary" class="below hint">
+        <InfoCircleOutlined /> {{ t('cust.tools.ping.hint') }}
+      </a-typography-paragraph>
+    </a-card>
+
+    <a-card v-if="result" size="small">
+      <template #title><LineChartOutlined /> {{ t('cust.tools.ping.resultHead') }}</template>
+      <template #extra>
+        <StatusTag
+          :status="result.ok ? 'ok' : 'error'"
+          :label="result.ok ? t('cust.tools.ping.reachable') : t('cust.tools.ping.unreachable')"
         />
-        <span v-if="detectedFamily === 4" class="family-badge fv4">
-          <Server :size="11" /> IPv4
-        </span>
-        <span v-else-if="detectedFamily === 6" class="family-badge fv6">
-          <Globe :size="11" /> IPv6
-        </span>
-        <span v-else-if="trimmed" class="family-badge finv">
-          {{ t('cust.tools.ping.notIp') }}
-        </span>
-      </div>
+      </template>
 
-      <label class="ping-count">
-        <span>{{ t('cust.tools.ping.count') }}</span>
-        <select v-model.number="count">
-          <option :value="1">1</option>
-          <option :value="4">4</option>
-          <option :value="8">8</option>
-          <option :value="10">10</option>
-        </select>
-      </label>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 4 }">
+        <a-descriptions-item :label="t('cust.tools.ping.target')">
+          <a-typography-text class="mono" :copyable="{ text: result.target }">{{ result.target }}</a-typography-text>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.family')">
+          <span class="mono">{{ result.family.toUpperCase() }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.transmitted')">
+          <span class="mono">{{ result.transmitted }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.received')">
+          <span class="mono">{{ result.received }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.loss')">
+          <a-typography-text :type="lossType" strong class="mono">{{ result.loss }}%</a-typography-text>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.rttAvg')">
+          <span class="mono">{{ result.rtt ? `${result.rtt.avg.toFixed(1)} ms` : '—' }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.rttMin')">
+          <span class="mono">{{ result.rtt ? `${result.rtt.min.toFixed(1)} ms` : '—' }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.ping.rttMax')">
+          <span class="mono">{{ result.rtt ? `${result.rtt.max.toFixed(1)} ms` : '—' }}</span>
+        </a-descriptions-item>
+      </a-descriptions>
 
-      <button type="button" class="btn-paste" @click="pasteFromClipboard">
-        {{ t('cust.tools.ping.paste') }}
-      </button>
-
-      <button
-        type="button"
-        class="btn-run"
-        :disabled="busy || !detectedFamily"
-        @click="runPing"
+      <a-table
+        v-if="result.samples?.length"
+        class="below"
+        :columns="sampleColumns"
+        :data-source="result.samples"
+        row-key="seq"
+        size="small"
+        :show-header="false"
+        :pagination="false"
       >
-        <Loader2 v-if="busy" :size="14" class="spin" />
-        <Play v-else :size="14" />
-        {{ busy ? t('cust.tools.ping.running') : t('cust.tools.ping.run') }}
-      </button>
-    </div>
+        <template #bodyCell="{ column, record: s }">
+          <template v-if="column.key === 'seq' || column.key === 'ttl'">
+            <span class="mono">{{ column.key }}={{ s[column.key] }}</span>
+          </template>
+          <template v-else-if="column.key === 'time'">
+            <a-typography-text :type="latencyType(s.time)" class="mono">{{ s.time.toFixed(1) }} ms</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'bar'">
+            <a-progress
+              :percent="Math.min(100, s.time / 3)"
+              :show-info="false"
+              :stroke-color="BAR_COLOR[latencyType(s.time)]"
+              size="small"
+            />
+          </template>
+        </template>
+      </a-table>
 
-    <p v-if="err" class="error-text" style="margin-top:12px">{{ err }}</p>
-    <p v-else class="hint-text">{{ t('cust.tools.ping.hint') }}</p>
-  </section>
-
-  <section v-if="result" class="surface" style="padding:18px">
-    <div class="section-head">
-      <h2><Activity :size="14" /> {{ t('cust.tools.ping.resultHead') }}</h2>
-      <span :class="['status-pill', result.ok ? 'active' : 'expired']">
-        {{ result.ok ? t('cust.tools.ping.reachable') : t('cust.tools.ping.unreachable') }}
-      </span>
-    </div>
-
-    <div class="ping-stats-grid">
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.target') }}</span>
-        <span class="cell-mono val">{{ result.target }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.family') }}</span>
-        <span class="cell-mono val">{{ result.family.toUpperCase() }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.transmitted') }}</span>
-        <span class="cell-mono val">{{ result.transmitted }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.received') }}</span>
-        <span class="cell-mono val">{{ result.received }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.loss') }}</span>
-        <span
-          class="cell-mono val"
-          :style="{ color: result.loss === 0 ? 'var(--green)' : result.loss < 100 ? 'var(--yellow)' : 'var(--red)' }"
-        >{{ result.loss }}%</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.rttAvg') }}</span>
-        <span class="cell-mono val">{{ result.rtt ? `${result.rtt.avg.toFixed(1)} ms` : '—' }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.rttMin') }}</span>
-        <span class="cell-mono val">{{ result.rtt ? `${result.rtt.min.toFixed(1)} ms` : '—' }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.ping.rttMax') }}</span>
-        <span class="cell-mono val">{{ result.rtt ? `${result.rtt.max.toFixed(1)} ms` : '—' }}</span>
-      </div>
-    </div>
-
-    <div v-if="result.samples?.length" class="ping-samples">
-      <div v-for="s in result.samples" :key="s.seq" class="sample-row">
-        <span class="cell-mono">seq={{ s.seq }}</span>
-        <span class="cell-mono">ttl={{ s.ttl }}</span>
-        <span class="cell-mono" :style="{ color: s.time < 50 ? 'var(--green)' : s.time < 150 ? 'var(--yellow)' : 'var(--red)' }">
-          {{ s.time.toFixed(1) }} ms
-        </span>
-        <span class="bar-track">
-          <span class="bar-fill" :style="{ width: Math.min(100, s.time / 3) + '%' }"></span>
-        </span>
-      </div>
-    </div>
-
-    <details class="raw-details">
-      <summary>{{ t('cust.tools.ping.rawOutput') }}</summary>
-      <pre class="raw-output">{{ result.raw }}</pre>
-    </details>
-  </section>
+      <a-collapse ghost class="below">
+        <a-collapse-panel key="raw" :header="t('cust.tools.ping.rawOutput')">
+          <a-typography-paragraph class="raw"><pre class="mono">{{ result.raw }}</pre></a-typography-paragraph>
+        </a-collapse-panel>
+      </a-collapse>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.sub { color: var(--muted); margin: 2px 0 14px; }
-
-.ping-input-row {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-top: 12px;
-}
-.ping-input-wrap {
-  position: relative;
-  flex: 1;
-  min-width: 260px;
-}
-.ping-input {
-  width: 100%;
-  height: 38px;
-  padding: 0 92px 0 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 13px;
-  outline: none;
-}
-.ping-input:focus { border-color: var(--green); }
-
-.family-badge {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 600;
-  font-family: var(--mono);
-  letter-spacing: 0.02em;
-}
-.family-badge.fv4 { background: var(--green-soft); color: var(--green); }
-.family-badge.fv6 { background: var(--blue-soft); color: var(--blue); }
-.family-badge.finv { background: var(--red-soft); color: var(--red); }
-
-.ping-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.ping-count select {
-  height: 34px;
-  padding: 0 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-family: var(--mono);
-}
-
-.btn-paste, .btn-run {
-  height: 38px;
-  padding: 0 14px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.btn-paste:hover { border-color: var(--muted); }
-.btn-run {
-  background: var(--green);
-  border-color: var(--green);
-  color: #0a0e14;
-  font-weight: 600;
-}
-.btn-run:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-run:not(:disabled):hover { filter: brightness(1.08); }
-
-.spin { animation: ping-spin 0.9s linear infinite; }
-@keyframes ping-spin { to { transform: rotate(360deg); } }
-
-.hint-text { color: var(--muted); font-size: 12px; margin-top: 10px; }
-
-.ping-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-  margin-top: 14px;
-}
-.stat-cell {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.stat-cell .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.stat-cell .val { font-size: 14px; color: var(--text); }
-
-.ping-samples { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
-.sample-row {
-  display: grid;
-  grid-template-columns: 80px 70px 90px 1fr;
-  gap: 12px;
-  align-items: center;
-  font-size: 12px;
-}
-.bar-track {
-  position: relative;
-  height: 6px;
-  background: var(--border-soft);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--green); border-radius: 3px; }
-
-.raw-details {
-  margin-top: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  background: var(--bg);
-}
-.raw-details summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
-}
-.raw-output {
-  margin: 10px 0 0;
-  padding: 10px;
-  background: var(--border-soft);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 320px;
-  overflow: auto;
-}
-
-@media (max-width: 720px) {
-  .ping-stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .sample-row { grid-template-columns: 60px 60px 80px 1fr; font-size: 11px; }
-}
+.ip-input { flex: 1 1 260px; min-width: 0; }
+.fam-tag { margin-inline-end: 0; }
+.below { margin-top: 12px; }
+.hint { margin-bottom: 0; font-size: 12px; }
+.raw { margin-bottom: 0; }
+.raw pre { white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; margin: 0; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

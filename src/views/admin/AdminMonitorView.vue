@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Activity, Cpu, HardDrive, Network, Pause, Play, RefreshCw } from 'lucide-vue-next'
+import { Empty } from 'ant-design-vue'
 import { apiFetch } from '../../api'
 import { formatBytes } from '../../utils/format'
 import { useI18n } from '../../i18n'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
+const simpleImage = Empty.PRESENTED_IMAGE_SIMPLE
 
 const REFRESH_MS = 3000
 const HISTORY = 60
@@ -78,11 +80,13 @@ function netPath(nodeId) {
   return { rx: sparkPath(arr, 'netRx', peak), tx: sparkPath(arr, 'netTx', peak), peak }
 }
 
+// ok → green, warn → amber, crit → red (antd typography types)
 function pctClass(v, warn, crit) {
-  if (v >= crit) return 'crit'
-  if (v >= warn) return 'warn'
-  return 'ok'
+  if (v >= crit) return 'danger'
+  if (v >= warn) return 'warning'
+  return 'success'
 }
+function statusColor(s) { return s === 'online' ? 'success' : (s === 'install-failed' ? 'error' : 'warning') }
 function ramThreshold(n) { return Number(n.alerts?.ramPct) || 90 }
 function loadThreshold(n) { return Number(n.alerts?.load1) || 100 }
 
@@ -107,107 +111,122 @@ function ago() {
 const tick = ref(0)
 const liveTimer = setInterval(() => { tick.value++ }, 1000)
 onUnmounted(() => clearInterval(liveTimer))
-const agoLive = computed(() => { /* eslint-disable-next-line no-unused-expressions */ tick.value; return ago() })
+const agoLive = computed(() => { tick.value; return ago() })
 </script>
 
-<template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <h1 style="margin:0; font-size:18px"><Activity :size="16" style="vertical-align:-3px" /> {{ t('admin.mon.title') }}</h1>
-      <span style="color:var(--muted); font-size:12px">{{ t('admin.mon.refreshNote', { s: REFRESH_MS / 1000, ago: agoLive }) }}</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="togglePause">
-        <Pause v-if="!paused" :size="13" /><Play v-else :size="13" />
-        {{ paused ? t('admin.mon.resume') : t('admin.mon.pause') }}
-      </button>
-      <button class="ghost-button" type="button" :disabled="paused" @click="refresh"><RefreshCw :size="13" /> {{ t('admin.mon.refreshNow') }}</button>
-    </div>
 
-    <p v-if="fetchError" class="error-text">{{ fetchError }}</p>
+<template>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('admin.mon.refreshNote', { s: REFRESH_MS / 1000, ago: agoLive }) }}</a-typography-text>
+      <a-flex wrap="wrap" gap="small">
+        <a-button @click="togglePause">
+          <template #icon><PauseCircleOutlined v-if="!paused" /><PlayCircleOutlined v-else /></template>
+          {{ paused ? t('admin.mon.resume') : t('admin.mon.pause') }}
+        </a-button>
+        <a-button :disabled="paused" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+          {{ t('admin.mon.refreshNow') }}
+        </a-button>
+      </a-flex>
+    </a-flex>
+
+    <a-alert v-if="fetchError" type="error" show-icon :message="fetchError" />
 
     <!-- ── Fleet overview ── -->
-    <section class="surface">
-      <div class="section-head"><h2>{{ t('admin.mon.fleetTitle', { n: nodes.length }) }}</h2></div>
-      <div class="metric-grid">
-        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.nodesOnline') }}</div><div class="metric-value">{{ onlineCount }} / {{ nodes.length }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.cpuAvg') }}</div><div class="metric-value">{{ totalCpuAvg }}%</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.ramTotal') }}</div><div class="metric-value">{{ formatBytes(totalRamUsed) }}</div><div class="metric-foot">/ {{ formatBytes(totalRamMax) }}</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.netDown') }}</div><div class="metric-value">{{ formatBytes(totalRxBps) }}/s</div></div>
-        <div class="metric-card"><div class="metric-label">{{ t('admin.mon.netUp') }}</div><div class="metric-value">{{ formatBytes(totalTxBps) }}/s</div></div>
-      </div>
-    </section>
+    <a-card :title="t('admin.mon.fleetTitle', { n: nodes.length })">
+      <a-row :gutter="[16, 16]">
+        <a-col flex="1 1 140px"><a-statistic :title="t('admin.mon.nodesOnline')" :value="onlineCount" :suffix="`/ ${nodes.length}`" /></a-col>
+        <a-col flex="1 1 140px"><a-statistic :title="t('admin.mon.cpuAvg')" :value="totalCpuAvg" suffix="%" /></a-col>
+        <a-col flex="1 1 140px">
+          <a-statistic :title="t('admin.mon.ramTotal')" :value="formatBytes(totalRamUsed)" />
+          <a-typography-text type="secondary" class="foot">/ {{ formatBytes(totalRamMax) }}</a-typography-text>
+        </a-col>
+        <a-col flex="1 1 140px"><a-statistic :title="t('admin.mon.netDown')" :value="`${formatBytes(totalRxBps)}/s`" /></a-col>
+        <a-col flex="1 1 140px"><a-statistic :title="t('admin.mon.netUp')" :value="`${formatBytes(totalTxBps)}/s`" /></a-col>
+      </a-row>
+    </a-card>
 
     <!-- ── Per-node cards ── -->
-    <section v-for="n in nodes" :key="n.id" class="surface">
-      <div class="section-head" style="display:flex; gap:8px; align-items:center">
-        <h2 style="font-size:14px; margin:0">
-          {{ n.name }}
-          <small style="color:var(--muted); font-size:11px; margin-left:4px">{{ n.host }}</small>
-        </h2>
-        <span :class="['status-pill', n.status === 'online' ? 'active' : (n.status === 'install-failed' ? 'failed' : 'pending')]">{{ n.status }}</span>
-        <span v-if="n.isLocal" class="status-pill pending" style="font-size:10px">{{ t('admin.mon.controlPlane') }}</span>
-        <span v-if="n.version" class="cell-mono" style="color:var(--muted); font-size:11px">v{{ n.version }}</span>
-        <div class="spacer"></div>
-        <small style="color:var(--muted); font-size:11px">{{ n.proxies }} proxy</small>
-      </div>
-      <div v-if="!n.metrics" class="empty-text" style="padding:12px 0">{{ t('admin.mon.noMetrics') }}</div>
-      <div v-else class="monitor-row">
+    <a-card v-for="n in nodes" :key="n.id" size="small">
+      <template #title>
+        <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="card-head-controls">
+          <a-space :size="8" wrap>
+            <span>{{ n.name }}</span>
+            <a-typography-text type="secondary" class="mono small">{{ n.host }}</a-typography-text>
+            <StatusTag :status="n.status" :color="statusColor(n.status)" />
+            <a-tag v-if="n.isLocal" color="orange" :bordered="false">{{ t('admin.mon.controlPlane') }}</a-tag>
+            <a-typography-text v-if="n.version" type="secondary" class="mono small">v{{ n.version }}</a-typography-text>
+          </a-space>
+          <a-typography-text type="secondary" class="small">{{ n.proxies }} proxy</a-typography-text>
+        </a-flex>
+      </template>
+      <a-empty v-if="!n.metrics" :image="simpleImage" :description="t('admin.mon.noMetrics')" />
+      <a-row v-else :gutter="[12, 12]">
         <!-- CPU -->
-        <div class="monitor-cell">
-          <div class="ml-head"><Cpu :size="13" /> CPU</div>
-          <div class="ml-value" :class="pctClass(n.metrics.cpuPct, 70, 90)">{{ n.metrics.cpuPct }}%</div>
-          <svg :viewBox="`0 0 120 28`" class="spark" preserveAspectRatio="none">
-            <path :d="sparkPath(samples.get(n.id), 'cpu', 100)" />
-          </svg>
-        </div>
+        <a-col :xs="24" :sm="12" :xl="6">
+          <a-card size="small" class="cell">
+            <a-typography-text type="secondary" class="ml-head"><DashboardOutlined /> CPU</a-typography-text>
+            <a-typography-text :type="pctClass(n.metrics.cpuPct, 70, 90)" class="ml-value">{{ n.metrics.cpuPct }}%</a-typography-text>
+            <svg viewBox="0 0 120 28" class="spark" preserveAspectRatio="none">
+              <path :d="sparkPath(samples.get(n.id), 'cpu', 100)" />
+            </svg>
+          </a-card>
+        </a-col>
         <!-- RAM -->
-        <div class="monitor-cell">
-          <div class="ml-head"><HardDrive :size="13" /> RAM</div>
-          <div class="ml-value" :class="pctClass(n.metrics.ramPct, ramThreshold(n) - 20, ramThreshold(n))">{{ n.metrics.ramPct }}%</div>
-          <div class="ml-foot">{{ formatBytes(n.metrics.ramUsed) }} / {{ formatBytes(n.metrics.ramTotal) }}</div>
-          <svg :viewBox="`0 0 120 28`" class="spark" preserveAspectRatio="none">
-            <path :d="sparkPath(samples.get(n.id), 'ram', 100)" />
-          </svg>
-        </div>
+        <a-col :xs="24" :sm="12" :xl="6">
+          <a-card size="small" class="cell">
+            <a-typography-text type="secondary" class="ml-head"><HddOutlined /> RAM</a-typography-text>
+            <a-typography-text :type="pctClass(n.metrics.ramPct, ramThreshold(n) - 20, ramThreshold(n))" class="ml-value">{{ n.metrics.ramPct }}%</a-typography-text>
+            <a-typography-text type="secondary" class="ml-foot">{{ formatBytes(n.metrics.ramUsed) }} / {{ formatBytes(n.metrics.ramTotal) }}</a-typography-text>
+            <svg viewBox="0 0 120 28" class="spark" preserveAspectRatio="none">
+              <path :d="sparkPath(samples.get(n.id), 'ram', 100)" />
+            </svg>
+          </a-card>
+        </a-col>
         <!-- Load -->
-        <div class="monitor-cell">
-          <div class="ml-head"><Activity :size="13" /> Load 1m</div>
-          <div class="ml-value" :class="pctClass(n.metrics.load1, loadThreshold(n) * 0.6, loadThreshold(n))">{{ Number(n.metrics.load1).toFixed(2) }}</div>
-          <div class="ml-foot">5m: {{ Number(n.metrics.load5).toFixed(2) }}</div>
-          <svg :viewBox="`0 0 120 28`" class="spark" preserveAspectRatio="none">
-            <path :d="sparkPath(samples.get(n.id), 'load1', loadThreshold(n) * 1.2)" />
-          </svg>
-        </div>
+        <a-col :xs="24" :sm="12" :xl="6">
+          <a-card size="small" class="cell">
+            <a-typography-text type="secondary" class="ml-head"><LineChartOutlined /> Load 1m</a-typography-text>
+            <a-typography-text :type="pctClass(n.metrics.load1, loadThreshold(n) * 0.6, loadThreshold(n))" class="ml-value">{{ Number(n.metrics.load1).toFixed(2) }}</a-typography-text>
+            <a-typography-text type="secondary" class="ml-foot">5m: {{ Number(n.metrics.load5).toFixed(2) }}</a-typography-text>
+            <svg viewBox="0 0 120 28" class="spark" preserveAspectRatio="none">
+              <path :d="sparkPath(samples.get(n.id), 'load1', loadThreshold(n) * 1.2)" />
+            </svg>
+          </a-card>
+        </a-col>
         <!-- Network -->
-        <div class="monitor-cell" style="flex:1.6">
-          <div class="ml-head"><Network :size="13" /> Network</div>
-          <div style="display:flex; gap:14px; align-items:baseline">
-            <div><span class="ml-rx">↓</span> <strong class="cell-mono">{{ formatBytes(n.metrics.netRxBps) }}/s</strong></div>
-            <div><span class="ml-tx">↑</span> <strong class="cell-mono">{{ formatBytes(n.metrics.netTxBps) }}/s</strong></div>
-          </div>
-          <svg :viewBox="`0 0 120 28`" class="spark net" preserveAspectRatio="none">
-            <path class="rx" :d="netPath(n.id).rx" />
-            <path class="tx" :d="netPath(n.id).tx" />
-          </svg>
-        </div>
-      </div>
-    </section>
-  </section>
+        <a-col :xs="24" :sm="12" :xl="6">
+          <a-card size="small" class="cell">
+            <a-typography-text type="secondary" class="ml-head"><ApiOutlined /> Network</a-typography-text>
+            <a-flex wrap="wrap" gap="middle" align="baseline">
+              <span><a-typography-text type="success">↓</a-typography-text> <strong class="mono">{{ formatBytes(n.metrics.netRxBps) }}/s</strong></span>
+              <span><span class="tx">↑</span> <strong class="mono">{{ formatBytes(n.metrics.netTxBps) }}/s</strong></span>
+            </a-flex>
+            <svg viewBox="0 0 120 28" class="spark net" preserveAspectRatio="none">
+              <path class="rx" :d="netPath(n.id).rx" />
+              <path class="tx" :d="netPath(n.id).tx" />
+            </svg>
+          </a-card>
+        </a-col>
+      </a-row>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.monitor-row { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap }
-.monitor-cell { flex: 1; min-width: 150px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px }
-.ml-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); display: flex; align-items: center; gap: 4px }
-.ml-value { font-family: var(--mono); font-size: 22px; font-weight: 600; color: var(--text); line-height: 1.1 }
-.ml-value.ok    { color: var(--green) }
-.ml-value.warn  { color: var(--yellow) }
-.ml-value.crit  { color: var(--red) }
-.ml-foot { font-size: 11px; color: var(--muted); font-family: var(--mono) }
-.ml-rx { color: var(--green) }
-.ml-tx { color: var(--blue) }
-.spark { width: 100%; height: 28px; margin-top: auto }
-.spark path { fill: none; stroke: var(--green); stroke-width: 1.5 }
-.spark.net path.rx { stroke: var(--green); opacity: 0.9 }
-.spark.net path.tx { stroke: var(--blue); opacity: 0.9 }
+.card-head-controls { padding: 6px 0; }
+.card-head-controls :deep(.ant-typography) { font-weight: 400; }
+.small { font-size: 12px; }
+.foot { display: block; font-size: 12px; margin-top: 2px; }
+.cell { height: 100%; }
+.cell :deep(.ant-card-body) { display: flex; flex-direction: column; gap: 4px; height: 100%; }
+.ml-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.ml-value { font-family: var(--pb-mono); font-size: 22px; font-weight: 600; line-height: 1.2; }
+.ml-foot { font-size: 11px; font-family: var(--pb-mono); }
+.tx { color: var(--pb-info); }
+.spark { width: 100%; height: 28px; margin-top: auto; }
+.spark path { fill: none; stroke: var(--pb-success); stroke-width: 1.5; }
+.spark.net path.rx { stroke: var(--pb-success); opacity: 0.9; }
+.spark.net path.tx { stroke: var(--pb-info); opacity: 0.9; }
 </style>

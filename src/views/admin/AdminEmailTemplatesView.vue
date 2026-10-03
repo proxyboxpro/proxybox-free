@@ -1,9 +1,12 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { apiFetch, adminEmailPreview } from '../../api'
+import { message } from '../../ui/feedback'
 
 const templates = ref({})
-const err = ref(''); const flash = ref('')
+const err = ref('')
+const loading = ref(false)
+const saving = ref(false)
 const previewKey = ref('')
 const previewSubject = ref('')
 const previewHtml = ref('')
@@ -15,12 +18,16 @@ const placeholders = {
 }
 
 async function refresh() {
+  loading.value = true
   try { templates.value = await apiFetch('/api/admin/email-templates') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 async function save() {
-  try { templates.value = await apiFetch('/api/admin/email-templates', { method: 'PATCH', body: templates.value }); flash.value = 'Templates saved.' }
-  catch (e) { err.value = e.message }
+  saving.value = true
+  try { templates.value = await apiFetch('/api/admin/email-templates', { method: 'PATCH', body: templates.value }); message.success('Templates saved.') }
+  catch (e) { message.error(e.message) }
+  finally { saving.value = false }
 }
 async function preview(key) {
   try {
@@ -28,51 +35,80 @@ async function preview(key) {
     previewKey.value = key
     previewSubject.value = r.subject
     previewHtml.value = r.html
-  } catch (e) { err.value = e.message }
+  } catch (e) { message.error(e.message) }
 }
 function closePreview() { previewKey.value = '' }
 onMounted(refresh)
 </script>
+
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">Email templates</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh">Refresh</button>
-      <button class="primary-action small" type="button" @click="save">Save all</button>
-    </div>
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color:#15803d">{{ flash }}</p>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">Email templates</a-typography-text>
+      <a-space wrap>
+        <a-button :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+          Refresh
+        </a-button>
+        <a-button type="primary" :loading="saving" @click="save">
+          <template #icon><SaveOutlined /></template>
+          Save all
+        </a-button>
+      </a-space>
+    </a-flex>
 
-    <section v-for="(t, key) in templates" :key="key" class="surface" style="margin-bottom:14px">
-      <div class="section-head">
-        <h2>{{ key }}</h2>
-        <button class="ghost-button" type="button" @click="preview(key)">Preview</button>
-      </div>
-      <p v-if="placeholders[key]?.length" style="font-size:12.5px; color:var(--muted)">
-        Placeholders: <code v-for="p in placeholders[key]" :key="p" style="margin-right:6px">{{ p }}</code>
-      </p>
-      <div class="form-grid">
-        <label class="input-field" style="grid-column:1/-1"><span>Subject</span><input v-model="t.subject" /></label>
-        <label class="input-field" style="grid-column:1/-1"><span>HTML body</span>
-          <textarea v-model="t.html" rows="8" style="font-family:monospace; font-size:12px; padding:8px; border:1px solid var(--bd); border-radius:6px; resize:vertical"></textarea>
-        </label>
-      </div>
-    </section>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <div v-if="previewKey" class="modal-backdrop" @click="closePreview"></div>
-    <div v-if="previewKey" class="modal-card" @click.stop>
-      <header><strong>Preview: {{ previewKey }}</strong><button type="button" class="ghost-button" @click="closePreview">Close</button></header>
-      <div class="preview-subject"><span style="color:var(--muted)">Subject:</span> <strong>{{ previewSubject }}</strong></div>
+    <a-card v-if="loading && !Object.keys(templates).length" loading />
+
+    <a-card v-for="(tpl, key) in templates" :key="key">
+      <template #title><span class="mono">{{ key }}</span></template>
+      <template #extra>
+        <a-button size="small" @click="preview(key)">
+          <template #icon><EyeOutlined /></template>
+          Preview
+        </a-button>
+      </template>
+      <a-typography-paragraph v-if="placeholders[key]?.length" type="secondary">
+        Placeholders:
+        <a-tag v-for="p in placeholders[key]" :key="p" :bordered="false" class="mono">{{ p }}</a-tag>
+      </a-typography-paragraph>
+      <a-form :model="tpl" layout="vertical">
+        <a-form-item label="Subject" name="subject">
+          <a-input v-model:value="tpl.subject" />
+        </a-form-item>
+        <a-form-item label="HTML body" name="html" class="last-item">
+          <a-textarea v-model:value="tpl.html" :auto-size="{ minRows: 8, maxRows: 24 }" class="mono html-input" />
+        </a-form-item>
+      </a-form>
+    </a-card>
+
+    <a-modal
+      :open="!!previewKey"
+      :title="`Preview: ${previewKey}`"
+      :width="720"
+      :footer="null"
+      destroy-on-close
+      @cancel="closePreview"
+    >
+      <a-space :size="6" wrap class="preview-subject">
+        <a-typography-text type="secondary">Subject:</a-typography-text>
+        <a-typography-text strong>{{ previewSubject }}</a-typography-text>
+      </a-space>
+      <!-- Email HTML is designed for a white mail-client canvas, so the frame
+           keeps a white background in both themes. -->
       <iframe class="preview-frame" :srcdoc="previewHtml" sandbox="allow-same-origin"></iframe>
-    </div>
-  </section>
+      <a-flex justify="flex-end" class="preview-foot">
+        <a-button @click="closePreview">Close</a-button>
+      </a-flex>
+    </a-modal>
+  </div>
 </template>
 
 <style scoped>
-.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 90; }
-.modal-card { position: fixed; top: 5%; left: 50%; transform: translateX(-50%); width: min(720px, 95vw); max-height: 90vh; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; z-index: 91; display: flex; flex-direction: column; }
-.modal-card header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-.preview-subject { padding: 12px 18px; border-bottom: 1px solid var(--border); }
-.preview-frame { flex: 1; border: none; min-height: 480px; width: 100%; background: #fff; }
+.html-input { font-size: 12px; }
+.last-item { margin-bottom: 0; }
+.preview-subject { margin-bottom: 12px; }
+.preview-frame { display: block; width: 100%; min-height: 60vh; border: 1px solid var(--pb-border); border-radius: 8px; background: #fff; }
+.preview-foot { margin-top: 12px; }
 </style>

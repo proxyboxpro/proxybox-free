@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { isDark } from '../theme'
 
 const props = defineProps({
   value:  { type: Number, default: 0 },
@@ -103,6 +104,11 @@ const needle = computed(() => {
   return { tip, base }
 })
 
+// Theme-aware stroke/text colours (the SVG can't read antd tokens directly).
+const palette = computed(() => (isDark.value
+  ? { track: 'rgba(255,255,255,0.10)', minor: 'rgba(148,163,184,0.32)', major: 'rgba(226,232,240,0.6)', label: '#94a3b8', needle: '#f1f5f9', hubFill: '#1e293b', hubStroke: 'rgba(241,245,249,0.45)', value: '#f8fafc', unit: '#64748b' }
+  : { track: 'rgba(15,23,42,0.10)', minor: 'rgba(71,85,105,0.30)', major: 'rgba(51,65,85,0.65)', label: '#64748b', needle: '#0f172a', hubFill: '#ffffff', hubStroke: 'rgba(15,23,42,0.35)', value: '#0f172a', unit: '#64748b' }))
+
 const statusClass = computed(() => `st-${props.status || 'idle'}`)
 const displayLabel = computed(() => {
   if (props.label) return props.label
@@ -124,18 +130,18 @@ function formattedValue() {
   <div class="speed-gauge" :class="statusClass" :style="{ width: size + 'px', height: size + 'px' }">
     <svg :viewBox="`0 0 ${size} ${size}`" :width="size" :height="size">
       <!-- Single faded background track. No filled colored arc. -->
-      <path :d="trackPath" stroke="rgba(255,255,255,0.10)" :stroke-width="2" stroke-linecap="round" fill="none" />
+      <path :d="trackPath" :stroke="palette.track" :stroke-width="2" stroke-linecap="round" fill="none" />
 
       <!-- Minor tick marks -->
-      <g stroke="rgba(148, 163, 184, 0.32)" stroke-width="1" stroke-linecap="round">
+      <g :stroke="palette.minor" stroke-width="1" stroke-linecap="round">
         <line v-for="(t, i) in minorTicks" :key="'mn'+i" :x1="t.p1.x" :y1="t.p1.y" :x2="t.p2.x" :y2="t.p2.y" />
       </g>
 
       <!-- Major tick marks + labels -->
-      <g stroke="rgba(226, 232, 240, 0.6)" stroke-width="1.8" stroke-linecap="round">
+      <g :stroke="palette.major" stroke-width="1.8" stroke-linecap="round">
         <line v-for="(t, i) in majorTicks" :key="'mj'+i" :x1="t.p1.x" :y1="t.p1.y" :x2="t.p2.x" :y2="t.p2.y" />
       </g>
-      <g fill="#94a3b8" :font-size="size > 240 ? 11 : 9" font-family="ui-monospace, monospace" text-anchor="middle">
+      <g :fill="palette.label" :font-size="size > 240 ? 11 : 9" font-family="ui-monospace, monospace" text-anchor="middle">
         <text v-for="(t, i) in majorTicks" :key="'lb'+i" :x="t.labelP.x" :y="t.labelP.y + 3">{{ t.lbl }}</text>
       </g>
 
@@ -143,11 +149,11 @@ function formattedValue() {
       <line
         :x1="needle.base.x" :y1="needle.base.y"
         :x2="needle.tip.x"  :y2="needle.tip.y"
-        stroke="#f1f5f9" stroke-width="2.5" stroke-linecap="round"
+        :stroke="palette.needle" stroke-width="2.5" stroke-linecap="round"
         style="transition: all 240ms cubic-bezier(.32,.72,.32,1)"
       />
-      <circle :cx="CX" :cy="CY" r="8" fill="#1e293b" stroke="rgba(241,245,249,0.45)" stroke-width="1" />
-      <circle :cx="CX" :cy="CY" r="3" fill="#f1f5f9" />
+      <circle :cx="CX" :cy="CY" r="8" :fill="palette.hubFill" :stroke="palette.hubStroke" stroke-width="1" />
+      <circle :cx="CX" :cy="CY" r="3" :fill="palette.needle" />
 
       <!-- Center digit -->
       <text
@@ -155,7 +161,7 @@ function formattedValue() {
         :font-size="size > 240 ? 44 : 32"
         font-weight="700"
         font-family="'JetBrains Mono', ui-monospace, monospace"
-        fill="#f8fafc" text-anchor="middle"
+        :fill="palette.value" text-anchor="middle"
         style="letter-spacing: -0.02em"
       >{{ formattedValue() }}</text>
       <text
@@ -163,7 +169,7 @@ function formattedValue() {
         :font-size="size > 240 ? 12 : 10"
         font-weight="500"
         font-family="ui-monospace, monospace"
-        fill="#64748b" text-anchor="middle"
+        :fill="palette.unit" text-anchor="middle"
       >Mbps</text>
     </svg>
     <div class="sg-status" :class="statusClass">
@@ -184,10 +190,10 @@ function formattedValue() {
   bottom: 4%;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 10px;
-  background: rgba(15, 20, 27, 0.7);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--pb-surface-2);
+  border: 1px solid var(--pb-border-soft);
   border-radius: 999px;
-  font-size: 11px; color: var(--muted, #94a3b8);
+  font-size: 11px; color: var(--pb-text-3, #94a3b8);
   font-family: ui-monospace, monospace;
 }
 .sg-dot { width: 5px; height: 5px; border-radius: 50%; background: #64748b; }

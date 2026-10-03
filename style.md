@@ -1,181 +1,116 @@
-# ProxyBox design system — "security hacker / NetOps console" style
+# ProxyBox UI — Ant Design (ant-design-vue 4) conventions
 
-Visual reference: Portmaster SPN, Wireshark, Cloudflare Zero Trust, btop, Bitwarden vault.
-Goal: dark technical console — dense info, monospace data, vivid status, minimal chrome.
+The whole SPA is built on **[ant-design-vue 4](https://antdv.com)** (the Vue 3
+port of Ant Design v5: CSS-in-JS design tokens, dark algorithm, `a-app`,
+`a-flex`, `a-segmented`, `a-tour`, `a-qrcode`, `a-float-button`…). There is no
+hand-rolled component CSS any more: every button, input, table, card, tag,
+modal and layout primitive is an antd component.
 
-## 1. Tokens
+## 1. Setup (already wired)
 
-```css
-:root {
-  /* surface */
-  --bg:        #0a0e14;   /* near-black blue (background)              */
-  --surface:   #11161d;   /* card surface (slightly lighter)            */
-  --surface-2: #161c25;   /* nested surface / inputs                    */
-  --raised:    #1c232e;   /* hover / active raised card                 */
-  --border:    #232a36;   /* faint border between surfaces              */
-  --border-soft: #1a2029; /* even fainter divider inside cards          */
+| Piece | Where |
+|---|---|
+| Auto-import of `<a-*>` components and `<XxxOutlined/>` icons in templates | `vite.config.js` (`unplugin-vue-components` + `AntDesignVueResolver`) |
+| Theme tokens (dark + light algorithm, brand green `#16a34a`, Inter / JetBrains Mono) | `src/theme.js` → `antdTheme` |
+| `<a-config-provider>` (theme + vi_VN/en_US locale) and `<a-app>` | `src/App.vue` |
+| Theme-aware `message` / `modal` / `notification`, `confirmAsync`, `promptAsync` | `src/ui/feedback.js` |
+| Status pill (`active`, `pending`, `expired`, `error`, …) | `src/components/ui/StatusTag.vue` |
+| Logo, theme + language switch | `src/components/ui/BrandLogo.vue`, `ThemeLangSwitch.vue` |
+| Global CSS (fonts, reset, `.page`, `.mono`, `--pb-*` vars) | `src/styles/global.css` |
 
-  /* text */
-  --text:      #e6edf3;   /* primary text (off-white)                   */
-  --muted:     #7d8590;   /* labels, metadata                           */
-  --dim:       #545d68;   /* tertiary / inactive                        */
+Templates use `<a-button>`, `<a-table>`, `<ReloadOutlined />` … directly — no
+import needed. Script code imports JS APIs explicitly
+(`import { Grid } from 'ant-design-vue'`) and icons that are used from script
+(`h(UserOutlined)`) from `@ant-design/icons-vue`.
 
-  /* signal colors (status / accent) — vivid, near-CRT */
-  --green:     #3fb950;   /* secure / active / pass                     */
-  --green-soft:#0e2e1a;   /* tinted bg behind green text                */
-  --red:       #f85149;   /* error / blocked / danger                   */
-  --red-soft:  #2e0e10;
-  --yellow:    #d29922;   /* warn / expiring / grace                    */
-  --yellow-soft:#2b2410;
-  --blue:      #58a6ff;   /* info / link / customer                     */
-  --blue-soft: #0d1e30;
-  --cyan:      #39d0d8;   /* IPv6 / encrypted / monitor                 */
-  --magenta:   #d2a8ff;   /* admin / role                               */
+## 2. Page skeleton
 
-  /* radius + shadow */
-  --radius:    8px;
-  --radius-sm: 6px;
-  --shadow:    0 1px 0 rgba(255,255,255,0.02) inset, 0 1px 2px rgba(0,0,0,0.3);
+Layouts (`AppLayout.vue` for `/admin/*`, `CustomerLayout.vue` for the customer
+portal) already render the page title in the header, the sider menu, the
+notification bell, theme + language switch and the broadcast banner. A routed
+view therefore renders **only its content**:
 
-  /* fonts */
-  --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', Menlo, monospace;
-  --sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-}
+```vue
+<template>
+  <div class="page">                         <!-- flex column, 16px gap -->
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">Short description</a-typography-text>
+      <a-space wrap>
+        <a-button :loading="loading" @click="refresh"><template #icon><ReloadOutlined /></template>Refresh</a-button>
+        <a-button type="primary" @click="openCreate"><template #icon><PlusOutlined /></template>New</a-button>
+      </a-space>
+    </a-flex>
+
+    <a-row :gutter="[12, 12]">               <!-- KPI row -->
+      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic title="Total" :value="stats.total" /></a-card></a-col>
+    </a-row>
+
+    <a-card title="Section">…</a-card>
+  </div>
+</template>
 ```
 
-## 2. Typography
+Do not repeat the page title as a big heading (the layout header shows it).
 
-| Use case | Font | Size | Weight | Letter-spacing |
-|----------|------|------|--------|----------------|
-| Page title `<h1>` | sans | 18px | 600 | -0.01em |
-| Section `<h2>` | sans | 14px | 600 | normal |
-| Body | sans | 13px | 400 | normal |
-| Eyebrow / label | sans | 10.5px | 600 | 0.08em UPPERCASE |
-| **IP / port / hash / hostname / id / cmd** | **mono** | **12.5px** | 400 | 0 |
-| Metric value | sans | 22px | 600 | -0.02em |
-| Code block | mono | 12px | 400 | 0 |
+## 3. Component mapping (old custom CSS → antd)
 
-**Rule**: ANY technical string (IP, port, MAC, hash, hostname, proxy id, order id, file path, command) MUST be `.cell-mono` / `<code>`. Plain English labels stay sans.
+| Old pattern | Use |
+|---|---|
+| `.surface`, `.px-card`, section boxes | `<a-card>` (`size="small"` for dense panels, `:title`, `#extra` slot for actions) |
+| `.metric-card` / KPI tiles | `<a-card size="small"><a-statistic …/></a-card>` inside `<a-row :gutter>` / `<a-col :xs :sm :md :xl>` |
+| `.data-table` / `.table-row` grids / `<table>` | `<a-table :columns :data-source row-key size="middle" :scroll="{ x: … }">` + `#bodyCell` slot; client pagination via `:pagination` |
+| Key/value detail panel | `<a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 3 }">` |
+| Plain list of rows | `<a-list>` |
+| `.ghost-button` | `<a-button>` (default) · `.primary-action` → `type="primary"` · destructive → `danger` · inline links → `type="link"` · icon only → `shape="circle"` + `#icon` |
+| `<input>` / `<select>` / `<textarea>` / checkbox / radio | `<a-input>`, `<a-input-password>`, `<a-input-number>`, `<a-input-search>`, `<a-select>`, `<a-textarea>`, `<a-checkbox>`, `<a-radio-group>`, `<a-switch>`, `<a-slider>`, `<a-date-picker>` |
+| Any form | `<a-form :model layout="vertical" @finish>` + `<a-form-item label name :rules>`; inline filters: `layout="inline"` or an `a-flex` of controls |
+| `.segment-tabs`, `.chips` filters | `<a-segmented v-model:value :options>` or `<a-radio-group button-style="solid">` |
+| Page tabs | `<a-tabs v-model:active-key>` |
+| `.status-pill`, coloured `.tag` spans | `<StatusTag :status>` or `<a-tag :color :bordered="false">` |
+| `.error-text` / flash text | `message.success/error()` for action results; `<a-alert type="error" show-icon>` for persistent load errors |
+| `.empty-text` | `<a-empty>` or the table's `:locale="{ emptyText }"` |
+| Loading `...` | `:loading` on `a-table` / `a-card` / `a-button`, `<a-spin>`, `<a-skeleton>` |
+| Copyable value (IP, key, token, URL) | `<a-typography-text :copyable="{ text }" class="mono">` or `<a-typography-paragraph copyable>` |
+| Code / command block | `<a-typography-paragraph><pre class="mono">…</pre></a-typography-paragraph>` or `a-card` with `<pre>` |
+| Progress / usage bars | `<a-progress :percent size="small">` (`type="dashboard"` for gauges) |
+| Hover hints (`title=`) | `<a-tooltip :title>` |
+| Collapsible / FAQ | `<a-collapse>` |
+| Steps / wizard | `<a-steps>` |
+| Timeline / changelog | `<a-timeline>` |
+| Modals / dialogs | `<a-modal v-model:open :title @ok :confirm-loading>`; side panels → `<a-drawer>` |
+| `window.confirm()` | `await confirmAsync({ title, content, danger: true })` (or `<a-popconfirm>` on a button) |
+| `window.prompt()` | `await promptAsync({ title, defaultValue, inputType })` — or a proper `a-modal` + `a-form` when there are several fields |
+| `window.alert()` | `message.info()` / `modal.info()` |
+| Result / success screen | `<a-result status title sub-title>` |
+| QR code | `<a-qrcode :value>` |
+| Lucide icons | `@ant-design/icons-vue` (`ReloadOutlined`, `DeleteOutlined`, `CopyOutlined`, `CloudServerOutlined`, `GlobalOutlined`, …) |
 
-## 3. Status pill palette
+Charts stay on ApexCharts (`vue3-apexcharts`) — wrap them in an `a-card` and
+pick colours/`theme.mode` from `isDark` (`src/theme.js`).
 
-Compact, rounded-full, 11px uppercase, bold colored text on tinted background.
+## 4. Typography & data
 
-```
-active   green text + green-soft bg + green dot
-online   same as active
-pending  yellow text + yellow-soft bg
-warning  yellow same
-grace    yellow with pulse animation (about to expire)
-expired  dim + line-through
-error    red + red-soft + red dot pulse
-failed   same as error
-suspended red striped
-disabled dim
-node-down red striped
-```
+* Technical strings (IP, port, host, hash, id, order id, API key, command) →
+  `class="mono"` (JetBrains Mono). Labels stay sans (Inter). Put `.mono` on
+  text elements only, never on an `a-button` / `a-radio-button`.
+* Money: keep the existing formatting helpers; right-align numeric table columns (`align: 'right'`).
+* Status: green = active/ok, orange = pending/warning/expiring, red = error/suspended, grey = expired/disabled — `StatusTag` handles the mapping.
 
-Dot indicator pulses when status is in active/error state — 1.5s ease-in-out infinite.
+## 5. Responsiveness
 
-## 4. Layout primitives
+* Use `a-row`/`a-col` breakpoints (`xs` 1-col on phones) and `a-flex wrap="wrap"`.
+* Wide tables: `:scroll="{ x: <min width> }"`.
+* `Grid.useBreakpoint()` (from `ant-design-vue`) when logic must differ on mobile.
+* The layouts switch the sider to an `a-drawer` below `lg` (992px).
 
-### Sidebar
-- Width 220px expanded, 56px collapsed (icon-only)
-- `bg: var(--bg)`, no border, divider only via `--border` after each group
-- Group label: 9.5px uppercase muted, padding 12px 14px 4px
-- Item: 7px 12px padding, 13px sans, icon 16px
-- Item active: `bg: var(--surface)` + left border 2px green + bold text
-- Item hover: `bg: var(--surface)` + text-color lift
+## 6. Styling rules
 
-### Topbar
-- Height 48px, `bg: var(--bg)`, border-bottom `--border`
-- Left: breadcrumb (eyebrow + h1)
-- Right: 1-line metric strip ("CPU 12% · RAM 41% · Net 12 Mbps · Conns 234") + lang toggle
-
-### Card / Surface
-- `bg: var(--surface)`, `border: 1px solid var(--border)`, `--radius`
-- Section head: 12px padding, h2 + status pill right-aligned
-- Inner padding 14px
-
-### Data table
-- Header row: `bg: var(--surface-2)`, 11px uppercase muted
-- Body row: 8px 12px padding, hover `bg: var(--raised)`
-- Mono cells default; sans for label cells
-
-### Code/credential box
-- `bg: var(--surface-2)`, `border: 1px solid var(--border)`
-- Mono 12.5px, padding 9px 12px, copy button right
-- Long strings: `word-break: break-all`
-
-### Metric card
-- 14px padding, surface bg
-- Label: eyebrow style
-- Value: 22px bold sans (sometimes mono if it's a count like ASN/IP)
-- Optional foot: 11px muted
-
-### Sparkline / chart
-- Stroke: `var(--green)` for in, `var(--red)` for out, 1.5px
-- Fill below: gradient from accent at 30% opacity → transparent
-- No grid lines; mute only at peak label
-
-## 5. Specific patterns from the reference
-
-### Connection row (Portmaster-style)
-```
-●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-●  cache2-fra2.steamcontent.com   DE  ↗ 155.133.226.18:443  TCP  ended 3m ago
-```
-- Left: status dot (green/red/yellow)
-- Sans hostname → mono IP + port
-- Country flag inline (DE, US, VN…)
-- Action label "ended", "active", "blocked" muted right
-
-### Action button strip
-- Ghost-style: transparent bg, `--border` outline, hover `--surface-2`
-- Primary action: solid `--green` bg + black text + bold + glow shadow
-
-### Toggle (Use SPN, Block Connections)
-- Pill switch, 36×20px
-- On: `--green` bg + checkmark
-- Off: `--surface-2` bg + dim
-
-## 6. Density rules
-
-- Card padding: 14px (was 18-20px in light theme)
-- Row padding: 8px vertical (was 12px)
-- Gap between cards: 10px (was 14px)
-- Page padding: 18px
-- Always show all info; don't truncate IPs/hashes with ellipsis — wrap mono.
-
-## 7. Iconography
-
-- Lucide icons, 16-18px, stroke-width 1.5
-- Color: inherit from text — never colored except status dots
-- Allowed accent icons: lock (encrypted), shield (secure), zap (rotate), eye-off (private)
-
-## 8. Animation budget
-
-- Status dot pulse: opacity 0.4↔1.0, 1.5s
-- Card hover: `transform: translateY(-1px)` 120ms
-- Status change: 200ms color crossfade
-- Modal/dialog: NOT used — everything inline
-- No spinners; use "..." text or skeleton row
-
-## 9. Don't
-
-- No light backgrounds anywhere (no `#fff`, no `#f8fafc`)
-- No emoji except country flags in connection rows
-- No rounded-full buttons (only rounded-md, 6-8px)
-- No blue/purple gradients — flat colors only
-- No "Material" shadows — single subtle inset shadow only
-- No serif fonts ever
-
-## 10. Required font import
-
-```html
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-```
-
-Or self-host in `/dist/assets/fonts/` — but CSP must allow.
+* No colours hard-coded for surfaces/text — rely on antd tokens. When a scoped
+  style really needs a theme colour use the `--pb-*` variables from
+  `src/styles/global.css` (`--pb-text-2`, `--pb-border`, `--pb-primary`, …).
+* Keep `<style scoped>` small: spacing / sizing / layout tweaks only. Never
+  re-style antd internals globally; use component props and theme tokens first.
+* Content teleported by antd (modals, drawers, dropdowns, popovers) is outside
+  the scoped tree — style it with `:deep()` on a wrapper or a class passed via
+  `wrap-class-name` / `root-class-name` / `overlay-class-name` in an unscoped block.
+* Both dark (default) and light themes must look right.

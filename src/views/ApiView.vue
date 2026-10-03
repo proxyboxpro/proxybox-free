@@ -1,5 +1,4 @@
 <script setup>
-import { BookOpen, Plus } from 'lucide-vue-next'
 import { useI18n } from '../i18n'
 
 const { t } = useI18n()
@@ -18,52 +17,82 @@ const endpoints = [
   ['POST', '/api/proxies/:id/renew', '{ days }'],
   ['DELETE', '/api/proxies/:id', 'stop + remove'],
   ['POST', '/api/orders', '{ type, rotate?, quantity, duration } → many proxies']
+].map(([method, path, desc]) => ({ key: `${method} ${path}`, method, path, desc }))
+
+const columns = [
+  { key: 'method', dataIndex: 'method', width: 90 },
+  { key: 'path', dataIndex: 'path', width: 280 },
+  { key: 'desc', dataIndex: 'desc' }
 ]
-</script>
+const METHOD_COLOR = { GET: 'blue', POST: 'green', PATCH: 'orange', DELETE: 'red' }
 
-<template>
-  <section class="page-stack">
-    <section class="surface api-panel">
-      <div class="section-head">
-        <h2>{{ t('api.keys') }}</h2>
-        <button class="primary-action small" type="button"><Plus :size="16" /> {{ t('api.createKey') }}</button>
-      </div>
-      <div class="credential-box"><code>pk_live_proxyhub_8f42****************</code></div>
-      <div class="detail-grid">
-        <div><span>{{ t('api.rateLimit') }}</span><strong>600 req/min</strong></div>
-        <div><span>{{ t('api.webhook') }}</span><strong>https://domain.com/proxyhook</strong></div>
-        <div><span>{{ t('api.lastUsed') }}</span><strong>2026-05-12 09:40</strong></div>
-      </div>
-    </section>
-
-    <section class="surface">
-      <div class="section-head">
-        <h2>{{ t('api.endpoints') }}</h2>
-        <span class="eyebrow">docs/API.md</span>
-      </div>
-      <div class="data-table">
-        <div v-for="row in endpoints" :key="row[1]" class="table-row" style="grid-template-columns: 70px 1.4fr 2fr;">
-          <span class="tag">{{ row[0] }}</span>
-          <span class="cell-mono">{{ row[1] }}</span>
-          <span style="color: var(--muted);">{{ row[2] }}</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="surface">
-      <div class="section-head">
-        <h2>{{ t('api.quick') }}</h2>
-        <BookOpen :size="18" />
-      </div>
-      <pre><code># Auth header on every call
-Authorization: Bearer &lt;token&gt;     # or:   X-API-Key: &lt;api.apiKey&gt;
+const quickSnippet = `# Auth header on every call
+Authorization: Bearer <token>     # or:   X-API-Key: <api.apiKey>
 
 # IPv4 proxy → exits via its own bindIp
 curl -x http://USER:PASS@HOST:PORT https://api.ipify.org
 
 # IPv6 proxy → connect over IPv4, exit is IPv6-only
 curl -x http://USER:PASS@HOST:PORT https://api64.ipify.org
-#   ...with rotation on, each call exits from a different IPv6 in the /48</code></pre>
-    </section>
-  </section>
+#   ...with rotation on, each call exits from a different IPv6 in the /48`
+</script>
+
+<template>
+  <div class="page">
+    <a-card :title="t('api.keys')">
+      <template #extra>
+        <a-button type="primary" size="small">
+          <template #icon><PlusOutlined /></template>
+          {{ t('api.createKey') }}
+        </a-button>
+      </template>
+      <a-typography-paragraph>
+        <a-typography-text code class="mono key">pk_live_proxyhub_8f42****************</a-typography-text>
+      </a-typography-paragraph>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 1, md: 3 }">
+        <a-descriptions-item :label="t('api.rateLimit')"><span class="mono">600 req/min</span></a-descriptions-item>
+        <a-descriptions-item :label="t('api.webhook')"><span class="mono">https://domain.com/proxyhook</span></a-descriptions-item>
+        <a-descriptions-item :label="t('api.lastUsed')"><span class="mono">2026-05-12 09:40</span></a-descriptions-item>
+      </a-descriptions>
+    </a-card>
+
+    <a-card :title="t('api.endpoints')" :body-style="{ padding: 0 }">
+      <template #extra><a-typography-text type="secondary" class="mono">docs/API.md</a-typography-text></template>
+      <a-table
+        :columns="columns"
+        :data-source="endpoints"
+        :pagination="false"
+        :show-header="false"
+        row-key="key"
+        size="small"
+        :scroll="{ x: 760 }"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'method'">
+            <a-tag :color="METHOD_COLOR[record.method]" :bordered="false" class="mono">{{ record.method }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'path'">
+            <span class="mono">{{ record.path }}</span>
+          </template>
+          <template v-else-if="column.key === 'desc'">
+            <a-typography-text type="secondary">{{ record.desc }}</a-typography-text>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-card :title="t('api.quick')">
+      <template #extra><BookOutlined /></template>
+      <a-typography-paragraph :copyable="{ text: quickSnippet }" class="snippet">
+        <pre class="mono">{{ quickSnippet }}</pre>
+      </a-typography-paragraph>
+    </a-card>
+  </div>
 </template>
+
+<style scoped>
+.key { font-size: 14px; }
+.snippet { position: relative; margin-bottom: 0; }
+.snippet pre { margin: 0; overflow-x: auto; white-space: pre; }
+.snippet :deep(.ant-typography-copy) { position: absolute; top: 8px; right: 8px; }
+</style>

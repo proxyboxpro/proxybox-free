@@ -1,12 +1,16 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Activity, Building2, Download, Gauge, Loader2, MapPin, Play, Server } from 'lucide-vue-next'
+import { Grid } from 'ant-design-vue'
 import { apiFetch, ApiError } from '../../api'
 import { useI18n } from '../../i18n'
 import CountryFlag from '../../components/CountryFlag.vue'
 import SpeedGauge from '../../components/SpeedGauge.vue'
+import StatusTag from '../../components/ui/StatusTag.vue'
 
 const { t } = useI18n()
+const screens = Grid.useBreakpoint()
+// The gauge is a fixed-size SVG: shrink it on phones so it fits a 390px viewport.
+const gaugeSize = computed(() => (screens.value.sm ? 320 : 260))
 
 const proxies = ref([])
 const proxyId = ref('')
@@ -35,8 +39,19 @@ const SUPPORTED_COUNTRIES = [
   { code: 'FR', name: 'France' },
   { code: 'GB', name: 'United Kingdom' }
 ]
+const countryOptions = SUPPORTED_COUNTRIES.map((c) => ({ label: c.name, value: c.code }))
 
-const selectedProxy = computed(() => proxies.value.find((p) => p.id === proxyId.value) || null)
+const proxyOptions = computed(() => proxies.value.map((p) => ({
+  value: p.id,
+  label: `${p.type} — ${p.ip || p.bindIp}:${p.port} (${p.username})`
+})))
+const ispOptions = computed(() => [
+  { value: 'auto', label: t('cust.tools.speed.ispAuto') },
+  ...isps.value.map((i) => ({
+    value: i.sponsor.toLowerCase(),
+    label: `${i.sponsor} (${i.serverCount} server${i.serverCount > 1 ? 's' : ''})`
+  }))
+])
 
 async function loadProxies() {
   try {
@@ -52,13 +67,14 @@ async function loadIsps() {
   try {
     const r = await apiFetch(`/api/v1/user/tools/speedtest-isps?country=${country.value}`)
     isps.value = r.isps || []
-  } catch (e) { /* keep silent — ISP picker just won't have options */ }
+  } catch { /* keep silent — ISP picker just won't have options */ }
   finally { ispsLoading.value = false }
 }
 
 watch(country, () => { isp.value = 'auto'; loadIsps() })
 
 async function runTest() {
+  if (busy.value) return
   err.value = ''
   result.value = null
   if (!proxyId.value) { err.value = t('cust.tools.speed.errNoProxy'); return }
@@ -83,14 +99,6 @@ function fmtBytes(b) {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`
 }
 
-const speedColor = computed(() => {
-  if (!result.value?.mbps) return 'var(--muted)'
-  const m = result.value.mbps
-  if (m >= 50) return 'var(--green)'
-  if (m >= 10) return 'var(--yellow)'
-  return 'var(--red)'
-})
-
 onMounted(async () => {
   await loadProxies()
   loadIsps()
@@ -98,204 +106,114 @@ onMounted(async () => {
 </script>
 
 <template>
-  <h1>{{ t('cust.tools.speed.title') }}</h1>
-  <p class="sub">{{ t('cust.tools.speed.subtitle') }}</p>
+  <div class="page">
+    <a-typography-text type="secondary">{{ t('cust.tools.speed.subtitle') }}</a-typography-text>
 
-  <section class="surface" style="padding:18px; margin-bottom:14px">
-    <div class="section-head">
-      <h2><Gauge :size="14" /> {{ t('cust.tools.speed.inputHead') }}</h2>
-    </div>
+    <a-card size="small">
+      <template #title><DashboardOutlined /> {{ t('cust.tools.speed.inputHead') }}</template>
 
-    <div v-if="!proxies.length" class="empty-text" style="text-align:left">
-      {{ t('cust.tools.speed.noProxy') }}
-    </div>
+      <a-alert v-if="!proxies.length" type="info" show-icon :message="t('cust.tools.speed.noProxy')" />
 
-    <div v-else class="speed-form">
-      <label class="field">
-        <span>{{ t('cust.tools.speed.proxy') }}</span>
-        <select v-model="proxyId">
-          <option v-for="p in proxies" :key="p.id" :value="p.id">
-            {{ p.type }} — {{ p.ip || p.bindIp }}:{{ p.port }} ({{ p.username }})
-          </option>
-        </select>
-      </label>
+      <a-form v-else layout="vertical" @submit="runTest">
+        <a-row :gutter="12">
+          <a-col :xs="24" :lg="12">
+            <a-form-item :label="t('cust.tools.speed.proxy')">
+              <a-select
+                v-model:value="proxyId"
+                :options="proxyOptions"
+                show-search
+                option-filter-prop="label"
+                class="mono-field"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item :label="t('cust.tools.speed.country')">
+              <a-select v-model:value="country" :options="countryOptions" show-search option-filter-prop="label">
+                <template #option="{ value, label }">
+                  <a-space :size="8"><CountryFlag :code="value" :size="14" />{{ label }}</a-space>
+                </template>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="6">
+            <a-form-item>
+              <template #label>
+                {{ t('cust.tools.speed.isp') }}
+                <a-typography-text v-if="ispsLoading" type="secondary" class="loading-isps">({{ t('cust.tools.speed.loadingIsps') }})</a-typography-text>
+              </template>
+              <a-select v-model:value="isp" :options="ispOptions" :loading="ispsLoading" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-button type="primary" html-type="submit" :loading="busy" :disabled="!proxyId">
+          <template #icon><CaretRightOutlined /></template>
+          {{ busy ? t('cust.tools.speed.running') : t('cust.tools.speed.run') }}
+        </a-button>
+      </a-form>
 
-      <label class="field">
-        <span>{{ t('cust.tools.speed.country') }}</span>
-        <select v-model="country">
-          <option v-for="c in SUPPORTED_COUNTRIES" :key="c.code" :value="c.code">{{ c.name }}</option>
-        </select>
-      </label>
+      <a-alert v-if="err" type="error" show-icon :message="err" class="below" />
+      <a-typography-paragraph v-else type="secondary" class="below hint">
+        <InfoCircleOutlined /> {{ t('cust.tools.speed.hint') }}
+      </a-typography-paragraph>
+    </a-card>
 
-      <label class="field">
-        <span>
-          {{ t('cust.tools.speed.isp') }}
-          <em v-if="ispsLoading" style="color:var(--muted); font-style:normal; font-size:11px">
-            ({{ t('cust.tools.speed.loadingIsps') }})
-          </em>
-        </span>
-        <select v-model="isp">
-          <option value="auto">{{ t('cust.tools.speed.ispAuto') }}</option>
-          <option v-for="i in isps" :key="i.sponsor" :value="i.sponsor.toLowerCase()">
-            {{ i.sponsor }} ({{ i.serverCount }} server{{ i.serverCount > 1 ? 's' : '' }})
-          </option>
-        </select>
-      </label>
+    <!-- Live gauge — visible during run + after result. Idle when neither. -->
+    <a-card v-if="busy || result" size="small">
+      <a-flex vertical align="center" gap="small" class="gauge-wrap">
+        <SpeedGauge
+          :value="busy ? 0 : (result?.mbps || 0)"
+          :max="null"
+          :status="busy ? 'running' : (result?.ok ? 'done' : result ? 'error' : 'idle')"
+          :label="busy ? t('cust.tools.speed.runningHint') : ''"
+          :size="gaugeSize"
+        />
+        <a-typography-text v-if="busy" type="secondary">{{ t('cust.tools.speed.runningHint') }}</a-typography-text>
+      </a-flex>
+    </a-card>
 
-      <button
-        type="button"
-        class="btn-run"
-        :disabled="busy || !proxyId"
-        @click="runTest"
-      >
-        <Loader2 v-if="busy" :size="14" class="spin" />
-        <Play v-else :size="14" />
-        {{ busy ? t('cust.tools.speed.running') : t('cust.tools.speed.run') }}
-      </button>
-    </div>
+    <a-card v-if="result && !busy" size="small">
+      <template #title><LineChartOutlined /> {{ t('cust.tools.speed.resultHead') }}</template>
+      <template #extra>
+        <StatusTag
+          :status="result.ok ? 'success' : 'failed'"
+          :label="result.ok ? t('cust.tools.speed.success') : t('cust.tools.speed.failed')"
+        />
+      </template>
 
-    <p v-if="err" class="error-text" style="margin-top:12px">{{ err }}</p>
-    <p v-else class="hint-text">{{ t('cust.tools.speed.hint') }}</p>
-  </section>
+      <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, lg: 3 }">
+        <a-descriptions-item>
+          <template #label><CloudServerOutlined /> {{ t('cust.tools.speed.server') }}</template>
+          <a-space :size="6"><BankOutlined />{{ result.server?.sponsor || '—' }}</a-space>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><EnvironmentOutlined /> {{ t('cust.tools.speed.location') }}</template>
+          {{ result.server?.name || '—' }}, {{ result.server?.country || '—' }}
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.speed.endpoint')">
+          <span class="mono">{{ result.server?.host }}:{{ result.server?.port }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item>
+          <template #label><DownloadOutlined /> {{ t('cust.tools.speed.totalBytes') }}</template>
+          <span class="mono">{{ fmtBytes(result.totalBytes) }}</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.speed.duration')">
+          <span class="mono">{{ (result.durationMs / 1000).toFixed(2) }} s</span>
+        </a-descriptions-item>
+        <a-descriptions-item :label="t('cust.tools.speed.ttfb')">
+          <span class="mono">{{ result.ttfbMs ? `${result.ttfbMs} ms` : '—' }}</span>
+        </a-descriptions-item>
+      </a-descriptions>
 
-  <!-- Live gauge — visible during run + after result. Idle when neither. -->
-  <section v-if="busy || result" class="surface" style="padding:24px; display:flex; flex-direction:column; align-items:center; gap:10px">
-    <SpeedGauge
-      :value="busy ? 0 : (result?.mbps || 0)"
-      :max="null"
-      :status="busy ? 'running' : (result?.ok ? 'done' : result ? 'error' : 'idle')"
-      :label="busy ? t('cust.tools.speed.runningHint') : ''"
-      :size="320"
-    />
-    <p v-if="busy" style="color:var(--muted); font-size:12.5px; margin:0">
-      {{ t('cust.tools.speed.runningHint') }}
-    </p>
-  </section>
-
-  <section v-if="result && !busy" class="surface" style="padding:18px">
-    <div class="section-head">
-      <h2><Activity :size="14" /> {{ t('cust.tools.speed.resultHead') }}</h2>
-      <span :class="['status-pill', result.ok ? 'active' : 'expired']">
-        {{ result.ok ? t('cust.tools.speed.success') : t('cust.tools.speed.failed') }}
-      </span>
-    </div>
-
-    <div class="speed-stats-grid">
-      <div class="stat-cell">
-        <span class="lbl"><Server :size="12" /> {{ t('cust.tools.speed.server') }}</span>
-        <span class="val">
-          <Building2 :size="13" style="vertical-align:-2px; color:var(--blue)" />
-          {{ result.server?.sponsor || '—' }}
-        </span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl"><MapPin :size="12" /> {{ t('cust.tools.speed.location') }}</span>
-        <span class="val">{{ result.server?.name || '—' }}, {{ result.server?.country || '—' }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.speed.endpoint') }}</span>
-        <span class="cell-mono val">{{ result.server?.host }}:{{ result.server?.port }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl"><Download :size="12" /> {{ t('cust.tools.speed.totalBytes') }}</span>
-        <span class="cell-mono val">{{ fmtBytes(result.totalBytes) }}</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.speed.duration') }}</span>
-        <span class="cell-mono val">{{ (result.durationMs / 1000).toFixed(2) }} s</span>
-      </div>
-      <div class="stat-cell">
-        <span class="lbl">{{ t('cust.tools.speed.ttfb') }}</span>
-        <span class="cell-mono val">{{ result.ttfbMs ? `${result.ttfbMs} ms` : '—' }}</span>
-      </div>
-    </div>
-
-    <div v-if="result.error" class="error-text" style="margin-top:12px">{{ result.error }}</div>
-  </section>
+      <a-alert v-if="result.error" type="error" show-icon :message="result.error" class="below" />
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.sub { color: var(--muted); margin: 2px 0 14px; }
-
-.speed-form {
-  display: grid;
-  grid-template-columns: 1fr 200px 200px auto;
-  gap: 12px;
-  align-items: end;
-  margin-top: 12px;
-}
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-.field select {
-  height: 38px; padding: 0 10px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-  color: var(--text); font-family: var(--mono); font-size: 13px; outline: none;
-}
-.field select:focus { border-color: var(--green); }
-
-.btn-run {
-  height: 38px; padding: 0 18px;
-  background: var(--green); color: #0a0e14;
-  border: 1px solid var(--green); border-radius: var(--radius);
-  font-size: 13px; font-weight: 600; cursor: pointer;
-  display: inline-flex; align-items: center; gap: 8px;
-  transition: filter 120ms, transform 80ms;
-}
-.btn-run:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
-.btn-run:active:not(:disabled) { transform: translateY(0); }
-.btn-run:disabled { opacity: 0.55; cursor: not-allowed; }
-
-.spin { animation: speed-spin 0.9s linear infinite; }
-@keyframes speed-spin { to { transform: rotate(360deg); } }
-
-.hint-text { color: var(--muted); font-size: 12px; margin-top: 10px; }
-
-.speed-hero {
-  text-align: center;
-  padding: 30px 20px;
-  margin: 14px 0;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-.speed-main { display: inline-flex; align-items: baseline; gap: 8px; }
-.speed-value {
-  font-size: 64px;
-  font-weight: 700;
-  font-family: var(--mono);
-  line-height: 1;
-  letter-spacing: -0.03em;
-}
-.speed-unit { font-size: 20px; color: var(--muted); font-weight: 500; }
-.speed-label {
-  display: block;
-  font-size: 11.5px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-top: 8px;
-}
-
-.speed-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-.stat-cell {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 4px;
-}
-.stat-cell .lbl {
-  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
-  display: inline-flex; align-items: center; gap: 4px;
-}
-.stat-cell .val { font-size: 13px; color: var(--text); }
-
-@media (max-width: 900px) {
-  .speed-form { grid-template-columns: 1fr 1fr; }
-  .speed-stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .speed-value { font-size: 48px; }
-}
+.below { margin-top: 12px; }
+.hint { margin-bottom: 0; font-size: 12px; }
+.loading-isps { font-size: 11px; margin-inline-start: 4px; }
+.gauge-wrap { padding: 12px 0; }
+.mono-field :deep(input), .mono-field :deep(.ant-select-selection-item) { font-family: var(--pb-mono); }
 </style>

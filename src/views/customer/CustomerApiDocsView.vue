@@ -1,26 +1,29 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ArrowRight, Book, ChevronRight, Copy, Gauge, KeyRound, Lock, Play, Send, ShoppingCart, Terminal, Wrench, Zap } from 'lucide-vue-next'
+import { Grid } from 'ant-design-vue'
+import {
+  BellOutlined, CloudServerOutlined, LockOutlined, ShoppingCartOutlined, ThunderboltOutlined, ToolOutlined,
+  WalletOutlined
+} from '@ant-design/icons-vue'
 import { apiFetch, token as bearerToken } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 
 const { t } = useI18n()
+const screens = Grid.useBreakpoint()
 const account = ref(null)
-const flash = ref('')
 
 async function refresh() {
   try { account.value = await apiFetch('/api/v1/user/account') } catch { /* not logged in */ }
 }
 function copy(text) {
   navigator.clipboard?.writeText(text)
-  flash.value = t('cust.detail.copied') || 'Copied!'
-  setTimeout(() => flash.value = '', 1500)
+  message.success(t('cust.detail.copied') || 'Copied!')
 }
 
 // Customer API key (X-Customer-Key header) — masked unless revealed.
 const apiKey = computed(() => account.value?.apiKey || '••••••••••••••••')
 const reveal = ref(false)
-const revealToken = ref(false)
 const sessionToken = computed(() => bearerToken.value || '')
 const baseUrl = computed(() => typeof location !== 'undefined' ? location.origin : 'https://proxyhub.local')
 
@@ -43,6 +46,11 @@ function ensureTry(gid, i, e) {
     }
   }
   return tryState[k]
+}
+function tryOf(gid, i) { return tryState[tryKeyOf(gid, i)] }
+function toggleTry(gid, i, e) {
+  const s = ensureTry(gid, i, e)
+  s.open = !s.open
 }
 async function runTry(gid, i, e) {
   const s = ensureTry(gid, i, e)
@@ -71,11 +79,13 @@ async function runTry(gid, i, e) {
     s.durationMs = Math.round(performance.now() - t0)
   } finally { s.busy = false }
 }
+function statusColor(code) { return code < 300 ? 'success' : code < 400 ? 'warning' : 'error' }
+const METHOD_COLOR = { GET: 'green', POST: 'blue', PUT: 'orange', PATCH: 'orange', DELETE: 'red' }
 
 // Endpoint groups. Each endpoint: method + path + description + sample request/response.
 const groups = computed(() => [
   {
-    id: 'flow', title: 'Quick start', icon: Zap,
+    id: 'flow', title: 'Quick start', icon: ThunderboltOutlined,
     intro: t('cust.apidocs.g.flowIntro'),
     flow: [
       { step: 1, title: t('cust.apidocs.g.s1t'), detail: t('cust.apidocs.g.s1d') },
@@ -87,7 +97,7 @@ const groups = computed(() => [
     endpoints: []
   },
   {
-    id: 'auth', title: 'Authentication', icon: Lock,
+    id: 'auth', title: 'Authentication', icon: LockOutlined,
     intro: t('cust.apidocs.g.authIntro'),
     endpoints: [
       { method: 'POST', path: '/api/v1/user/auth/login', desc: t('cust.apidocs.g.authLogin'),
@@ -98,7 +108,7 @@ const groups = computed(() => [
     ]
   },
   {
-    id: 'orders', title: t('cust.apidocs.g.ordersTitle'), icon: ShoppingCart,
+    id: 'orders', title: t('cust.apidocs.g.ordersTitle'), icon: ShoppingCartOutlined,
     intro: t('cust.apidocs.g.ordersIntro'),
     endpoints: [
       { method: 'POST', path: '/api/v1/user/orders', desc: t('cust.apidocs.g.ordCreate'),
@@ -109,7 +119,7 @@ const groups = computed(() => [
     ]
   },
   {
-    id: 'proxies', title: t('cust.apidocs.g.pxTitle'), icon: ArrowRight,
+    id: 'proxies', title: t('cust.apidocs.g.pxTitle'), icon: CloudServerOutlined,
     intro: t('cust.apidocs.g.pxIntro'),
     endpoints: [
       { method: 'GET', path: '/api/v1/user/proxies', desc: t('cust.apidocs.g.pxList'),
@@ -134,7 +144,7 @@ const groups = computed(() => [
     ]
   },
   {
-    id: 'tools', title: 'Tools (diagnostics)', icon: Wrench,
+    id: 'tools', title: 'Tools (diagnostics)', icon: ToolOutlined,
     intro: t('cust.apidocs.g.toolsIntro'),
     endpoints: [
       { method: 'POST', path: '/api/v1/user/tools/ping', desc: t('cust.apidocs.g.tPing'),
@@ -157,7 +167,7 @@ const groups = computed(() => [
     ]
   },
   {
-    id: 'billing', title: 'Billing', icon: ArrowRight,
+    id: 'billing', title: 'Billing', icon: WalletOutlined,
     intro: t('cust.apidocs.g.billIntro'),
     endpoints: [
       { method: 'GET', path: '/api/v1/user/billing', desc: t('cust.apidocs.g.bGet'), response: '{ "wallet": { "balance": 150000 }, "plan": { "name": "free" }, "recentTx": [ ... ] }' },
@@ -166,7 +176,7 @@ const groups = computed(() => [
     ]
   },
   {
-    id: 'notifs', title: 'Notifications', icon: ArrowRight,
+    id: 'notifs', title: 'Notifications', icon: BellOutlined,
     intro: t('cust.apidocs.g.notifIntro'),
     endpoints: [
       { method: 'GET', path: '/api/v1/user/notifications', desc: t('cust.apidocs.g.nList'), response: '{ "items": [...], "unread": 3 }' },
@@ -185,21 +195,24 @@ function curlSample(method, path, body) {
   const dataFlag = body ? ` \\\n  -d '${body.replace(/\n/g, '').replace(/\s+/g, ' ')}'` : ''
   return `curl -X ${method} ${url} \\\n  ${headers.join(' \\\n  ')}${dataFlag}`
 }
+// Code blocks shown under each endpoint: request sample, response sample, cURL.
+function blocksFor(e) {
+  const out = []
+  if (e.request) out.push({ key: 'req', label: 'Request body', text: e.request, xl: 12 })
+  if (e.response) out.push({ key: 'res', label: 'Response', text: e.response, xl: e.request ? 12 : 24 })
+  out.push({ key: 'curl', label: 'cURL', text: curlSample(e.method, e.path, e.request), xl: 24, curl: true })
+  return out
+}
 
 onMounted(refresh)
 </script>
 
 <template>
-  <section class="apidocs">
-    <header class="apidocs-head">
-      <div>
-        <p class="eyebrow"><Book :size="12" /> {{ t('cust.apidocs.eyebrow') }}</p>
-        <h1>{{ t('cust.apidocs.title') }}</h1>
-        <p class="sub">{{ t('cust.apidocs.sub') }}</p>
-      </div>
-    </header>
-
-    <p v-if="flash" style="color:#4ade80; font-size:13px">{{ flash }}</p>
+  <div class="page">
+    <a-flex align="center" gap="small" wrap="wrap">
+      <a-tag color="green" :bordered="false"><BookOutlined /> {{ t('cust.apidocs.eyebrow') }}</a-tag>
+      <a-typography-text type="secondary">{{ t('cust.apidocs.sub') }}</a-typography-text>
+    </a-flex>
 
     <!-- Single unified token. Same value works as:
            1) X-Customer-Key header for REST API automation
@@ -207,307 +220,178 @@ onMounted(refresh)
            3) Fleet enroll token to claim BYON nodes (curl-pipe-bash installer)
          Auto-minted on register. Format: usr_<userId>_<hex>. Rotation rotates
          ALL three uses at once — there's only one key to track. -->
-    <section class="key-card">
-      <div class="key-left">
-        <span class="ico"><KeyRound :size="18" /></span>
-        <div>
-          <strong>{{ t('cust.apidocs.tokenTitle') }} <small class="badge">{{ t('cust.apidocs.tokenBadge') }}</small></strong>
-          <p class="muted" v-html="t('cust.apidocs.tokenDesc')"></p>
-        </div>
-      </div>
-      <div class="key-right">
-        <code class="key-val" :class="{ blurred: !reveal }">{{ apiKey }}</code>
-        <button type="button" class="ghost-button" @click="reveal = !reveal">{{ reveal ? t('cust.dash.hide') : t('cust.dash.show') }}</button>
-        <button type="button" class="ghost-button" :disabled="!reveal" @click="copy(apiKey)"><Copy :size="13" /></button>
-      </div>
-    </section>
+    <a-card class="key-card">
+      <a-flex justify="space-between" align="center" wrap="wrap" gap="middle">
+        <a-flex align="center" gap="middle" class="key-left">
+          <a-avatar shape="square" :size="40" class="key-ico">
+            <template #icon><KeyOutlined /></template>
+          </a-avatar>
+          <div class="min0">
+            <a-space :size="6" wrap>
+              <a-typography-text strong>{{ t('cust.apidocs.tokenTitle') }}</a-typography-text>
+              <a-tag :bordered="false" class="mono badge">{{ t('cust.apidocs.tokenBadge') }}</a-tag>
+            </a-space>
+            <a-typography-paragraph type="secondary" class="key-desc">
+              <span v-html="t('cust.apidocs.tokenDesc')"></span>
+            </a-typography-paragraph>
+          </div>
+        </a-flex>
+        <a-flex align="center" gap="small" class="key-right">
+          <a-typography-text code class="mono key-val" :class="{ blurred: !reveal }">{{ apiKey }}</a-typography-text>
+          <a-button @click="reveal = !reveal">
+            <template #icon><EyeInvisibleOutlined v-if="reveal" /><EyeOutlined v-else /></template>
+            {{ reveal ? t('cust.dash.hide') : t('cust.dash.show') }}
+          </a-button>
+          <a-button :disabled="!reveal" @click="copy(apiKey)">
+            <template #icon><CopyOutlined /></template>
+          </a-button>
+        </a-flex>
+      </a-flex>
+    </a-card>
 
     <!-- Groups nav + content -->
-    <div class="docs-layout">
-      <nav class="docs-nav">
-        <h4>{{ t('cust.apidocs.endpoints') }}</h4>
-        <button
-          v-for="g in groups" :key="g.id"
-          type="button"
-          :class="{ active: activeGroup === g.id }"
-          @click="activeGroup = g.id"
-        >
-          <component :is="g.icon" :size="14" />
-          <span>{{ g.title }}</span>
-          <span v-if="g.endpoints?.length" class="count">{{ g.endpoints.length }}</span>
-          <span v-else-if="g.flow?.length" class="count" style="background:rgba(63,185,80,0.18); color:var(--pxl)">{{ g.flow.length }}</span>
-        </button>
-      </nav>
+    <a-card :body-style="{ padding: screens.md ? '16px 20px 20px 0' : '4px 12px 16px' }">
+      <a-tabs v-model:active-key="activeGroup" :tab-position="screens.md ? 'left' : 'top'" class="docs-tabs">
+        <template v-if="screens.md" #leftExtra>
+          <a-typography-text type="secondary" class="nav-title">{{ t('cust.apidocs.endpoints') }}</a-typography-text>
+        </template>
+        <a-tab-pane v-for="g in groups" :key="g.id">
+          <template #tab>
+            <span class="tab-label">
+              <component :is="g.icon" />
+              <span>{{ g.title }}</span>
+              <a-tag v-if="g.endpoints?.length" :bordered="false" class="count mono">{{ g.endpoints.length }}</a-tag>
+              <a-tag v-else-if="g.flow?.length" color="green" :bordered="false" class="count mono">{{ g.flow.length }}</a-tag>
+            </span>
+          </template>
 
-      <div class="docs-body">
-        <template v-for="g in groups" :key="g.id">
-          <article v-if="activeGroup === g.id">
-            <h2>{{ g.title }}</h2>
-            <p class="muted">{{ g.intro }}</p>
+          <a-flex vertical gap="middle">
+            <div>
+              <a-typography-title :level="4" class="group-title">{{ g.title }}</a-typography-title>
+              <a-typography-paragraph type="secondary" class="group-intro">{{ g.intro }}</a-typography-paragraph>
+            </div>
 
             <!-- Quick-start flow steps (only present on the first group) -->
-            <ol v-if="g.flow?.length" class="flow-steps">
-              <li v-for="f in g.flow" :key="f.step" class="flow-step">
-                <span class="flow-num">{{ f.step }}</span>
-                <div>
-                  <strong>{{ f.title }}</strong>
-                  <p class="muted" style="margin:2px 0 0">{{ f.detail }}</p>
-                </div>
-              </li>
-            </ol>
+            <a-steps
+              v-if="g.flow?.length"
+              direction="vertical"
+              size="small"
+              :items="g.flow.map((f) => ({ title: f.title, description: f.detail, status: 'process' }))"
+            />
 
-            <div v-for="(e, i) in g.endpoints" :key="i" class="endpoint">
-              <div class="ep-head">
-                <span :class="['method', `m-${e.method.toLowerCase()}`]">{{ e.method }}</span>
-                <code class="path">{{ e.path }}</code>
-                <button type="button" class="ghost-button mini" @click="copy(`${baseUrl}${e.path}`)"><Copy :size="11" /></button>
-                <button type="button" class="ghost-button mini try-btn" @click="ensureTry(g.id, i, e).open = !tryState[tryKeyOf(g.id, i)].open">
-                  <Play :size="11" /> {{ tryState[tryKeyOf(g.id, i)]?.open ? t('cust.apidocs.close') : 'Try it' }}
-                </button>
-              </div>
-              <p class="ep-desc">{{ e.desc }}</p>
+            <a-card v-for="(e, i) in g.endpoints" :key="i" size="small" class="endpoint">
+              <a-flex align="center" gap="small" wrap="wrap">
+                <a-tag :color="METHOD_COLOR[e.method] || 'default'" class="mono method">{{ e.method }}</a-tag>
+                <a-typography-text strong class="mono path">{{ e.path }}</a-typography-text>
+                <a-space :size="4" class="ep-actions">
+                  <a-button size="small" type="text" @click="copy(`${baseUrl}${e.path}`)">
+                    <template #icon><CopyOutlined /></template>
+                  </a-button>
+                  <a-button size="small" :type="tryOf(g.id, i)?.open ? 'default' : 'primary'" :ghost="!tryOf(g.id, i)?.open" @click="toggleTry(g.id, i, e)">
+                    <template #icon><CloseOutlined v-if="tryOf(g.id, i)?.open" /><PlayCircleOutlined v-else /></template>
+                    {{ tryOf(g.id, i)?.open ? t('cust.apidocs.close') : 'Try it' }}
+                  </a-button>
+                </a-space>
+              </a-flex>
+              <a-typography-paragraph type="secondary" class="ep-desc">{{ e.desc }}</a-typography-paragraph>
 
-              <div class="ep-blocks">
-                <div v-if="e.request" class="code-block">
-                  <header><Terminal :size="12" /> Request body</header>
-                  <pre>{{ e.request }}</pre>
-                </div>
-                <div v-if="e.response" class="code-block">
-                  <header><ArrowRight :size="12" /> Response</header>
-                  <pre>{{ e.response }}</pre>
-                </div>
-              </div>
-
-              <div class="code-block curl">
-                <header>
-                  <Terminal :size="12" /> cURL
-                  <button type="button" class="ghost-button mini" style="margin-left:auto" @click="copy(curlSample(e.method, e.path, e.request))"><Copy :size="11" /></button>
-                </header>
-                <pre>{{ curlSample(e.method, e.path, e.request) }}</pre>
-              </div>
+              <a-row :gutter="[10, 10]">
+                <a-col v-for="b in blocksFor(e)" :key="b.key" :xs="24" :xl="b.xl">
+                  <a-card size="small" type="inner" class="code-card" :body-style="{ padding: 0 }">
+                    <template #title>
+                      <span class="code-label"><CodeOutlined v-if="b.key !== 'res'" /><ArrowRightOutlined v-else /> {{ b.label }}</span>
+                    </template>
+                    <template #extra>
+                      <a-button size="small" type="text" @click="copy(b.text)"><template #icon><CopyOutlined /></template></a-button>
+                    </template>
+                    <pre class="mono code" :class="{ curl: b.curl }">{{ b.text }}</pre>
+                  </a-card>
+                </a-col>
+              </a-row>
 
               <!-- Interactive try-it panel -->
-              <div v-if="tryState[tryKeyOf(g.id, i)]?.open" class="try-panel">
-                <div class="try-head">
-                  <Send :size="13" /> <strong>{{ t('cust.apidocs.tryTitle') }}</strong>
-                  <span class="muted" style="margin-left:auto; font-size:11px" v-html="t('cust.apidocs.tryHint')"></span>
-                </div>
-                <div class="try-row">
-                  <label>Auth</label>
-                  <span class="muted-sm" v-html="t('cust.apidocs.willSend')"></span>
-                </div>
-                <div class="try-row">
-                  <label>URL</label>
-                  <div class="url-line">
-                    <span class="url-base">{{ baseUrl }}</span>
-                    <input v-model="tryState[tryKeyOf(g.id, i)].path" class="url-input" />
-                  </div>
-                </div>
-                <div v-if="e.method !== 'GET' && e.method !== 'DELETE'" class="try-row">
-                  <label>Body (JSON)</label>
-                  <textarea v-model="tryState[tryKeyOf(g.id, i)].body" class="body-input" rows="5" :placeholder="e.request || '{}'"></textarea>
-                </div>
-                <div class="try-actions">
-                  <button class="primary-action" type="button" :disabled="tryState[tryKeyOf(g.id, i)].busy" @click="runTry(g.id, i, e)">
-                    <Play :size="12" /> {{ tryState[tryKeyOf(g.id, i)].busy ? t('cust.apidocs.calling') : `Run ${e.method}` }}
-                  </button>
-                  <span v-if="tryState[tryKeyOf(g.id, i)].status != null" class="resp-meta">
-                    <span :class="['status-chip', tryState[tryKeyOf(g.id, i)].status < 300 ? 'ok' : tryState[tryKeyOf(g.id, i)].status < 400 ? 'warn' : 'err']">{{ tryState[tryKeyOf(g.id, i)].status }}</span>
-                    <span class="muted">{{ tryState[tryKeyOf(g.id, i)].durationMs }}ms</span>
-                  </span>
-                </div>
-                <div v-if="tryState[tryKeyOf(g.id, i)].error" class="error-text">{{ tryState[tryKeyOf(g.id, i)].error }}</div>
-                <div v-if="tryState[tryKeyOf(g.id, i)].response" class="code-block">
-                  <header>
-                    <ArrowRight :size="12" /> Response body
-                    <button type="button" class="ghost-button mini" style="margin-left:auto" @click="copy(tryState[tryKeyOf(g.id, i)].response)"><Copy :size="11" /></button>
-                  </header>
-                  <pre>{{ tryState[tryKeyOf(g.id, i)].response }}</pre>
-                </div>
-              </div>
-            </div>
-          </article>
-        </template>
-      </div>
-    </div>
-  </section>
+              <a-card v-if="tryOf(g.id, i)?.open" size="small" class="try-panel">
+                <template #title><SendOutlined class="title-ico" /> {{ t('cust.apidocs.tryTitle') }}</template>
+                <a-typography-paragraph type="secondary" class="small">
+                  <span v-html="t('cust.apidocs.tryHint')"></span>
+                </a-typography-paragraph>
+                <a-form layout="vertical" :model="tryOf(g.id, i)" @finish="runTry(g.id, i, e)">
+                  <a-form-item label="Auth" class="compact-item">
+                    <a-typography-text type="secondary" class="small"><span v-html="t('cust.apidocs.willSend')"></span></a-typography-text>
+                  </a-form-item>
+                  <a-form-item label="URL" class="compact-item">
+                    <a-input v-model:value="tryOf(g.id, i).path" class="mono">
+                      <template #addonBefore><span class="mono url-base">{{ baseUrl }}</span></template>
+                    </a-input>
+                  </a-form-item>
+                  <a-form-item v-if="e.method !== 'GET' && e.method !== 'DELETE'" label="Body (JSON)" class="compact-item">
+                    <a-textarea v-model:value="tryOf(g.id, i).body" :rows="5" class="mono" :placeholder="e.request || '{}'" />
+                  </a-form-item>
+                  <a-space wrap>
+                    <a-button type="primary" html-type="submit" :loading="tryOf(g.id, i).busy">
+                      <template #icon><PlayCircleOutlined /></template>
+                      {{ tryOf(g.id, i).busy ? t('cust.apidocs.calling') : `Run ${e.method}` }}
+                    </a-button>
+                    <template v-if="tryOf(g.id, i).status != null">
+                      <a-tag :color="statusColor(tryOf(g.id, i).status)" class="mono">{{ tryOf(g.id, i).status }}</a-tag>
+                      <a-typography-text type="secondary" class="mono small">{{ tryOf(g.id, i).durationMs }}ms</a-typography-text>
+                    </template>
+                  </a-space>
+                </a-form>
+                <a-alert v-if="tryOf(g.id, i).error" type="error" show-icon :message="tryOf(g.id, i).error" class="try-gap" />
+                <a-card v-if="tryOf(g.id, i).response" size="small" type="inner" class="code-card try-gap" :body-style="{ padding: 0 }">
+                  <template #title><span class="code-label"><ArrowRightOutlined /> Response body</span></template>
+                  <template #extra>
+                    <a-button size="small" type="text" @click="copy(tryOf(g.id, i).response)"><template #icon><CopyOutlined /></template></a-button>
+                  </template>
+                  <pre class="mono code">{{ tryOf(g.id, i).response }}</pre>
+                </a-card>
+              </a-card>
+            </a-card>
+          </a-flex>
+        </a-tab-pane>
+      </a-tabs>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-/* Quick-start flow steps */
-.flow-steps {
-  list-style: none;
-  padding: 0;
-  margin: 14px 0 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.flow-step {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.flow-num {
-  flex: none;
-  width: 28px; height: 28px;
-  border-radius: 8px;
-  background: var(--green-soft);
-  color: var(--green);
-  font-family: var(--mono); font-weight: 700; font-size: 13px;
-  display: grid; place-items: center;
-}
-.flow-step strong { font-size: 13.5px; color: var(--text); }
+.min0 { min-width: 0; }
+.small { font-size: 12px; }
+.title-ico { color: var(--pb-primary); }
 
-
-.apidocs { display: flex; flex-direction: column; gap: 20px; padding-bottom: 40px; }
-.apidocs-head .eyebrow { color: var(--pxl); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 5px; margin: 0 0 4px; }
-.apidocs-head h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -0.01em; }
-.apidocs-head .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-
-.key-card {
-  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
-  background: linear-gradient(135deg, rgba(63, 185, 80, 0.08) 0%, transparent 60%), var(--pxl-card);
-  border: 1px solid var(--pxl-bd);
-  border-radius: 14px;
-  padding: 16px 20px;
-}
-.key-left { display: flex; align-items: center; gap: 12px; }
-.key-left .ico {
-  width: 36px; height: 36px; border-radius: 9px;
-  background: rgba(63, 185, 80, 0.16); color: var(--pxl);
-  display: grid; place-items: center;
-}
-.key-left strong { color:var(--text); font-size: 14px; }
-.key-left .muted { font-size: 11.5px; color: var(--muted); margin: 2px 0 0; }
-.key-right { display: inline-flex; align-items: center; gap: 8px; }
-.key-val {
-  font-family: 'JetBrains Mono', monospace; font-size: 13px;
-  color: var(--pxl); background: var(--pxl-card-2);
-  padding: 7px 12px; border-radius: 7px;
-  border: 1px solid var(--pxl-bd-soft);
-}
+.key-card { background-image: linear-gradient(135deg, var(--pb-primary-soft) 0%, transparent 60%); }
+.key-left { flex: 1 1 360px; min-width: 0; }
+.key-ico { background: var(--pb-primary-soft); color: var(--pb-primary); flex: none; }
+.key-desc { margin: 4px 0 0 !important; font-size: 12px; }
+.badge { font-size: 10.5px; margin: 0; }
+.key-right { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.key-val { max-width: 260px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; transition: filter 120ms; }
 .key-val.blurred { filter: blur(5px); user-select: none; }
 
-.docs-layout { display: grid; grid-template-columns: 220px 1fr; gap: 18px; align-items: start; }
-.docs-nav {
-  position: sticky; top: 80px;
-  background: var(--pxl-card); border: 1px solid var(--pxl-bd);
-  border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 2px;
-}
-.docs-nav h4 { margin: 0 4px 8px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
-.docs-nav button {
-  display: flex; align-items: center; gap: 9px;
-  background: transparent; border: none; color: var(--muted);
-  padding: 8px 10px; border-radius: 7px;
-  text-align: left; font: inherit; font-size: 13px; cursor: pointer;
-  transition: 120ms;
-}
-.docs-nav button:hover { background: var(--pxl-card-2); color:var(--text); }
-.docs-nav button.active { background: var(--pxl-soft); color:var(--text); font-weight: 600; }
-.docs-nav button.active svg { color: var(--pxl); }
-.docs-nav button .count { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted); background: var(--pxl-card-2); padding: 1px 6px; border-radius: 5px; }
+.docs-tabs :deep(.ant-tabs-nav) { min-width: 0; }
+.nav-title { display: block; padding: 0 24px 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.tab-label { display: inline-flex; align-items: center; gap: 8px; }
+.count { margin: 0; font-size: 10.5px; line-height: 16px; padding: 0 6px; }
+.group-title { margin: 0 0 4px !important; }
+.group-intro { margin: 0 !important; }
 
-.docs-body article { display: flex; flex-direction: column; gap: 18px; }
-.docs-body h2 { margin: 0; font-size: 22px; font-weight: 700; }
-.docs-body .muted { color: var(--muted); font-size: 13px; margin: 0; }
+.method { font-weight: 700; margin: 0; }
+.path { word-break: break-all; }
+.ep-actions { margin-inline-start: auto; }
+.ep-desc { margin: 8px 0 12px !important; font-size: 12.5px; }
 
-.endpoint {
-  background: var(--pxl-card); border: 1px solid var(--pxl-bd);
-  border-radius: 12px; padding: 16px 18px;
-  display: flex; flex-direction: column; gap: 12px;
-}
-.ep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.method {
-  font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
-  padding: 3px 8px; border-radius: 5px; letter-spacing: 0.04em;
-}
-.method.m-get    { background: rgba(34, 197, 94, 0.16);  color: #22c55e; }
-.method.m-post   { background: rgba(59, 130, 246, 0.16); color: #60a5fa; }
-.method.m-patch  { background: rgba(245, 158, 11, 0.16); color: #f59e0b; }
-.method.m-delete { background: rgba(239, 68, 68, 0.16);  color: #ef4444; }
-.path { font-family: 'JetBrains Mono', monospace; font-size: 13px; color:var(--text); }
-.ep-desc { color: var(--muted); font-size: 12.5px; margin: 0; }
+.code-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--pb-text-3); }
+.code { margin: 0; padding: 10px 12px; max-height: 360px; overflow: auto; font-size: 11.5px; line-height: 1.55; white-space: pre; word-break: normal; background: var(--pb-bg); border-radius: 0 0 8px 8px; }
+.code.curl { color: var(--pb-success); }
 
-.ep-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-@media (max-width: 800px) { .ep-blocks { grid-template-columns: 1fr; } .docs-layout { grid-template-columns: 1fr; } .docs-nav { position: static; } }
+.try-panel { margin-top: 12px; border-color: var(--pb-primary); }
+.compact-item { margin-bottom: 12px; }
+.url-base { font-size: 12px; }
+.try-gap { margin-top: 12px; }
 
-.code-block { background: #0a0e14; border: 1px solid var(--pxl-bd-soft); border-radius: 8px; overflow: hidden; }
-.code-block header {
-  display: flex; align-items: center; gap: 6px;
-  background: var(--pxl-card-2); padding: 6px 12px;
-  font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-  border-bottom: 1px solid var(--pxl-bd-soft);
+@media (max-width: 575px) {
+  .key-val { max-width: none; flex: 1 1 auto; }
+  .ep-actions { margin-inline-start: 0; }
 }
-.code-block pre {
-  margin: 0; padding: 12px 14px; overflow-x: auto;
-  font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.55;
-  color: #d1d5db; background: transparent;
-}
-.code-block.curl pre { color: #4ade80; }
-
-.ghost-button.mini { padding: 3px 7px; font-size: 10.5px; }
-.try-btn { color: var(--green); border-color: rgba(34,197,94,0.35) !important; }
-
-/* Two-column credentials grid: API key + Bearer token side by side */
-.creds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 900px) { .creds-grid { grid-template-columns: 1fr; } }
-.key-card .badge {
-  display: inline-block; margin-left: 6px;
-  font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
-  padding: 1px 6px; border-radius: 4px;
-  background: rgba(255,255,255,0.08); color: var(--muted);
-  text-transform: none; letter-spacing: 0;
-  vertical-align: 1px;
-}
-.key-val { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* "Try it" panel — appears inline under each endpoint when opened */
-.try-panel {
-  margin-top: 4px;
-  background: rgba(34,197,94,0.04);
-  border: 1px solid rgba(34,197,94,0.22);
-  border-radius: 10px;
-  padding: 14px 16px;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.try-head { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-.try-head .muted { color: var(--muted); font-weight: 400; }
-.try-head code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: rgba(0,0,0,0.3); padding: 1px 4px; border-radius: 3px; }
-.try-row { display: grid; grid-template-columns: 70px 1fr; gap: 10px; align-items: start; }
-.try-row > label { font-size: 11.5px; color: var(--muted); padding-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
-.auth-toggle { display: flex; flex-wrap: wrap; gap: 14px; padding-top: 4px; }
-.auth-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
-.auth-opt input[disabled] + * { color: var(--muted); }
-.url-line {
-  display: flex; align-items: stretch;
-  border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg); overflow: hidden;
-}
-.url-base { padding: 6px 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 12px; border-right: 1px solid var(--border); white-space: nowrap; }
-.url-input { flex: 1; min-width: 0; border: none; background: transparent; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 12.5px; padding: 6px 10px; outline: none; }
-.body-input {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text);
-  font-family: 'JetBrains Mono', monospace; font-size: 12px;
-  padding: 8px 10px;
-  resize: vertical;
-}
-.body-input:focus, .url-input:focus { outline: none; }
-.try-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.resp-meta { display: inline-flex; align-items: center; gap: 8px; }
-.status-chip {
-  font-family: 'JetBrains Mono', monospace; font-size: 11.5px; font-weight: 700;
-  padding: 2px 8px; border-radius: 5px;
-}
-.status-chip.ok   { background: rgba(34,197,94,0.18);  color: #22c55e; }
-.status-chip.warn { background: rgba(245,158,11,0.18); color: #f59e0b; }
-.status-chip.err  { background: rgba(239,68,68,0.18);  color: #ef4444; }
-.error-text { color: #ef4444; font-size: 12px; }
 </style>

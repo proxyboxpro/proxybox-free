@@ -1,39 +1,41 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { CheckCircle2, Mail, RefreshCw, Send, Settings2 } from 'lucide-vue-next'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 
 const { t } = useI18n()
 const cfg = ref({ host: '', port: 587, user: '', pass: '', from: '', secure: false, starttls: true })
 const testTo = ref('')
 const busy = ref(false)
+const loading = ref(false)
 const testing = ref(false)
 const err = ref('')
-const flash = ref('')
 const testResult = ref(null)
 
 async function refresh() {
   err.value = ''
+  loading.value = true
   try {
     const r = await apiFetch('/api/admin/smtp')
     if (r) Object.assign(cfg.value, r)
   } catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 
 async function save() {
   if (busy.value) return
-  busy.value = true; err.value = ''; flash.value = ''
+  busy.value = true
   try {
     await apiFetch('/api/admin/smtp', { method: 'PATCH', body: cfg.value })
-    flash.value = t('admin.smtp.saved')
-  } catch (e) { err.value = e.message }
+    message.success(t('admin.smtp.saved'))
+  } catch (e) { message.error(e.message) }
   finally { busy.value = false }
 }
 
 async function sendTest() {
   if (!testTo.value || testing.value) return
-  testing.value = true; err.value = ''; testResult.value = null
+  testing.value = true; testResult.value = null
   try {
     const r = await apiFetch('/api/admin/smtp/test', { method: 'POST', body: { to: testTo.value } })
     testResult.value = { ok: r.ok !== false, message: r.message || r.error || t('admin.smtp.testSentOk') }
@@ -45,81 +47,95 @@ onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow"><Mail :size="13" style="vertical-align:-2px" /> {{ t('admin.smtp.title') }}</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="14" /></button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary"><MailOutlined /> {{ t('admin.smtp.title') }}</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+      </a-button>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
-    <p v-if="flash" style="color: var(--green); font-size: 13px">{{ flash }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-    <section class="surface">
-      <div class="section-head"><h2><Settings2 :size="14" style="vertical-align:-2px" /> {{ t('admin.smtp.serverConfig') }}</h2></div>
-      <p style="font-size: 12.5px; color: var(--muted); margin-bottom: 14px">{{ t('admin.smtp.serverDesc') }}</p>
+    <a-card>
+      <template #title><SettingOutlined /> {{ t('admin.smtp.serverConfig') }}</template>
+      <a-typography-paragraph type="secondary">{{ t('admin.smtp.serverDesc') }}</a-typography-paragraph>
 
-      <div class="form-grid" style="grid-template-columns: 1.4fr 0.6fr; gap: 14px">
-        <label class="input-field">
-          <span>{{ t('admin.smtp.host') }}</span>
-          <input v-model="cfg.host" placeholder="smtp.gmail.com" />
-        </label>
-        <label class="input-field">
-          <span>{{ t('admin.smtp.port') }}</span>
-          <input v-model.number="cfg.port" type="number" min="1" max="65535" placeholder="587" />
-        </label>
-      </div>
+      <a-form :model="cfg" layout="vertical" @finish="save">
+        <a-row :gutter="16">
+          <a-col :xs="24" :md="16">
+            <a-form-item :label="t('admin.smtp.host')" name="host">
+              <a-input v-model:value="cfg.host" placeholder="smtp.gmail.com" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="8">
+            <a-form-item :label="t('admin.smtp.port')" name="port">
+              <a-input-number v-model:value="cfg.port" :min="1" :max="65535" placeholder="587" class="full-width" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('admin.smtp.user')" name="user">
+              <a-input v-model:value="cfg.user" autocomplete="off" placeholder="noreply@proxyhub.vn" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('admin.smtp.pass')" name="pass">
+              <a-input-password v-model:value="cfg.pass" autocomplete="new-password" placeholder="••••••••" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12">
+            <a-form-item :label="t('admin.smtp.from')" name="from">
+              <a-input v-model:value="cfg.from" placeholder="ProxyBox <noreply@proxyhub.vn>" />
+            </a-form-item>
+          </a-col>
+        </a-row>
 
-      <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap: 14px">
-        <label class="input-field">
-          <span>{{ t('admin.smtp.user') }}</span>
-          <input v-model="cfg.user" autocomplete="off" placeholder="noreply@proxyhub.vn" />
-        </label>
-        <label class="input-field">
-          <span>{{ t('admin.smtp.pass') }}</span>
-          <input v-model="cfg.pass" type="password" autocomplete="new-password" placeholder="••••••••" />
-        </label>
-      </div>
+        <a-form-item>
+          <a-flex vertical gap="small">
+            <a-checkbox v-model:checked="cfg.secure">
+              <a-typography-text strong>SMTPS (port 465)</a-typography-text>
+              <a-typography-text type="secondary"> &mdash; {{ t('admin.smtp.secureDesc') }}</a-typography-text>
+            </a-checkbox>
+            <a-checkbox v-model:checked="cfg.starttls">
+              <a-typography-text strong>STARTTLS</a-typography-text>
+              <a-typography-text type="secondary"> &mdash; {{ t('admin.smtp.starttlsDesc') }}</a-typography-text>
+            </a-checkbox>
+          </a-flex>
+        </a-form-item>
 
-      <label class="input-field" style="max-width: 480px; margin-bottom: 12px">
-        <span>{{ t('admin.smtp.from') }}</span>
-        <input v-model="cfg.from" placeholder="ProxyBox &lt;noreply@proxyhub.vn&gt;" />
-      </label>
+        <a-button type="primary" html-type="submit" :loading="busy">
+          <template #icon><CheckCircleOutlined /></template>
+          {{ t('admin.smtp.save') }}
+        </a-button>
+      </a-form>
+    </a-card>
 
-      <div style="display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px">
-        <label class="check-line">
-          <input v-model="cfg.secure" type="checkbox" />
-          <span><strong style="color: var(--text)">SMTPS (port 465)</strong> &mdash; {{ t('admin.smtp.secureDesc') }}</span>
-        </label>
-        <label class="check-line">
-          <input v-model="cfg.starttls" type="checkbox" />
-          <span><strong style="color: var(--text)">STARTTLS</strong> &mdash; {{ t('admin.smtp.starttlsDesc') }}</span>
-        </label>
-      </div>
+    <a-card>
+      <template #title><SendOutlined /> {{ t('admin.smtp.testTitle') }}</template>
+      <a-typography-paragraph type="secondary">{{ t('admin.smtp.testDesc') }}</a-typography-paragraph>
+      <a-form layout="vertical" class="test-form" @finish="sendTest">
+        <a-form-item :label="t('admin.smtp.testTo')">
+          <a-space-compact block>
+            <a-input v-model:value="testTo" type="email" placeholder="you@example.com" />
+            <a-button html-type="submit" :loading="testing" :disabled="!testTo">
+              <template #icon><SendOutlined /></template>
+              {{ t('admin.smtp.sendTest') }}
+            </a-button>
+          </a-space-compact>
+        </a-form-item>
+      </a-form>
 
-      <div class="action-row">
-        <button class="primary-action" type="button" :disabled="busy" @click="save">
-          <CheckCircle2 :size="15" /> {{ busy ? t('common.loading') : t('admin.smtp.save') }}
-        </button>
-      </div>
-    </section>
-
-    <section class="surface">
-      <div class="section-head"><h2><Send :size="14" style="vertical-align:-2px" /> {{ t('admin.smtp.testTitle') }}</h2></div>
-      <p style="font-size: 12.5px; color: var(--muted); margin-bottom: 12px">{{ t('admin.smtp.testDesc') }}</p>
-      <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; max-width: 560px">
-        <label class="input-field" style="flex: 1; min-width: 240px">
-          <span>{{ t('admin.smtp.testTo') }}</span>
-          <input v-model="testTo" type="email" placeholder="you@example.com" />
-        </label>
-        <button class="ghost-button" type="button" :disabled="!testTo || testing" @click="sendTest">
-          <Send :size="14" /> {{ testing ? t('common.loading') : t('admin.smtp.sendTest') }}
-        </button>
-      </div>
-
-      <div v-if="testResult" :style="{ marginTop: '12px', padding: '10px 14px', borderRadius: 'var(--radius-sm)', border: '1px solid ' + (testResult.ok ? 'var(--green)' : 'var(--red)'), background: testResult.ok ? 'var(--green-soft)' : 'var(--red-soft)', color: testResult.ok ? 'var(--green)' : 'var(--red)', fontSize: '12.5px', fontFamily: 'var(--mono)' }">
-        {{ testResult.ok ? '✓' : '✗' }} {{ testResult.message }}
-      </div>
-    </section>
-  </section>
+      <a-alert
+        v-if="testResult"
+        :type="testResult.ok ? 'success' : 'error'"
+        show-icon
+        :message="testResult.message"
+        class="mono"
+      />
+    </a-card>
+  </div>
 </template>
+
+<style scoped>
+.test-form { max-width: 560px; }
+</style>

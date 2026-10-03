@@ -1,17 +1,20 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { AlertTriangle, Download, Filter, RefreshCw, Search, Shield, ShieldAlert, User } from 'lucide-vue-next'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { apiFetch, token } from '../../api'
 import { useI18n } from '../../i18n'
+import { message } from '../../ui/feedback'
 
 const { t } = useI18n()
 const entries = ref([])
 const filters = ref({ actor: '', path: '', ip: '', since: '', lines: 500, note: '' })
 const err = ref('')
+const loading = ref(false)
 const quickFilter = ref('all')
 
 async function refresh() {
   err.value = ''
+  loading.value = true
+  pagination.current = 1
   try {
     const qs = Object.entries(filters.value)
       .filter(([_, v]) => v !== '' && v !== null && v !== undefined)
@@ -20,6 +23,7 @@ async function refresh() {
     const d = await apiFetch(`/api/admin/audit?${qs}`)
     entries.value = d.entries || []
   } catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 function clear() { filters.value = { actor: '', path: '', ip: '', since: '', lines: 500, note: '' }; quickFilter.value = 'all'; refresh() }
 
@@ -38,7 +42,7 @@ async function exportCsv() {
     a.download = `audit-${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
-  } catch (e) { err.value = `Export failed: ${e.message}` }
+  } catch (e) { message.error(`Export failed: ${e.message}`) }
 }
 
 function applyQuick(kind) {
@@ -68,100 +72,184 @@ const counts = computed(() => ({
   adminActions: entries.value.filter((e) => String(e.path || '').startsWith('/api/admin/')).length
 }))
 
-function sevColor(e) {
-  if (e.status >= 500) return 'var(--red)'
-  if (e.status >= 400) return 'var(--yellow)'
-  return 'var(--muted)'
+function statusType(e) {
+  if (e.status >= 500) return 'danger'
+  if (e.status >= 400) return 'warning'
+  return 'secondary'
+}
+
+const quickOptions = computed(() => [
+  { value: 'all', label: t('admin.audit.qfAll') },
+  { value: 'failedLogin', label: t('admin.audit.qfFailedLogin') },
+  { value: 'totpFail', label: t('admin.audit.qfTotpFail') },
+  { value: 'lockout', label: t('admin.audit.qfLockout') },
+  { value: 'suspended', label: t('admin.audit.qfSuspend') },
+  { value: 'adminOrders', label: t('admin.audit.qfAdminOrders') }
+])
+
+const columns = computed(() => [
+  { title: t('admin.audit.ts'), key: 'ts', dataIndex: 'ts', width: 170 },
+  { title: t('admin.audit.actor'), key: 'actor', dataIndex: 'actor', width: 200, ellipsis: true },
+  { title: 'IP', key: 'ip', dataIndex: 'ip', width: 140 },
+  { title: t('admin.audit.method'), key: 'method', dataIndex: 'method', width: 90 },
+  { title: t('admin.audit.status'), key: 'status', dataIndex: 'status', width: 80 },
+  { title: t('admin.audit.path'), key: 'path', dataIndex: 'path', width: 220, ellipsis: true },
+  { title: t('admin.audit.note'), key: 'note', dataIndex: 'note' }
+])
+const rows = computed(() => display.value.map((e, i) => ({ ...e, _k: i })))
+const pagination = reactive({
+  current: 1,
+  pageSize: 50,
+  showSizeChanger: true,
+  pageSizeOptions: ['50', '100', '200', '500']
+})
+function onTableChange(p) {
+  pagination.current = p.current
+  pagination.pageSize = p.pageSize
 }
 
 onMounted(refresh)
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">Audit log ({{ entries.length }})</span>
-      <div class="spacer"></div>
-      <button class="ghost-button" type="button" @click="clear">{{ t('admin.audit.clearFilters') }}</button>
-      <button class="ghost-button" type="button" @click="exportCsv"><Download :size="13" /> {{ t('admin.audit.exportCsv') }}</button>
-      <button class="primary-action small" type="button" @click="refresh"><RefreshCw :size="13" /> {{ t('admin.audit.apply') }}</button>
-    </div>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">Audit log ({{ entries.length }})</a-typography-text>
+      <a-space wrap>
+        <a-button @click="clear">
+          <template #icon><ClearOutlined /></template>
+          {{ t('admin.audit.clearFilters') }}
+        </a-button>
+        <a-button @click="exportCsv">
+          <template #icon><DownloadOutlined /></template>
+          {{ t('admin.audit.exportCsv') }}
+        </a-button>
+        <a-button type="primary" :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+          {{ t('admin.audit.apply') }}
+        </a-button>
+      </a-space>
+    </a-flex>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
     <!-- KPI strip -->
-    <div class="metric-cards" style="grid-template-columns: repeat(4, 1fr)">
-      <article>
-        <Shield :size="20" />
-        <span>{{ t('admin.audit.totalEntries') }}</span>
-        <strong>{{ counts.total }}</strong>
-      </article>
-      <article>
-        <AlertTriangle :size="20" />
-        <span>{{ t('admin.audit.failedLogins') }}</span>
-        <strong style="color: var(--yellow)">{{ counts.failedLogin }}</strong>
-      </article>
-      <article>
-        <ShieldAlert :size="20" />
-        <span>{{ t('admin.audit.lockouts') }}</span>
-        <strong style="color: var(--red)">{{ counts.locked }}</strong>
-      </article>
-      <article>
-        <User :size="20" />
-        <span>{{ t('admin.audit.adminActions') }}</span>
-        <strong style="color: var(--green)">{{ counts.adminActions }}</strong>
-      </article>
-    </div>
+    <a-row :gutter="[12, 12]">
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.audit.totalEntries')" :value="counts.total">
+            <template #prefix><SafetyOutlined /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.audit.failedLogins')" :value="counts.failedLogin" :value-style="{ color: 'var(--pb-warning)' }">
+            <template #prefix><WarningOutlined /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.audit.lockouts')" :value="counts.locked" :value-style="{ color: 'var(--pb-error)' }">
+            <template #prefix><LockOutlined /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.audit.adminActions')" :value="counts.adminActions" :value-style="{ color: 'var(--pb-success)' }">
+            <template #prefix><UserOutlined /></template>
+          </a-statistic>
+        </a-card>
+      </a-col>
+    </a-row>
 
-    <!-- Quick filter chips -->
-    <div class="surface">
-      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap">
-        <span class="eyebrow"><Filter :size="12" style="vertical-align:-2px" /> {{ t('admin.audit.quickFilter') }}</span>
-        <div class="chips">
-          <button :class="{ active: quickFilter === 'all' }" type="button" @click="applyQuick('all')">{{ t('admin.audit.qfAll') }}</button>
-          <button :class="{ active: quickFilter === 'failedLogin' }" type="button" @click="applyQuick('failedLogin')">{{ t('admin.audit.qfFailedLogin') }}</button>
-          <button :class="{ active: quickFilter === 'totpFail' }" type="button" @click="applyQuick('totpFail')">{{ t('admin.audit.qfTotpFail') }}</button>
-          <button :class="{ active: quickFilter === 'lockout' }" type="button" @click="applyQuick('lockout')">{{ t('admin.audit.qfLockout') }}</button>
-          <button :class="{ active: quickFilter === 'suspended' }" type="button" @click="applyQuick('suspended')">{{ t('admin.audit.qfSuspend') }}</button>
-          <button :class="{ active: quickFilter === 'adminOrders' }" type="button" @click="applyQuick('adminOrders')">{{ t('admin.audit.qfAdminOrders') }}</button>
-        </div>
+    <!-- Quick filter + filter form -->
+    <a-card size="small">
+      <template #title><FilterOutlined /> {{ t('admin.audit.quickFilter') }}</template>
+      <div class="quick-scroll">
+        <a-segmented :value="quickFilter" :options="quickOptions" @change="applyQuick" />
       </div>
-
-      <div class="form-grid">
-        <label class="input-field"><span>{{ t('admin.audit.actor') }}</span><input v-model="filters.actor" placeholder="email@... / apiKey-prefix" /></label>
-        <label class="input-field"><span>{{ t('admin.audit.path') }}</span><input v-model="filters.path" placeholder="/api/orders" /></label>
-        <label class="input-field"><span>IP</span><input v-model="filters.ip" placeholder="103.x.x.x" /></label>
-        <label class="input-field"><span>{{ t('admin.audit.note') }}</span><input v-model="filters.note" placeholder="bad creds / locked / suspended" /></label>
-        <label class="input-field"><span>{{ t('admin.audit.since') }}</span><input v-model="filters.since" placeholder="2026-05-13T00:00:00Z" /></label>
-        <label class="input-field"><span>{{ t('admin.audit.lines') }}</span><input v-model.number="filters.lines" type="number" min="10" max="5000" /></label>
-      </div>
-    </div>
+      <a-form :model="filters" layout="vertical" class="filter-form">
+        <a-row :gutter="[12, 0]">
+          <a-col :xs="24" :sm="12" :lg="8">
+            <a-form-item :label="t('admin.audit.actor')" name="actor">
+              <a-input v-model:value="filters.actor" allow-clear placeholder="email@... / apiKey-prefix" @press-enter="refresh" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="8">
+            <a-form-item :label="t('admin.audit.path')" name="path">
+              <a-input v-model:value="filters.path" allow-clear placeholder="/api/orders" @press-enter="refresh" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="8">
+            <a-form-item label="IP" name="ip">
+              <a-input v-model:value="filters.ip" allow-clear placeholder="103.x.x.x" @press-enter="refresh" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="8">
+            <a-form-item :label="t('admin.audit.note')" name="note">
+              <a-input v-model:value="filters.note" allow-clear placeholder="bad creds / locked / suspended" @press-enter="refresh" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="8">
+            <a-form-item :label="t('admin.audit.since')" name="since">
+              <a-input v-model:value="filters.since" allow-clear placeholder="2026-05-13T00:00:00Z" @press-enter="refresh" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :lg="8">
+            <a-form-item :label="t('admin.audit.lines')" name="lines">
+              <a-input-number v-model:value="filters.lines" :min="10" :max="5000" class="full-width" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+      </a-form>
+    </a-card>
 
     <!-- Entries -->
-    <section v-if="display.length" class="surface" style="padding: 0">
-      <div style="overflow-x: auto">
-        <div class="data-table" style="min-width: 800px">
-          <div class="table-row" style="grid-template-columns: 1.3fr 1.4fr 1fr 0.7fr 0.7fr 1.4fr 2fr; background: var(--surface-2); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px">
-            <span>{{ t('admin.audit.ts') }}</span>
-            <span>{{ t('admin.audit.actor') }}</span>
-            <span>IP</span>
-            <span>{{ t('admin.audit.method') }}</span>
-            <span>{{ t('admin.audit.status') }}</span>
-            <span>{{ t('admin.audit.path') }}</span>
-            <span>{{ t('admin.audit.note') }}</span>
-          </div>
-          <div v-for="(e, i) in display" :key="i" class="table-row" style="grid-template-columns: 1.3fr 1.4fr 1fr 0.7fr 0.7fr 1.4fr 2fr">
-            <span class="cell-mono" style="font-size: 12px">{{ (e.ts || '').slice(0, 19).replace('T', ' ') }}</span>
-            <span class="cell-mono" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ e.actor }}</span>
-            <span class="cell-mono" style="font-size: 12px">{{ e.ip }}</span>
-            <span><span class="tag">{{ e.method }}</span></span>
-            <span class="cell-mono" :style="{ color: sevColor(e), fontWeight: 600 }">{{ e.status || '—' }}</span>
-            <span class="cell-mono" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ e.path }}</span>
-            <span style="color: var(--muted); font-size: 12px">{{ e.note }}</span>
-          </div>
-        </div>
-      </div>
-    </section>
-    <p v-else class="empty-text">{{ t('admin.audit.empty') }}</p>
-  </section>
+    <a-card size="small" :body-style="{ padding: 0 }">
+      <a-table
+        :columns="columns"
+        :data-source="rows"
+        :loading="loading"
+        :pagination="pagination"
+        row-key="_k"
+        size="small"
+        :scroll="{ x: 1200 }"
+        :locale="{ emptyText: t('admin.audit.empty') }"
+        @change="onTableChange"
+      >
+        <template #bodyCell="{ column, record: e }">
+          <template v-if="column.key === 'ts'">
+            <span class="mono">{{ (e.ts || '').slice(0, 19).replace('T', ' ') }}</span>
+          </template>
+          <template v-else-if="column.key === 'actor'">
+            <a-tooltip :title="e.actor"><span class="mono">{{ e.actor }}</span></a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'ip'">
+            <span class="mono">{{ e.ip }}</span>
+          </template>
+          <template v-else-if="column.key === 'method'">
+            <a-tag :bordered="false" class="mono">{{ e.method }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <a-typography-text :type="statusType(e)" strong class="mono">{{ e.status || '—' }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'path'">
+            <a-tooltip :title="e.path"><span class="mono">{{ e.path }}</span></a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'note'">
+            <a-typography-text type="secondary">{{ e.note }}</a-typography-text>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+  </div>
 </template>
+
+<style scoped>
+.quick-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
+.filter-form { margin-top: 16px; }
+.filter-form :deep(.ant-form-item) { margin-bottom: 12px; }
+</style>

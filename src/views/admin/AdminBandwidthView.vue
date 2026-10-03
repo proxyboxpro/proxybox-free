@@ -1,6 +1,5 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { BarChart3, RefreshCw, ArrowUp, ArrowDown, Activity } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { apiFetch } from '../../api'
 import { formatBytes, formatNumber } from '../../utils/format'
@@ -20,9 +19,9 @@ const autoRefresh = ref(false)
 let timer = null
 
 const WINDOWS = computed(() => [
-  { v: 'h1', l: t('admin.bw.win1h') },
-  { v: 'h24', l: t('admin.bw.win24h') },
-  { v: 'd30', l: t('admin.bw.win30d') }
+  { value: 'h1', label: t('admin.bw.win1h') },
+  { value: 'h24', label: t('admin.bw.win24h') },
+  { value: 'd30', label: t('admin.bw.win30d') }
 ])
 
 async function refresh() {
@@ -48,9 +47,12 @@ const filtered = computed(() => {
   const sorted = [...list].sort((a, b) => sortDir.value === 'asc' ? a.total - b.total : b.total - a.total)
   return sorted
 })
+// Rank across pages (bodyCell's index restarts on every page).
+const rankOf = computed(() => new Map(filtered.value.map((p, i) => [p.proxyId, i + 1])))
 
 // Largest total in the current filtered set — drives the relative bar width.
 const maxTotal = computed(() => filtered.value.reduce((m, p) => Math.max(m, p.total || 0), 0) || 1)
+function barPercent(p) { return Math.max(2, Math.round(((p.total || 0) / maxTotal.value) * 100)) }
 
 const kpi = computed(() => ({
   total: (totals.value.up || 0) + (totals.value.down || 0),
@@ -59,12 +61,39 @@ const kpi = computed(() => ({
   conns: totals.value.conns || 0,
   count: totals.value.proxyCount || 0
 }))
+const fmtBytes = ({ value }) => formatBytes(value)
+const fmtNum = ({ value }) => formatNumber(value)
+
+const typeOptions = computed(() => [
+  { value: '', label: t('admin.bw.filterAll') },
+  { value: 'IPv4', label: 'IPv4' },
+  { value: 'IPv6', label: 'IPv6' },
+  { value: 'Hub', label: 'Hub' }
+])
+const sortOptions = computed(() => [
+  { value: 'desc', label: t('admin.bw.sortDesc') },
+  { value: 'asc', label: t('admin.bw.sortAsc') }
+])
+
+const columns = computed(() => [
+  { title: '#', key: 'rank', width: 56, align: 'right' },
+  { title: t('admin.bw.colOwner'), key: 'owner' },
+  { title: t('admin.bw.colNode'), key: 'node', responsive: ['md'] },
+  { title: t('admin.bw.colIpPort'), key: 'ip' },
+  { title: t('admin.bw.colConns'), key: 'conns', align: 'right', width: 110, responsive: ['md'] },
+  { title: t('admin.bw.colUpDown'), key: 'updown', align: 'right', width: 130 },
+  { title: t('admin.bw.colTotal'), key: 'total', align: 'right', width: 160 }
+])
+const pagination = { defaultPageSize: 50, showSizeChanger: true, pageSizeOptions: ['50', '100', '200'], hideOnSinglePage: true }
+const BAR_COLOR = { '0%': '#3b82f6', '100%': '#16a34a' }
 
 function fmtLastTs(ts) {
   if (!ts) return '—'
   return new Date(ts).toLocaleString('vi-VN', { hour12: false })
 }
 function goDetail(p) { if (p.exists) router.push({ name: 'admin-connection-detail', params: { proxyId: p.proxyId } }) }
+const customRow = (p) => ({ onClick: () => goDetail(p) })
+const rowClass = (p) => (p.exists ? 'clickable' : '')
 
 onMounted(() => {
   refresh()
@@ -74,171 +103,158 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 </script>
 
 <template>
-  <section class="page-stack">
-    <div class="toolbar">
-      <span class="eyebrow">
-        <BarChart3 :size="14" style="vertical-align:-2px" />
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">
+        <BarChartOutlined />
         {{ t('admin.bw.eyebrowSuffix') }} · {{ filtered.length }} {{ t('admin.bw.ports') }}
-      </span>
-      <div class="spacer"></div>
-      <label class="filter-field" style="margin-right:8px; width:auto">
-        <input v-model="autoRefresh" type="checkbox" /> {{ t('admin.bw.autoRefresh') }}
-      </label>
-      <button class="ghost-button" type="button" :disabled="loading" @click="refresh">
-        <RefreshCw :size="12" /> {{ t('admin.bw.refresh') }}
-      </button>
-    </div>
+      </a-typography-text>
+      <a-space wrap>
+        <a-checkbox v-model:checked="autoRefresh">{{ t('admin.bw.autoRefresh') }}</a-checkbox>
+        <a-button :loading="loading" @click="refresh">
+          <template #icon><ReloadOutlined /></template>
+          {{ t('admin.bw.refresh') }}
+        </a-button>
+      </a-space>
+    </a-flex>
 
-    <p class="hint-text">
-      {{ t('admin.bw.intro') }}
-    </p>
+    <a-typography-paragraph type="secondary" class="intro">{{ t('admin.bw.intro') }}</a-typography-paragraph>
 
     <!-- Window selector -->
-    <div class="bw-range-pills">
-      <button v-for="w in WINDOWS" :key="w.v" type="button" :class="{ active: win === w.v }" @click="setWindow(w.v)">
-        {{ w.l }}
-      </button>
+    <div>
+      <a-segmented :value="win" :options="WINDOWS" @change="setWindow" />
     </div>
 
-    <p v-if="err" class="error-text">{{ err }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
     <!-- KPI strip -->
-    <div class="metric-cards">
-      <article>
-        <BarChart3 :size="20" />
-        <span>{{ t('admin.bw.kpiTotal') }}</span>
-        <strong style="font-size:18px">{{ formatBytes(kpi.total) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ t('admin.bw.kpiTotalSub', { n: kpi.count }) }}</small>
-      </article>
-      <article>
-        <ArrowUp :size="20" />
-        <span>{{ t('admin.bw.kpiUpload') }}</span>
-        <strong style="font-size:18px">{{ formatBytes(kpi.up) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ t('admin.bw.kpiUploadSub') }}</small>
-      </article>
-      <article>
-        <ArrowDown :size="20" />
-        <span>{{ t('admin.bw.kpiDownload') }}</span>
-        <strong style="font-size:18px">{{ formatBytes(kpi.down) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ t('admin.bw.kpiDownloadSub') }}</small>
-      </article>
-      <article>
-        <Activity :size="20" />
-        <span>{{ t('admin.bw.kpiConns') }}</span>
-        <strong>{{ formatNumber(kpi.conns) }}</strong>
-        <small style="color:var(--muted);font-size:11.5px">{{ t('admin.bw.kpiConnsSub') }}</small>
-      </article>
-    </div>
+    <a-row :gutter="[12, 12]">
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.bw.kpiTotal')" :value="kpi.total" :formatter="fmtBytes">
+            <template #prefix><BarChartOutlined /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.bw.kpiTotalSub', { n: kpi.count }) }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.bw.kpiUpload')" :value="kpi.up" :formatter="fmtBytes">
+            <template #prefix><ArrowUpOutlined /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.bw.kpiUploadSub') }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.bw.kpiDownload')" :value="kpi.down" :formatter="fmtBytes">
+            <template #prefix><ArrowDownOutlined /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.bw.kpiDownloadSub') }}</a-typography-text>
+        </a-card>
+      </a-col>
+      <a-col :xs="12" :md="6">
+        <a-card size="small">
+          <a-statistic :title="t('admin.bw.kpiConns')" :value="kpi.conns" :formatter="fmtNum">
+            <template #prefix><ApiOutlined /></template>
+          </a-statistic>
+          <a-typography-text type="secondary" class="kpi-sub">{{ t('admin.bw.kpiConnsSub') }}</a-typography-text>
+        </a-card>
+      </a-col>
+    </a-row>
 
     <!-- Filters -->
-    <section class="surface">
-      <div class="ord-filters">
-        <div class="filter-row">
-          <label class="filter-field">
-            <span>{{ t('admin.bw.filterType') }}</span>
-            <select v-model="typeFilter">
-              <option value="">{{ t('admin.bw.filterAll') }}</option>
-              <option value="IPv4">IPv4</option>
-              <option value="IPv6">IPv6</option>
-              <option value="Hub">Hub</option>
-            </select>
-          </label>
-          <label class="filter-field">
-            <span>{{ t('admin.bw.filterSort') }}</span>
-            <select v-model="sortDir">
-              <option value="desc">{{ t('admin.bw.sortDesc') }}</option>
-              <option value="asc">{{ t('admin.bw.sortAsc') }}</option>
-            </select>
-          </label>
-          <label class="filter-field" style="flex:1; min-width:240px">
-            <span>{{ t('admin.bw.filterSearch') }}</span>
-            <input v-model="search" type="search" :placeholder="t('admin.bw.searchPh')" />
-          </label>
-        </div>
-      </div>
-    </section>
+    <a-card size="small">
+      <a-form layout="inline" class="filters">
+        <a-form-item :label="t('admin.bw.filterType')">
+          <a-select v-model:value="typeFilter" :options="typeOptions" style="width: 130px" />
+        </a-form-item>
+        <a-form-item :label="t('admin.bw.filterSort')">
+          <a-select v-model:value="sortDir" :options="sortOptions" style="width: 170px" />
+        </a-form-item>
+        <a-form-item :label="t('admin.bw.filterSearch')" class="grow">
+          <a-input-search v-model:value="search" allow-clear :placeholder="t('admin.bw.searchPh')" />
+        </a-form-item>
+      </a-form>
+    </a-card>
 
     <!-- Ranking table -->
-    <section class="surface">
-      <div class="section-head">
-        <h2>{{ t('admin.bw.rankTitle', { n: filtered.length }) }}</h2>
-        <span style="color:var(--muted);font-size:12px">{{ t('admin.bw.rankNote') }}</span>
-      </div>
-      <p v-if="!filtered.length && !loading" class="empty-text">
-        {{ t('admin.bw.empty') }}
-      </p>
-      <div v-if="filtered.length" class="data-table bw-table">
-        <div class="table-head">
-          <span style="text-align:right">#</span>
-          <span>{{ t('admin.bw.colOwner') }}</span>
-          <span>{{ t('admin.bw.colNode') }}</span>
-          <span>{{ t('admin.bw.colIpPort') }}</span>
-          <span style="text-align:right">{{ t('admin.bw.colConns') }}</span>
-          <span style="text-align:right">{{ t('admin.bw.colUpDown') }}</span>
-          <span style="text-align:right">{{ t('admin.bw.colTotal') }}</span>
-        </div>
-        <div v-for="(p, i) in filtered" :key="p.proxyId" class="table-row" :class="{ clickable: p.exists }" @click="goDetail(p)">
-          <span style="text-align:right; color:var(--muted); font-family:var(--mono)">{{ i + 1 }}</span>
-          <span>
-            <div style="font-weight:600">{{ p.ownerEmail || '—' }}</div>
-            <small class="cell-mono" style="color:var(--muted); font-size:11px">
-              {{ p.proxyId }} · {{ p.type || '?' }}
-              <span v-if="!p.exists" style="color:var(--red)">{{ t('admin.bw.deletedSuffix') }}</span>
-            </small>
-          </span>
-          <span>
+    <a-card :body-style="{ padding: 0 }">
+      <template #title>
+        <a-flex justify="space-between" align="baseline" wrap="wrap" gap="small" class="card-title">
+          <span>{{ t('admin.bw.rankTitle', { n: filtered.length }) }}</span>
+          <a-typography-text type="secondary" class="card-note">{{ t('admin.bw.rankNote') }}</a-typography-text>
+        </a-flex>
+      </template>
+      <a-table
+        :columns="columns"
+        :data-source="filtered"
+        :loading="loading"
+        :pagination="pagination"
+        row-key="proxyId"
+        size="middle"
+        :scroll="{ x: 640 }"
+        :custom-row="customRow"
+        :row-class-name="rowClass"
+        :locale="{ emptyText: t('admin.bw.empty') }"
+      >
+        <template #bodyCell="{ column, record: p }">
+          <template v-if="column.key === 'rank'">
+            <a-typography-text type="secondary" class="mono">{{ rankOf.get(p.proxyId) }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'owner'">
+            <a-typography-text strong>{{ p.ownerEmail || '—' }}</a-typography-text>
+            <div>
+              <a-typography-text type="secondary" class="mono small">
+                {{ p.proxyId }} · {{ p.type || '?' }}
+              </a-typography-text>
+              <a-typography-text v-if="!p.exists" type="danger" class="small">{{ t('admin.bw.deletedSuffix') }}</a-typography-text>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'node'">
             <div>{{ p.nodeName || '—' }}</div>
-            <small style="color:var(--muted); font-size:11px">{{ p.zone || '—' }}</small>
-          </span>
-          <span class="cell-mono" style="font-size:12px">
-            {{ p.ip || p.bindIp || '—' }}<template v-if="p.port">:{{ p.port }}</template>
-            <small v-if="p.ip && p.bindIp && p.ip !== p.bindIp" style="display:block; color:var(--muted); font-size:10.5px">{{ t('admin.bw.egressPrefix') }}{{ p.bindIp }}</small>
-          </span>
-          <span style="text-align:right">
+            <a-typography-text type="secondary" class="small">{{ p.zone || '—' }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'ip'">
+            <span class="mono">{{ p.ip || p.bindIp || '—' }}<template v-if="p.port">:{{ p.port }}</template></span>
+            <div v-if="p.ip && p.bindIp && p.ip !== p.bindIp">
+              <a-typography-text type="secondary" class="mono small">{{ t('admin.bw.egressPrefix') }}{{ p.bindIp }}</a-typography-text>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'conns'">
             <strong>{{ formatNumber(p.conns) }}</strong>
-            <small v-if="p.srcCount" style="color:var(--muted); font-size:11px; display:block">{{ formatNumber(p.srcCount) }} {{ t('admin.bw.clientIp') }}</small>
-          </span>
-          <span class="cell-mono" style="text-align:right; font-size:12px">
-            ↑ {{ formatBytes(p.up) }}<br />
-            ↓ {{ formatBytes(p.down) }}
-          </span>
-          <span style="text-align:right">
-            <strong class="cell-mono" style="font-size:12.5px">{{ formatBytes(p.total) }}</strong>
-            <span class="bw-bar"><span class="bw-bar-fill" :style="{ width: Math.max(2, Math.round((p.total / maxTotal) * 100)) + '%' }"></span></span>
-          </span>
-        </div>
+            <div v-if="p.srcCount">
+              <a-typography-text type="secondary" class="small">{{ formatNumber(p.srcCount) }} {{ t('admin.bw.clientIp') }}</a-typography-text>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'updown'">
+            <span class="mono nowrap">↑ {{ formatBytes(p.up) }}</span><br />
+            <span class="mono nowrap">↓ {{ formatBytes(p.down) }}</span>
+          </template>
+          <template v-else-if="column.key === 'total'">
+            <a-tooltip :title="fmtLastTs(p.lastTs)">
+              <strong class="mono">{{ formatBytes(p.total) }}</strong>
+            </a-tooltip>
+            <a-progress :percent="barPercent(p)" :show-info="false" size="small" :stroke-color="BAR_COLOR" class="bw-bar" />
+          </template>
+        </template>
+      </a-table>
+      <div v-if="filtered.length" class="card-footer">
+        <a-typography-text type="secondary" class="card-note">{{ t('admin.bw.footer') }}</a-typography-text>
       </div>
-      <p v-if="filtered.length" style="font-size:12px; color:var(--muted); margin-top:10px">
-        {{ t('admin.bw.footer') }}
-      </p>
-    </section>
-  </section>
+    </a-card>
+  </div>
 </template>
 
 <style scoped>
-.hint-text { font-size: 12.5px; color: var(--muted); margin: -2px 0 4px; line-height: 1.5; max-width: 760px; }
-.bw-range-pills { display: inline-flex; padding: 3px; background: rgba(255,255,255,0.04); border-radius: 8px; gap: 2px; }
-.bw-range-pills button {
-  padding: 6px 16px; font-size: 12.5px; font-weight: 500;
-  background: transparent; color: var(--muted); border: none; cursor: pointer;
-  border-radius: 6px; transition: background 0.1s, color 0.1s;
-}
-.bw-range-pills button:hover { color: var(--text); }
-.bw-range-pills button.active { background: var(--surface); color: var(--green); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
-
-.bw-table .table-head,
-.bw-table .table-row { grid-template-columns: 44px 1.7fr 1.1fr 1.4fr 0.9fr 1.1fr 1.2fr; }
-.bw-table .table-row.clickable { cursor: pointer; }
-.bw-table .table-row.clickable:hover { background: rgba(34,197,94,0.025); }
-.bw-bar { display: block; height: 4px; margin-top: 4px; background: rgba(255,255,255,0.06); border-radius: 999px; overflow: hidden; }
-.bw-bar-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--blue), var(--green)); border-radius: 999px; }
-
-@media (max-width: 900px) {
-  .bw-table .table-head,
-  .bw-table .table-row { grid-template-columns: 30px 1.6fr 1.3fr 0.9fr 1.1fr; }
-  .bw-table .table-head span:nth-child(3),
-  .bw-table .table-row span:nth-child(3),
-  .bw-table .table-head span:nth-child(5),
-  .bw-table .table-row span:nth-child(5) { display: none; }
-}
+.intro { margin: 0; max-width: 760px; }
+.kpi-sub { font-size: 12px; }
+.card-title { white-space: normal; padding: 10px 0; }
+.card-note { font-size: 12px; font-weight: 400; }
+.card-footer { padding: 10px 16px 14px; }
+.filters { row-gap: 8px; }
+.filters .grow { flex: 1 1 240px; }
+.small { font-size: 11.5px; }
+.bw-bar { margin: 2px 0 0; }
+:deep(.clickable) { cursor: pointer; }
 </style>

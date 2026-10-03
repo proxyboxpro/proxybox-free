@@ -1,27 +1,34 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import VueApexCharts from 'vue3-apexcharts'
-import {
-  Activity, ArrowDown, ArrowUp, BarChart3, Layers, RefreshCw, Search, Wifi
-} from 'lucide-vue-next'
+import { theme as antdTheme } from 'ant-design-vue'
 import { apiFetch } from '../../api'
 import { useI18n } from '../../i18n'
 import { formatBytes } from '../../utils/format'
+import { FONT_MONO, isDark } from '../../theme'
 import CountryFlag from '../../components/CountryFlag.vue'
 
 const apexchart = VueApexCharts.component || VueApexCharts
 const { t } = useI18n()
+const { token } = antdTheme.useToken()
 const data = ref(null)
 const err = ref('')
+const loading = ref(false)
 const search = ref('')
 const ppWin = ref('30d')   // per-proxy table window: '24h' | '30d'
 const ppPage = ref(0)      // per-proxy table page (10 rows/page — big accounts have 1000s)
 const PP_PAGE_SIZE = 10
 
+// Series colours (upload = green, download = blue) — shared by chart, donut and table.
+const UP_COLOR = '#22c55e'
+const DOWN_COLOR = '#3b82f6'
+
 async function refresh() {
   err.value = ''
+  loading.value = true
   try { data.value = await apiFetch('/api/v1/user/usage/summary') }
   catch (e) { err.value = e.message }
+  finally { loading.value = false }
 }
 
 function fmtRate(bps) { return bps ? `${formatBytes(bps)}/s` : '0 B/s' }
@@ -36,16 +43,27 @@ function countryFromZone(z) {
   if (z.startsWith('hk')) return 'HK'
   return 'GLOBAL'
 }
-function hoursAgoLabel(idx, total) {
-  const ago = total - 1 - idx
-  if (ago === 0) return t('cust.usage.now')
-  if (ago < 24) return `-${ago}h`
-  return `-${Math.round(ago / 24)}d`
-}
 
 const totals = computed(() => data.value?.totals || { upload: 0, download: 0, conns: 0, proxyCount: 0 })
 const totalBytes = computed(() => (totals.value.upload || 0) + (totals.value.download || 0))
 const quotaGB = computed(() => Number(data.value?.quotaGB) || 0)
+const quotaUsedGB = computed(() => totalBytes.value / 1e9)
+const quotaOver = computed(() => quotaUsedGB.value > quotaGB.value)
+
+// KPI tiles (quota tile only when the admin configured a per-proxy quota).
+const kpis = computed(() => {
+  const list = [
+    { key: 'total', label: t('cust.usage.kpiTotal'),    value: formatBytes(totalBytes.value),                     foot: t('cust.billing.thisMonth'),     icon: 'total' },
+    { key: 'up',    label: t('cust.usage.kpiUpload'),   value: formatBytes(totals.value.upload),                  foot: '↑ outbound',                    icon: 'up' },
+    { key: 'down',  label: t('cust.usage.kpiDownload'), value: formatBytes(totals.value.download),                foot: '↓ inbound',                     icon: 'down' },
+    { key: 'conns', label: t('cust.usage.kpiConns'),    value: Number(totals.value.conns || 0).toLocaleString(), foot: t('cust.usage.totalConns'),       icon: 'conns' }
+  ]
+  if (quotaGB.value > 0) {
+    list.push({ key: 'quota', label: t('cust.usage.quotaLabel'), value: `${quotaUsedGB.value.toFixed(1)} / ${quotaGB.value} GB`, foot: t('cust.usage.quotaFoot'), icon: 'quota', quota: true })
+  }
+  list.push({ key: 'count', label: t('cust.usage.kpiProxyCount'), value: totals.value.proxyCount ?? 0, foot: t('cust.proxies.kpiTotalSub'), icon: 'count' })
+  return list
+})
 
 // Accurate cumulative transferred volume over rolling windows (from conn_events).
 const EMPTY_WIN = { up: 0, down: 0 }
@@ -85,48 +103,50 @@ const buckets = computed(() => {
 const hasUsageData = computed(() => buckets.value.some((b) => b.uploadBytes > 0 || b.downloadBytes > 0))
 const maxY = computed(() => buckets.value.reduce((m, b) => Math.max(m, b.uploadBytes, b.downloadBytes), 0))
 
-// ApexCharts series + options
+// ApexCharts series + options (theme-aware: follows the antd dark/light tokens)
 const chartSeries = computed(() => [
   { name: t('cust.usage.up'),   data: buckets.value.map((b) => [b.ts, b.uploadBytes]) },
   { name: t('cust.usage.down'), data: buckets.value.map((b) => [b.ts, b.downloadBytes]) }
 ])
-const chartOptions = computed(() => ({
-  chart: { type: 'area', toolbar: { show: false }, animations: { enabled: true, easing: 'easeinout', speed: 350 }, background: 'transparent', fontFamily: 'inherit' },
-  theme: { mode: 'dark' },
-  colors: ['#22c55e', '#3b82f6'],
-  stroke: { curve: 'smooth', width: 2 },
-  dataLabels: { enabled: false },
-  fill: { type: 'gradient', gradient: { shadeIntensity: 0.8, opacityFrom: 0.45, opacityTo: 0.04, stops: [0, 100] } },
-  grid: { borderColor: 'rgba(255,255,255,0.06)', strokeDashArray: 3, padding: { top: 6, right: 12, bottom: 0, left: 6 } },
-  xaxis: {
-    type: 'datetime',
-    labels: { style: { colors: '#94a3b8', fontSize: '11px', fontFamily: 'ui-monospace, monospace' }, datetimeUTC: false },
-    axisBorder: { show: false }, axisTicks: { color: 'rgba(255,255,255,0.1)' }
-  },
-  yaxis: {
-    labels: {
-      style: { colors: '#94a3b8', fontSize: '11px', fontFamily: 'ui-monospace, monospace' },
-      formatter: (v) => formatBytes(v)
-    }
-  },
-  tooltip: {
-    theme: 'dark',
-    x: { format: 'HH:mm dd/MM' },
-    y: { formatter: (v) => formatBytes(v) }
-  },
-  legend: { show: false }
-}))
+const chartOptions = computed(() => {
+  const tk = token.value
+  const mode = isDark.value ? 'dark' : 'light'
+  const axisLabel = { colors: tk.colorTextSecondary, fontSize: '11px', fontFamily: FONT_MONO }
+  return {
+    chart: { type: 'area', toolbar: { show: false }, animations: { enabled: true, easing: 'easeinout', speed: 350 }, background: 'transparent', fontFamily: 'inherit', foreColor: tk.colorTextSecondary },
+    theme: { mode },
+    colors: [UP_COLOR, DOWN_COLOR],
+    stroke: { curve: 'smooth', width: 2 },
+    dataLabels: { enabled: false },
+    fill: { type: 'gradient', gradient: { shadeIntensity: 0.8, opacityFrom: 0.45, opacityTo: 0.04, stops: [0, 100] } },
+    grid: { borderColor: tk.colorBorderSecondary, strokeDashArray: 3, padding: { top: 6, right: 12, bottom: 0, left: 6 } },
+    xaxis: {
+      type: 'datetime',
+      labels: { style: axisLabel, datetimeUTC: false },
+      axisBorder: { show: false }, axisTicks: { color: tk.colorBorderSecondary }
+    },
+    yaxis: {
+      labels: {
+        style: axisLabel,
+        formatter: (v) => formatBytes(v)
+      }
+    },
+    tooltip: {
+      theme: mode,
+      x: { format: 'HH:mm dd/MM' },
+      y: { formatter: (v) => formatBytes(v) }
+    },
+    legend: { show: false }
+  }
+})
 
 // ── Donut: upload vs download split ─────────────────────────────────────────
 const donut = computed(() => {
   const up = totals.value.upload || 0
   const dn = totals.value.download || 0
   const total = up + dn
-  if (total === 0) return { upPct: 0, dnPct: 0, upDash: 0, dnDash: 0, circ: 2 * Math.PI * 36 }
-  const upPct = up / total
-  const dnPct = dn / total
-  const C = 2 * Math.PI * 36
-  return { upPct, dnPct, upDash: upPct * C, dnDash: dnPct * C, circ: C }
+  if (total === 0) return { upPct: 0, dnPct: 0 }
+  return { upPct: up / total, dnPct: dn / total }
 })
 
 // ── Per-proxy table data ────────────────────────────────────────────────────
@@ -154,238 +174,220 @@ const rows = computed(() => {
 })
 // Paginate the per-proxy table at 10/page — a 1000+ proxy account would otherwise
 // render every row at once. Search/window changes reset to the first page.
-const ppPageCount = computed(() => Math.max(1, Math.ceil(rows.value.length / PP_PAGE_SIZE)))
-const pagedRows = computed(() => rows.value.slice(ppPage.value * PP_PAGE_SIZE, ppPage.value * PP_PAGE_SIZE + PP_PAGE_SIZE))
 watch([search, ppWin, () => rows.value.length], () => { ppPage.value = 0 })
+const ppPagination = computed(() => ({
+  current: ppPage.value + 1,
+  pageSize: PP_PAGE_SIZE,
+  hideOnSinglePage: true,
+  showSizeChanger: false,
+  size: 'small'
+}))
+function onPpChange(p) { ppPage.value = p.current - 1 }
+
+const ppColumns = computed(() => [
+  { title: t('cust.col.name'),     key: 'name',     width: 160 },
+  { title: t('cust.col.endpoint'), key: 'endpoint', width: 200 },
+  { title: t('cust.col.country'),  key: 'country',  width: 130 },
+  { title: t('cust.usage.up'),     key: 'up',       width: 110, align: 'right' },
+  { title: t('cust.usage.down'),   key: 'down',     width: 110, align: 'right' },
+  { title: t('cust.usage.live'),   key: 'live',     width: 190 },
+  { title: t('cust.usage.share'),  key: 'share',    width: 180 }
+])
 
 onMounted(refresh)
 </script>
 
 <template>
-  <h1>{{ t('cust.usage.title') }}</h1>
-  <p class="sub">{{ t('cust.usage.subtitle') }}</p>
+  <div class="page">
+    <a-flex justify="space-between" align="center" wrap="wrap" gap="small">
+      <a-typography-text type="secondary">{{ t('cust.usage.subtitle') }}</a-typography-text>
+      <a-button :loading="loading" @click="refresh">
+        <template #icon><ReloadOutlined /></template>
+        {{ t('cust.refresh') }}
+      </a-button>
+    </a-flex>
 
-  <p v-if="err" class="error-text">{{ err }}</p>
+    <a-alert v-if="err" type="error" show-icon :message="err" closable @close="err = ''" />
 
-  <!-- KPI row -->
-  <div class="kpi-row" style="grid-template-columns: repeat(5, 1fr)">
-    <div class="kpi-card-v2">
-      <span class="ico purple"><Activity :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.usage.kpiTotal') }}</span>
-        <span class="val" style="font-size:20px">{{ formatBytes(totalBytes) }}</span>
-        <span class="foot"><span class="dot"></span> {{ t('cust.billing.thisMonth') }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico green"><ArrowUp :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.usage.kpiUpload') }}</span>
-        <span class="val" style="font-size:20px">{{ formatBytes(totals.upload) }}</span>
-        <span class="foot"><span class="dot"></span> ↑ outbound</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico blue"><ArrowDown :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.usage.kpiDownload') }}</span>
-        <span class="val" style="font-size:20px">{{ formatBytes(totals.download) }}</span>
-        <span class="foot"><span class="dot"></span> ↓ inbound</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico amber"><Wifi :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.usage.kpiConns') }}</span>
-        <span class="val">{{ Number(totals.conns || 0).toLocaleString() }}</span>
-        <span class="foot"><span class="dot"></span> {{ t('cust.usage.totalConns') }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2" v-if="quotaGB > 0">
-      <span class="ico" :class="(totalBytes / 1e9) > quotaGB ? 'red' : 'green'"><ArrowUp :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.usage.quotaLabel') }}</span>
-        <span class="val" style="font-size:20px">{{ (totalBytes / 1e9).toFixed(1) }} / {{ quotaGB }} GB</span>
-        <span class="foot"><span class="dot"></span> {{ t('cust.usage.quotaFoot') }}</span>
-      </div>
-    </div>
-    <div class="kpi-card-v2">
-      <span class="ico rose"><Layers :size="22" /></span>
-      <div class="body">
-        <span class="lbl">{{ t('cust.usage.kpiProxyCount') }}</span>
-        <span class="val">{{ totals.proxyCount }}</span>
-        <span class="foot"><span class="dot"></span> {{ t('cust.proxies.kpiTotalSub') }}</span>
-      </div>
-    </div>
+    <!-- KPI row -->
+    <a-flex wrap="wrap" :gap="12">
+      <a-card v-for="k in kpis" :key="k.key" size="small" class="kpi">
+        <a-statistic
+          :title="k.label"
+          :value="k.value"
+          :value-style="k.quota && quotaOver ? { color: 'var(--pb-error)', fontSize: '20px' } : { fontSize: '20px' }"
+        >
+          <template #prefix>
+            <DashboardOutlined v-if="k.icon === 'total'" class="kpi-ico" />
+            <ArrowUpOutlined v-else-if="k.icon === 'up'" class="kpi-ico" :style="{ color: UP_COLOR }" />
+            <ArrowDownOutlined v-else-if="k.icon === 'down'" class="kpi-ico" :style="{ color: DOWN_COLOR }" />
+            <WifiOutlined v-else-if="k.icon === 'conns'" class="kpi-ico" />
+            <PieChartOutlined v-else-if="k.icon === 'quota'" class="kpi-ico" />
+            <AppstoreOutlined v-else class="kpi-ico" />
+          </template>
+        </a-statistic>
+        <a-progress
+          v-if="k.quota"
+          :percent="Math.min(100, Math.round((quotaUsedGB / quotaGB) * 100))"
+          :status="quotaOver ? 'exception' : 'normal'"
+          :show-info="false"
+          size="small"
+        />
+        <a-typography-text type="secondary" class="foot">{{ k.foot }}</a-typography-text>
+      </a-card>
+    </a-flex>
+
+    <!-- Accurate cumulative traffic totals over 1h / 24h / 30d -->
+    <a-card size="small">
+      <template #title><BarChartOutlined class="title-ico" /> {{ t('cust.usage.windowsTitle') }}</template>
+      <a-typography-paragraph type="secondary" class="hint">{{ t('cust.usage.windowsHint') }}</a-typography-paragraph>
+      <a-row :gutter="[12, 12]">
+        <a-col v-for="w in windowCards" :key="w.key" :xs="24" :md="8">
+          <a-card size="small" class="win-card">
+            <a-statistic :title="w.label" :value="formatBytes(w.up + w.down)" :value-style="{ fontFamily: 'var(--pb-mono)', fontWeight: 700 }" />
+            <a-space :size="16" class="mono small">
+              <span :style="{ color: UP_COLOR }"><ArrowUpOutlined /> {{ formatBytes(w.up) }}</span>
+              <span :style="{ color: DOWN_COLOR }"><ArrowDownOutlined /> {{ formatBytes(w.down) }}</span>
+            </a-space>
+          </a-card>
+        </a-col>
+      </a-row>
+    </a-card>
+
+    <!-- Main chart + donut split -->
+    <a-row :gutter="[16, 16]">
+      <!-- Dual-line area chart -->
+      <a-col :xs="24" :lg="16" :xl="18">
+        <a-card size="small" class="fill">
+          <template #title><BarChartOutlined class="title-ico" /> {{ t('cust.usage.chart24h') }}</template>
+          <template v-if="hasUsageData" #extra>
+            <a-space :size="14" wrap class="small">
+              <a-badge :color="UP_COLOR" :text="t('cust.usage.up')" />
+              <a-badge :color="DOWN_COLOR" :text="t('cust.usage.down')" />
+              <a-typography-text type="secondary" class="small">{{ t('cust.usage.peak') }} ≈ <span class="mono">{{ formatBytes(maxY) }}</span></a-typography-text>
+            </a-space>
+          </template>
+          <!-- ApexCharts area chart — smooth gradient + hover tooltip + responsive. Renders
+               empty (flat zero) when no traffic yet — that's an honest "no data" signal. -->
+          <apexchart type="area" height="280" :options="chartOptions" :series="chartSeries" />
+          <a-typography-paragraph v-if="!hasUsageData" type="secondary" class="chart-empty">
+            {{ t('cust.usage.empty') }}
+          </a-typography-paragraph>
+        </a-card>
+      </a-col>
+
+      <!-- Donut: upload vs download split -->
+      <a-col :xs="24" :lg="8" :xl="6">
+        <a-card size="small" :title="t('cust.usage.split')" class="fill">
+          <a-flex justify="center" class="donut-wrap">
+            <a-progress
+              type="circle"
+              :size="170"
+              :stroke-width="10"
+              :percent="totalBytes ? 100 : 0"
+              :stroke-color="DOWN_COLOR"
+              :success="{ percent: Math.round(donut.upPct * 100), strokeColor: UP_COLOR }"
+            >
+              <template #format>
+                <a-flex vertical align="center" :gap="2">
+                  <a-typography-text type="secondary" class="donut-lbl">{{ t('cust.usage.kpiTotal') }}</a-typography-text>
+                  <a-typography-text strong class="mono donut-val">{{ formatBytes(totalBytes) }}</a-typography-text>
+                </a-flex>
+              </template>
+            </a-progress>
+          </a-flex>
+          <a-flex vertical :gap="8">
+            <a-card size="small" class="split-row">
+              <a-flex align="center" gap="small">
+                <a-badge :color="UP_COLOR" />
+                <span class="split-name">{{ t('cust.usage.up') }}</span>
+                <span class="mono" :style="{ color: UP_COLOR }">{{ Math.round(donut.upPct * 100) }}%</span>
+                <a-typography-text type="secondary" class="mono small">{{ formatBytes(totals.upload) }}</a-typography-text>
+              </a-flex>
+            </a-card>
+            <a-card size="small" class="split-row">
+              <a-flex align="center" gap="small">
+                <a-badge :color="DOWN_COLOR" />
+                <span class="split-name">{{ t('cust.usage.down') }}</span>
+                <span class="mono" :style="{ color: DOWN_COLOR }">{{ Math.round(donut.dnPct * 100) }}%</span>
+                <a-typography-text type="secondary" class="mono small">{{ formatBytes(totals.download) }}</a-typography-text>
+              </a-flex>
+            </a-card>
+          </a-flex>
+        </a-card>
+      </a-col>
+    </a-row>
+
+    <!-- Per-proxy table -->
+    <a-card :body-style="{ paddingTop: '12px' }">
+      <template #title>{{ t('cust.usage.perProxy') }} ({{ rows.length }})</template>
+      <a-flex justify="space-between" align="center" wrap="wrap" gap="small" class="pp-filters">
+        <a-tooltip :title="t('cust.usage.ppWindow')">
+          <a-segmented v-model:value="ppWin" :options="['24h', '30d']" class="mono" />
+        </a-tooltip>
+        <a-input-search
+          v-model:value="search"
+          allow-clear
+          :placeholder="t('cust.proxies.searchPlaceholder')"
+          class="pp-search"
+        />
+      </a-flex>
+
+      <a-table
+        :columns="ppColumns"
+        :data-source="rows"
+        :pagination="ppPagination"
+        :loading="loading && !data"
+        row-key="id"
+        size="middle"
+        :scroll="{ x: 1000 }"
+        :locale="{ emptyText: t('cust.usage.empty') }"
+        @change="onPpChange"
+      >
+        <template #bodyCell="{ column, record: p }">
+          <template v-if="column.key === 'name'">
+            <a-typography-text strong>{{ p.name || p.id }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'endpoint'">
+            <a-typography-text class="mono" :copyable="{ text: `${p.ip || p.bindIp}:${p.port}` }">{{ p.ip || p.bindIp }}:{{ p.port }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'country'">
+            <a-space :size="6"><CountryFlag :code="countryFromZone(p.zone)" :size="18" /> <span class="mono">{{ p.zone || 'auto' }}</span></a-space>
+          </template>
+          <template v-else-if="column.key === 'up'">
+            <span class="mono" :style="{ color: UP_COLOR }">{{ formatBytes(p.wUp || 0) }}</span>
+          </template>
+          <template v-else-if="column.key === 'down'">
+            <span class="mono" :style="{ color: DOWN_COLOR }">{{ formatBytes(p.wDown || 0) }}</span>
+          </template>
+          <template v-else-if="column.key === 'live'">
+            <span class="mono small">↑{{ fmtRate(p.bpsOut) }} ↓{{ fmtRate(p.bpsIn) }}</span>
+          </template>
+          <template v-else-if="column.key === 'share'">
+            <span class="mono small">{{ formatBytes(p.total) }}</span>
+            <a-progress :percent="p.share" :show-info="false" size="small" class="share-bar" />
+          </template>
+        </template>
+      </a-table>
+    </a-card>
   </div>
-
-  <!-- Accurate cumulative traffic totals over 1h / 24h / 30d -->
-  <section class="surface bw-windows-wrap">
-    <div class="bw-windows-head">
-      <h2><BarChart3 :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.usage.windowsTitle') }}</h2>
-      <span class="bw-windows-hint">{{ t('cust.usage.windowsHint') }}</span>
-    </div>
-    <div class="bw-windows">
-      <article v-for="w in windowCards" :key="w.key" class="bw-win-card">
-        <span class="bw-win-label">{{ w.label }}</span>
-        <strong class="bw-win-total cell-mono">{{ formatBytes(w.up + w.down) }}</strong>
-        <div class="bw-win-split">
-          <span class="cell-mono" style="color:#4ade80"><ArrowUp :size="12" style="vertical-align:-2px" /> {{ formatBytes(w.up) }}</span>
-          <span class="cell-mono" style="color:#60a5fa"><ArrowDown :size="12" style="vertical-align:-2px" /> {{ formatBytes(w.down) }}</span>
-        </div>
-      </article>
-    </div>
-  </section>
-
-  <!-- Main chart + donut split -->
-  <div style="display:grid; grid-template-columns: 1fr 280px; gap:14px; margin-bottom:14px">
-    <!-- Dual-line area chart -->
-    <section class="surface" style="padding:18px">
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; flex-wrap:wrap; gap:10px">
-        <h2 style="margin:0; color:var(--text); font-size:15px"><BarChart3 :size="14" style="vertical-align:-2px; color:var(--pxl)" /> {{ t('cust.usage.chart24h') }}</h2>
-        <div v-if="hasUsageData" style="display:inline-flex; gap:14px; font-size:12px; color:var(--muted)">
-          <span style="display:inline-flex; align-items:center; gap:6px"><span style="width:12px; height:3px; background:#4ade80; border-radius:2px"></span> {{ t('cust.usage.up') }}</span>
-          <span style="display:inline-flex; align-items:center; gap:6px"><span style="width:12px; height:3px; background:#60a5fa; border-radius:2px"></span> {{ t('cust.usage.down') }}</span>
-          <span>{{ t('cust.usage.peak') }} ≈ <span class="cell-mono" style="color:var(--text)">{{ formatBytes(maxY) }}</span></span>
-        </div>
-      </div>
-
-      <!-- ApexCharts area chart — smooth gradient + hover tooltip + responsive. Renders
-           empty (flat zero) when no traffic yet — that's an honest "no data" signal. -->
-      <apexchart type="area" height="280" :options="chartOptions" :series="chartSeries" />
-      <p v-if="!hasUsageData" style="margin-top:-30px; padding:14px 20px; text-align:center; color:var(--muted); font-size:12.5px">
-        {{ t('cust.usage.empty') }}
-      </p>
-    </section>
-
-    <!-- Donut: upload vs download split -->
-    <section class="surface" style="padding:18px; display:flex; flex-direction:column; gap:10px">
-      <h2 style="margin:0; color:var(--text); font-size:15px">{{ t('cust.usage.split') }}</h2>
-
-      <div style="display:flex; align-items:center; justify-content:center; padding:8px 0">
-        <svg viewBox="0 0 100 100" width="170" height="170">
-          <!-- Background ring -->
-          <circle cx="50" cy="50" r="36" fill="none" stroke="#232a36" stroke-width="12" />
-          <!-- Download arc (dominant base) — flat caps so the join with the
-               upload sliver is a clean radial edge, not overlapping round bulges. -->
-          <circle
-            cx="50" cy="50" r="36" fill="none"
-            stroke="#60a5fa" stroke-width="12"
-            :stroke-dasharray="`${donut.dnDash} ${donut.circ}`"
-            :stroke-dashoffset="-donut.upDash"
-            transform="rotate(-90 50 50)"
-            stroke-linecap="butt"
-          />
-          <!-- Upload arc -->
-          <circle
-            cx="50" cy="50" r="36" fill="none"
-            stroke="#4ade80" stroke-width="12"
-            :stroke-dasharray="`${donut.upDash} ${donut.circ}`"
-            stroke-dashoffset="0"
-            transform="rotate(-90 50 50)"
-            stroke-linecap="butt"
-          />
-          <!-- Center label — explicit narrow sans (NOT the SVG serif default) +
-               small size so it always fits inside the ring hole, any locale. -->
-          <text x="50" y="46.5" text-anchor="middle" font-size="6.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif" fill="#7d8590">{{ t('cust.usage.kpiTotal') }}</text>
-          <text x="50" y="58.5" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff" font-family="ui-monospace, monospace">{{ formatBytes(totalBytes) }}</text>
-        </svg>
-      </div>
-
-      <div style="display:flex; flex-direction:column; gap:8px">
-        <div style="display:flex; align-items:center; gap:10px; padding:8px; background:var(--pxl-card-2); border-radius:8px">
-          <span style="width:10px; height:10px; border-radius:50%; background:#4ade80; flex:none"></span>
-          <span style="flex:1; color:var(--text); font-size:12.5px">{{ t('cust.usage.up') }}</span>
-          <span class="cell-mono" style="color:#4ade80">{{ Math.round(donut.upPct * 100) }}%</span>
-          <span class="cell-mono" style="color:var(--muted); font-size:11px">{{ formatBytes(totals.upload) }}</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:10px; padding:8px; background:var(--pxl-card-2); border-radius:8px">
-          <span style="width:10px; height:10px; border-radius:50%; background:#60a5fa; flex:none"></span>
-          <span style="flex:1; color:var(--text); font-size:12.5px">{{ t('cust.usage.down') }}</span>
-          <span class="cell-mono" style="color:#60a5fa">{{ Math.round(donut.dnPct * 100) }}%</span>
-          <span class="cell-mono" style="color:var(--muted); font-size:11px">{{ formatBytes(totals.download) }}</span>
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <!-- Per-proxy table -->
-  <section class="dt2">
-    <div class="dt2-toolbar">
-      <h2 style="margin:0; color:var(--text); font-size:15px">{{ t('cust.usage.perProxy') }} ({{ rows.length }})</h2>
-      <div class="ppwin-pills" :title="t('cust.usage.ppWindow')">
-        <button type="button" :class="{ active: ppWin === '24h' }" @click="ppWin = '24h'">24h</button>
-        <button type="button" :class="{ active: ppWin === '30d' }" @click="ppWin = '30d'">30d</button>
-      </div>
-      <div class="spacer"></div>
-      <div class="search-box">
-        <Search :size="14" />
-        <input v-model="search" type="search" :placeholder="t('cust.proxies.searchPlaceholder')" />
-      </div>
-      <button class="ghost-button" type="button" @click="refresh"><RefreshCw :size="13" /></button>
-    </div>
-
-    <div class="dt2-head" style="grid-template-columns: 1.2fr 1.2fr 1fr 0.9fr 0.9fr 1fr 1.4fr">
-      <span>{{ t('cust.col.name') }}</span>
-      <span>{{ t('cust.col.endpoint') }}</span>
-      <span>{{ t('cust.col.country') }}</span>
-      <span>{{ t('cust.usage.up') }}</span>
-      <span>{{ t('cust.usage.down') }}</span>
-      <span>{{ t('cust.usage.live') }}</span>
-      <span>{{ t('cust.usage.share') }}</span>
-    </div>
-
-    <div v-for="p in pagedRows" :key="p.id" class="dt2-row" style="grid-template-columns: 1.2fr 1.2fr 1fr 0.9fr 0.9fr 1fr 1.4fr">
-      <span class="name">{{ p.name || p.id }}</span>
-      <span class="cell-mono">{{ p.ip || p.bindIp }}:{{ p.port }}</span>
-      <span class="country"><CountryFlag :code="countryFromZone(p.zone)" :size="18" /> {{ p.zone || 'auto' }}</span>
-      <span class="cell-mono" style="color:#4ade80">{{ formatBytes(p.wUp || 0) }}</span>
-      <span class="cell-mono" style="color:#60a5fa">{{ formatBytes(p.wDown || 0) }}</span>
-      <span class="cell-mono" style="font-size:11.5px">↑{{ fmtRate(p.bpsOut) }} ↓{{ fmtRate(p.bpsIn) }}</span>
-      <span class="usage-bar">
-        <span class="vals">{{ formatBytes(p.total) }}</span>
-        <span class="bar"><span :style="{ width: p.share + '%' }"></span></span>
-      </span>
-    </div>
-
-    <p v-if="!rows.length" class="empty-text" style="padding:30px">{{ t('cust.usage.empty') }}</p>
-
-    <div v-if="ppPageCount > 1" class="pp-pager">
-      <button class="ghost-button" type="button" :disabled="ppPage === 0" @click="ppPage = 0">«</button>
-      <button class="ghost-button" type="button" :disabled="ppPage === 0" @click="ppPage = Math.max(0, ppPage - 1)">‹</button>
-      <span class="pp-pager-info">{{ ppPage + 1 }} / {{ ppPageCount }}</span>
-      <button class="ghost-button" type="button" :disabled="ppPage + 1 >= ppPageCount" @click="ppPage = Math.min(ppPageCount - 1, ppPage + 1)">›</button>
-      <button class="ghost-button" type="button" :disabled="ppPage + 1 >= ppPageCount" @click="ppPage = ppPageCount - 1">»</button>
-    </div>
-  </section>
 </template>
 
 <style scoped>
-.pp-pager { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px; }
-.pp-pager-info { font-size: 12.5px; color: var(--muted); min-width: 60px; text-align: center; font-family: var(--mono); }
-.bw-windows-wrap { padding: 16px 18px; margin-bottom: 14px; }
-.bw-windows-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.bw-windows-head h2 { margin: 0; color: var(--text); font-size: 15px; }
-.bw-windows-hint { font-size: 12px; color: var(--muted); }
-.bw-windows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.bw-win-card {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 14px 16px; border-radius: 10px;
-  background: var(--pxl-card-2, rgba(255,255,255,0.03));
-  border: 1px solid var(--border);
-}
-.bw-win-label { font-size: 12.5px; color: var(--muted); }
-.bw-win-total { font-size: 22px; font-weight: 700; color: var(--text); line-height: 1.1; }
-.bw-win-split { display: flex; gap: 16px; font-size: 12px; margin-top: 2px; }
-
-.ppwin-pills { display: inline-flex; padding: 2px; background: rgba(255,255,255,0.05); border-radius: 7px; gap: 2px; margin-left: 10px; }
-.ppwin-pills button {
-  padding: 4px 12px; font-size: 11.5px; font-family: var(--mono);
-  background: transparent; color: var(--muted); border: none; cursor: pointer; border-radius: 5px;
-}
-.ppwin-pills button.active { background: var(--surface, rgba(255,255,255,0.08)); color: var(--pxl, var(--green)); font-weight: 600; }
-
-@media (max-width: 720px) {
-  .bw-windows { grid-template-columns: 1fr; }
-}
+.kpi { flex: 1 1 170px; min-width: 0; }
+.kpi-ico { color: var(--pb-primary); margin-inline-end: 4px; }
+.foot { font-size: 12px; }
+.title-ico { color: var(--pb-primary); }
+.hint { font-size: 12px; margin-bottom: 12px !important; }
+.small { font-size: 12px; }
+.win-card :deep(.ant-statistic-content) { font-size: 22px; }
+.fill { height: 100%; }
+.chart-empty { text-align: center; margin: 4px 0 0 !important; font-size: 12.5px; }
+.donut-wrap { padding: 8px 0 16px; }
+.donut-lbl { font-size: 12px; }
+.donut-val { font-size: 18px; }
+.split-name { flex: 1; }
+.pp-filters { margin-bottom: 12px; }
+.pp-search { width: 280px; max-width: 100%; }
+.share-bar { margin: 0 !important; }
 </style>
