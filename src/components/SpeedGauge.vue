@@ -187,7 +187,7 @@ function formattedValue() {
   background: rgba(15, 20, 27, 0.7);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 999px;
-  font-size: 11px; color: var(--muted, #94a3b8);
+  font-size: 11px; color: var(--pb-text-3, #94a3b8);
   font-family: ui-monospace, monospace;
 }
 .sg-dot { width: 5px; height: 5px; border-radius: 50%; background: #64748b; }
